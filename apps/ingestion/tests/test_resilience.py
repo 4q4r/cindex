@@ -47,6 +47,10 @@ class SuccessConnector:
             )
         ]
 
+    def enrich_raw(self, raw: RawArticle) -> RawArticle:
+        """Passthrough; this test verifies success counting, not enrichment."""
+        return raw
+
 
 def test_circuit_breaker_opens_after_threshold(monkeypatch, db) -> None:
     """Test circuit breaker opens after threshold helper."""

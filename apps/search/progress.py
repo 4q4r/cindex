@@ -7,6 +7,16 @@ from apps.ingestion.connectors import CONNECTORS
 from apps.search.models import SearchWaitStat
 
 
+def _round_half_up(value: float) -> int:
+    """Round a non-negative float to the nearest int, half away from zero.
+
+    Python's built-in ``round`` uses banker's rounding (half to even), so
+    ``round(32.5)`` returns ``32``. Search wait times are display values and
+    should round half up, which is what users expect.
+    """
+    return int(value + 0.5)
+
+
 def get_source_stats() -> dict:
     """Return the shared source stats."""
     total = len(CONNECTORS)
@@ -41,12 +51,12 @@ def get_search_wait_stats() -> dict[str, int | None]:
 
     return {
         "without_enrichment_seconds": (
-            round(without_enrichment.average_seconds)
+            _round_half_up(without_enrichment.average_seconds)
             if without_enrichment.sample_count > 0
             else None
         ),
         "with_enrichment_seconds": (
-            round(with_enrichment.average_seconds)
+            _round_half_up(with_enrichment.average_seconds)
             if with_enrichment.sample_count > 0
             else None
         ),
