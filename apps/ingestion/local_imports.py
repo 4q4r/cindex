@@ -1,16 +1,17 @@
+"""Local scholarly file ingestion: filename metadata parsing and text extraction."""
+
 from __future__ import annotations
 
 import hashlib
 import json
 from dataclasses import dataclass
-from pathlib import Path
+from typing import TYPE_CHECKING
 from urllib.parse import quote, unquote_plus
 
 import pymupdf
 from bs4 import BeautifulSoup
 from django.utils import timezone
 
-from apps.articles.models import Article
 from apps.core.text import normalize_scholarly_text
 from apps.ingestion.connectors import (
     BaseConnector,
@@ -18,6 +19,11 @@ from apps.ingestion.connectors import (
 )
 from apps.ingestion.models import LocalImportFile
 from apps.ingestion.services import IngestionService
+
+if TYPE_CHECKING:
+    from pathlib import Path
+
+    from apps.articles.models import Article
 
 SUPPORTED_IMPORT_SUFFIXES = {
     ".html",
@@ -31,6 +37,9 @@ SUPPORTED_IMPORT_SUFFIXES = {
 }
 
 SCANNED_LOCK_SECONDS = 5 * 60
+_YEAR_DIGITS = 4
+_YEAR_MIN = 1900
+_YEAR_MAX = 2100
 
 
 @dataclass(frozen=True)
@@ -66,10 +75,10 @@ def _split_authors(value: str) -> tuple[str, ...]:
 def _parse_year(value: str) -> int | None:
     """Parse a year from a filename segment."""
     normalized = unquote_plus(value).strip()
-    if len(normalized) != 4 or not normalized.isdigit():
+    if len(normalized) != _YEAR_DIGITS or not normalized.isdigit():
         return None
     year = int(normalized)
-    if 1900 <= year <= 2100:
+    if _YEAR_MIN <= year <= _YEAR_MAX:
         return year
     return None
 
@@ -193,8 +202,10 @@ def extract_local_import_text(path: Path, *, ocr_language: str = "eng") -> str:
 
     raw_text = path.read_text(encoding="utf-8", errors="replace")
     if suffix in {".html", ".htm", ".xml"}:
-        soup = BaseConnector._sanitize_html_soup(BeautifulSoup(raw_text, "lxml"))
-        return BaseConnector._html_text(soup)
+        soup = BaseConnector._sanitize_html_soup(  # noqa: SLF001
+            BeautifulSoup(raw_text, "lxml"),
+        )
+        return BaseConnector._html_text(soup)  # noqa: SLF001
     if suffix in {".json", ".jsonl"}:
         return _extract_text_from_json(raw_text)
     return normalize_scholarly_text(raw_text)
@@ -297,7 +308,7 @@ class LocalImportService:
                 }
                 record.save(update_fields=["sha256", "status", "error", "metadata"])
                 return None, False
-            article = IngestionService._save_article(raw_payload)
+            article = IngestionService._save_article(raw_payload)  # noqa: SLF001
             record.sha256 = digest
             record.status = "completed"
             record.article = article
@@ -322,7 +333,6 @@ class LocalImportService:
                     "processed_at",
                 ],
             )
-            return article, True
         except Exception as exc:
             record.sha256 = digest
             record.status = "failed"
@@ -339,6 +349,8 @@ class LocalImportService:
                 update_fields=["sha256", "status", "error", "metadata", "article"],
             )
             raise
+        else:
+            return article, True
 
     @classmethod
     def scan_drop_dir(cls, drop_dir: Path) -> dict[str, int]:

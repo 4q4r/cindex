@@ -1,5 +1,7 @@
-"""Tests for ExaConnector improvements: DOI cleanup, abstract cleaning,
-outputSchema enrichment, and integration."""
+"""
+Tests for ExaConnector improvements: DOI cleanup, abstract cleaning,
+outputSchema enrichment, and integration.
+"""
 
 from apps.ingestion.connectors.api_connectors import ExaConnector
 
@@ -9,50 +11,50 @@ from apps.ingestion.connectors.api_connectors import ExaConnector
 class TestExaDoiExtraction:
     """Tests for ExaConnector._extract_doi boundary cleanup."""
 
-    def setup_method(self):
+    def setup_method(self) -> None:
         self.conn = ExaConnector.__new__(ExaConnector)
 
-    def test_extracts_clean_doi(self):
+    def test_extracts_clean_doi(self) -> None:
         result = self.conn._extract_doi(
             "A study in 10.1234/j.medchem.3b00120 showed results"
         )
         assert result == "10.1234/j.medchem.3b00120"
 
-    def test_strips_trailing_year_parenthesis(self):
+    def test_strips_trailing_year_parenthesis(self) -> None:
         result = self.conn._extract_doi(
             "10.48550/arXiv.1706.00120(2017) is a known reference"
         )
         assert result == "10.48550/arXiv.1706.00120"
 
-    def test_strips_trailing_ref_parenthesis(self):
+    def test_strips_trailing_ref_parenthesis(self) -> None:
         result = self.conn._extract_doi("see 10.5281/zenodo.11002033(ref for details")
         assert result == "10.5281/zenodo.11002033"
 
-    def test_strips_trailing_paren_with_text(self):
+    def test_strips_trailing_paren_with_text(self) -> None:
         result = self.conn._extract_doi("10.1093/nsr/nwaf457(accessed 2025) and more")
         assert result == "10.1093/nsr/nwaf457"
 
-    def test_preserves_doi_without_trailing_paren(self):
+    def test_preserves_doi_without_trailing_paren(self) -> None:
         result = self.conn._extract_doi("https://doi.org/10.1007/s00739-024-01061-9")
         assert result == "10.1007/s00739-024-01061-9"
 
-    def test_returns_empty_for_no_doi(self):
+    def test_returns_empty_for_no_doi(self) -> None:
         result = self.conn._extract_doi("no doi here")
         assert result == ""
 
-    def test_strips_trailing_period(self):
+    def test_strips_trailing_period(self) -> None:
         result = self.conn._extract_doi("refer to 10.1234/test.2023.")
         assert result == "10.1234/test.2023"
 
-    def test_strips_standalone_trailing_closing_paren(self):
+    def test_strips_standalone_trailing_closing_paren(self) -> None:
         result = self.conn._extract_doi("10.1111/gcb.15818)")
         assert result == "10.1111/gcb.15818"
 
-    def test_preserves_doi_with_volume_in_parens(self):
+    def test_preserves_doi_with_volume_in_parens(self) -> None:
         result = self.conn._extract_doi("10.1016/s0969-9961(02)00008-6")
         assert result == "10.1016/s0969-9961(02)00008-6"
 
-    def test_preserves_doi_with_year_in_parens_followed_by_suffix(self):
+    def test_preserves_doi_with_year_in_parens_followed_by_suffix(self) -> None:
         result = self.conn._extract_doi("10.1016/S0140-6736(26)00519-2")
         assert result == "10.1016/S0140-6736(26)00519-2"
 
@@ -63,10 +65,10 @@ class TestExaDoiExtraction:
 class TestCleanAbstract:
     """Tests for ExaConnector._clean_abstract."""
 
-    def setup_method(self):
+    def setup_method(self) -> None:
         self.conn = ExaConnector.__new__(ExaConnector)
 
-    def test_strips_skip_to_main_content(self):
+    def test_strips_skip_to_main_content(self) -> None:
         result = self.conn._clean_abstract(
             "My Title",
             "Skip to main content View PDF A novel approach to neural networks.",
@@ -75,7 +77,7 @@ class TestCleanAbstract:
         assert not result.startswith("View PDF")
         assert "novel approach" in result
 
-    def test_removes_duplicated_title(self):
+    def test_removes_duplicated_title(self) -> None:
         result = self.conn._clean_abstract(
             "Quantum Entanglement in Spin Chains",
             "Quantum Entanglement in Spin Chains We study the dynamics of...",
@@ -83,7 +85,7 @@ class TestCleanAbstract:
         assert not result.startswith("Quantum Entanglement")
         assert "We study" in result
 
-    def test_strips_section_headers(self):
+    def test_strips_section_headers(self) -> None:
         result = self.conn._clean_abstract(
             "Test Paper",
             (
@@ -95,16 +97,16 @@ class TestCleanAbstract:
         assert "### Subjects" not in result
         assert "Abstract" in result or "abstract" in result
 
-    def test_empty_text(self):
+    def test_empty_text(self) -> None:
         result = self.conn._clean_abstract("Title", "")
         assert result == ""
 
-    def test_no_boilerplate(self):
+    def test_no_boilerplate(self) -> None:
         text = "This is a clean abstract about machine learning."
         result = self.conn._clean_abstract("Different Title", text)
         assert result == text
 
-    def test_strips_search_sciencedirect(self):
+    def test_strips_search_sciencedirect(self) -> None:
         result = self.conn._clean_abstract(
             "Title",
             "Search ScienceDirect Brain, Behavior, and Immunity Volume 115.",
@@ -118,7 +120,7 @@ class TestCleanAbstract:
 class TestEnrichWithOutputSchema:
     """Tests for ExaConnector._enrich_with_output_schema."""
 
-    def test_parses_output_schema_papers(self):
+    def test_parses_output_schema_papers(self) -> None:
         """Verify the enrichment parsing logic with mock data."""
         # Simulate parsed outputSchema response
         mock_papers = [
@@ -183,7 +185,7 @@ class TestEnrichWithOutputSchema:
         assert "authors" not in result["https://example.com/paper2"]
         assert result["https://example.com/paper2"]["year"] == 2024
 
-    def test_skips_empty_enrichment(self):
+    def test_skips_empty_enrichment(self) -> None:
         """Papers with no useful enrichment fields should be skipped."""
         result: dict[str, dict] = {}
         paper = {
@@ -228,7 +230,7 @@ class TestEnrichWithOutputSchema:
 class TestEnrichmentMerge:
     """Tests for the enrichment merge logic in _fetch_async."""
 
-    def test_merge_updates_missing_fields(self):
+    def test_merge_updates_missing_fields(self) -> None:
         from apps.ingestion.connectors.base import RawArticle
 
         item = RawArticle(
@@ -266,7 +268,7 @@ class TestEnrichmentMerge:
         assert item.doi == "10.1234/test.2025"
         assert item.journal == "Nature"
 
-    def test_merge_preserves_existing_fields(self):
+    def test_merge_preserves_existing_fields(self) -> None:
         from apps.ingestion.connectors.base import RawArticle
 
         item = RawArticle(

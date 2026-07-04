@@ -56,7 +56,6 @@ services:
       - postgres_password
       - secret_key
     environment:
-      CINDEX_WARMUP_SEARCH_MODELS: "1"
       CINDEX_RESUME_SEARCH_JOBS: "1"
       CINDEX_LOCAL_IMPORT_SCAN_INTERVAL_SECONDS: "30"
       CINDEX_LOCAL_IMPORT_DIRECTORY: /app/local_imports
@@ -85,7 +84,6 @@ services:
       - postgres_password
       - secret_key
     environment:
-      CINDEX_NIGHTLY_INGESTION_INTERVAL_SECONDS: "0"
       CINDEX_LOCAL_IMPORT_SCAN_INTERVAL_SECONDS: "30"
       CINDEX_LOCAL_IMPORT_DIRECTORY: /app/local_imports
     volumes:

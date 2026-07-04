@@ -20,7 +20,8 @@ class _DummyConnector:
                 _DummyResponse(pdf_bytes, "application/pdf"),
                 pdf_bytes.decode("latin-1"),
             )
-        raise AssertionError(f"unexpected url {url}")
+        msg = f"unexpected url {url}"
+        raise AssertionError(msg)
 
     def _is_pdf_response(self, url: str, content_type: str, body: bytes) -> bool:
         return url.endswith(".pdf") or "application/pdf" in content_type
@@ -33,7 +34,7 @@ class _DummyConnector:
     ) -> str:
         return self._extract_pdf_text(pdf_bytes)
 
-    def _extract_pdf_url(self, soup, raw_url, raw_full_text, combined_page_text):
+    def _extract_pdf_url(self, soup, raw_url, raw_full_text, combined_page_text) -> str:
         return ""
 
     def _request_pdf_text(self, url: str) -> str:

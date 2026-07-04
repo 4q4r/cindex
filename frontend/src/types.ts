@@ -1,6 +1,9 @@
 export interface ApiSearchResponse {
   query: string;
   count: number;
+  page?: number;
+  per_page?: number;
+  total_pages?: number;
   source_stats?: {
     total: number;
     live: number;
@@ -42,11 +45,36 @@ export interface ApiSearchJobResponse {
   rescan_triggered?: boolean;
   rescan_reason?: string;
   freshness_days_used?: number;
+  peer_reviewed_only?: boolean;
+  indexed_only?: boolean;
+  exclude_preprints?: boolean;
+  year_from?: number | null;
+  year_to?: number | null;
+  sort_by?: string;
+  page?: number | null;
+  per_page?: number | null;
+  total_pages?: number | null;
+  total_results?: number | null;
   created_at: string;
   updated_at: string;
   finished_at: string | null;
   error?: string;
   results?: ApiSearchResult[];
+}
+
+/**
+ * Server-side search filters/sort/pagination params sent on job creation.
+ * `citationStyle` is frontend-only and intentionally absent here.
+ */
+export interface SearchJobParams {
+  peer_reviewed_only?: boolean;
+  indexed_only?: boolean;
+  exclude_preprints?: boolean;
+  year_from?: number | null;
+  year_to?: number | null;
+  sort_by?: "relevance" | "newest" | "metadata";
+  page?: number;
+  per_page?: number;
 }
 
 export interface ApiSearchResult {

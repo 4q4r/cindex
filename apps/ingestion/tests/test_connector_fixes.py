@@ -12,7 +12,7 @@ from apps.ingestion.connectors import (
 class TestEuropePCMAuthors:
     """EuropePMCConnector should extract authors from authorList and authorString."""
 
-    def test_author_list_with_full_name(self):
+    def test_author_list_with_full_name(self) -> None:
         payload = {
             "resultList": {
                 "result": [
@@ -40,7 +40,7 @@ class TestEuropePCMAuthors:
         assert len(items) == 1
         assert items[0].authors == ("Alice Smith", "Bob Jones")
 
-    def test_author_string_fallback(self):
+    def test_author_string_fallback(self) -> None:
         payload = {
             "resultList": {
                 "result": [
@@ -63,7 +63,7 @@ class TestEuropePCMAuthors:
         assert len(items) == 1
         assert items[0].authors == ("Smith A", "Jones B", "Lee C")
 
-    def test_no_authors(self):
+    def test_no_authors(self) -> None:
         payload = {
             "resultList": {
                 "result": [
@@ -89,7 +89,7 @@ class TestEuropePCMAuthors:
 class TestPCMAuthors:
     """PMCConnector should extract authors same as EuropePMC."""
 
-    def test_author_list_extraction(self):
+    def test_author_list_extraction(self) -> None:
         payload = {
             "resultList": {
                 "result": [
@@ -119,7 +119,7 @@ class TestPCMAuthors:
 class TestCrossrefVolumeIssuePages:
     """CrossrefConnector should extract volume/issue/pages."""
 
-    def test_extracts_all_biblio(self):
+    def test_extracts_all_biblio(self) -> None:
         payload = {
             "message": {
                 "items": [
@@ -143,7 +143,7 @@ class TestCrossrefVolumeIssuePages:
         assert items[0].issue == "3"
         assert items[0].pages == "101-115"
 
-    def test_missing_biblio_fields(self):
+    def test_missing_biblio_fields(self) -> None:
         payload = {
             "message": {
                 "items": [
@@ -165,7 +165,7 @@ class TestCrossrefVolumeIssuePages:
 class TestCyberLeninkaAuthors:
     """CyberLeninkaConnector should extract authors from rec['authors']."""
 
-    def test_authors_from_list(self):
+    def test_authors_from_list(self) -> None:
         payload = {
             "articles": [
                 {
@@ -183,7 +183,7 @@ class TestCyberLeninkaAuthors:
         assert len(items) == 1
         assert items[0].authors == ("Alice Smith", "Bob Jones")
 
-    def test_no_authors_key(self):
+    def test_no_authors_key(self) -> None:
         payload = {
             "articles": [
                 {
@@ -204,7 +204,7 @@ class TestCyberLeninkaAuthors:
 class TestHALJournal:
     """HALConnector should extract journal from journalTitle_s."""
 
-    def test_journal_from_field(self):
+    def test_journal_from_field(self) -> None:
         payload = {
             "response": {
                 "docs": [
@@ -226,7 +226,7 @@ class TestHALJournal:
         assert len(items) == 1
         assert items[0].journal == "Journal du HAL"
 
-    def test_fallback_to_hal(self):
+    def test_fallback_to_hal(self) -> None:
         payload = {
             "response": {
                 "docs": [
@@ -251,7 +251,7 @@ class TestHALJournal:
 class TestPubMedEfetch:
     """PubMedConnector._parse_efetch_abstracts should parse XML."""
 
-    def test_labeled_abstract_parts(self):
+    def test_labeled_abstract_parts(self) -> None:
         from apps.ingestion.connectors.api_connectors import PubMedConnector
 
         xml = (
@@ -274,7 +274,7 @@ class TestPubMedEfetch:
         assert "BACKGROUND: Some background." in result["99999"]
         assert "RESULTS: Key findings." in result["99999"]
 
-    def test_multiple_articles(self):
+    def test_multiple_articles(self) -> None:
         from apps.ingestion.connectors.api_connectors import PubMedConnector
 
         xml = (

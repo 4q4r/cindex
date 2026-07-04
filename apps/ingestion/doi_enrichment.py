@@ -17,6 +17,7 @@ logger = structlog.get_logger(__name__)
 _CROSSREF_INTERVAL = 0.1  # 10 req/s polite pool
 _OPENALEX_INTERVAL = 0.01  # 100 req/s
 _S2_INTERVAL = 1.0  # 1 RPS
+_HTTP_NOT_FOUND = 404
 
 
 class DoiEnrichmentService:
@@ -44,7 +45,9 @@ class DoiEnrichmentService:
             if not enrichment:
                 continue
             changed, pending_authors = cls._apply_cascade(
-                article, initial_missing, enrichment,
+                article,
+                initial_missing,
+                enrichment,
             )
             if changed:
                 cls._save_enriched(article, pending_authors)
@@ -53,7 +56,8 @@ class DoiEnrichmentService:
 
     @classmethod
     def _fetch_enrichments(
-        cls, candidates: list[tuple[Article, set[str]]],
+        cls,
+        candidates: list[tuple[Article, set[str]]],
     ) -> dict[int, list[dict]]:
         """Fetch metadata from all three APIs for candidate articles.
 
@@ -91,7 +95,13 @@ class DoiEnrichmentService:
         ) as session:
             tasks = [
                 cls._fetch_enrichment_for_article(
-                    article, missing, session, sem, last_call, mailto, openalex_key,
+                    article,
+                    missing,
+                    session,
+                    sem,
+                    last_call,
+                    mailto,
+                    openalex_key,
                 )
                 for article, missing in candidates
             ]
@@ -106,7 +116,7 @@ class DoiEnrichmentService:
         return enrichment_map
 
     @classmethod
-    async def _fetch_enrichment_for_article(
+    async def _fetch_enrichment_for_article(  # noqa: PLR0913
         cls,
         article: Article,
         missing: set[str],
@@ -123,7 +133,11 @@ class DoiEnrichmentService:
         crossref_fields = {"authors", "year", "volume", "issue", "pages"}
         if missing & crossref_fields:
             data = await cls._fetch_crossref(
-                article.doi, session, sem, last_call, mailto,
+                article.doi,
+                session,
+                sem,
+                last_call,
+                mailto,
             )
             if data:
                 enrichments.append(cls._parse_crossref(data))
@@ -132,7 +146,11 @@ class DoiEnrichmentService:
         openalex_fields = {"authors", "abstract", "year", "volume", "issue", "pages"}
         if missing & openalex_fields:
             data = await cls._fetch_openalex(
-                article.doi, session, sem, last_call, openalex_key,
+                article.doi,
+                session,
+                sem,
+                last_call,
+                openalex_key,
             )
             if data:
                 enrichments.append(cls._parse_openalex(data))
@@ -141,7 +159,10 @@ class DoiEnrichmentService:
         s2_fields = {"authors", "abstract", "year"}
         if missing & s2_fields:
             data = await cls._fetch_semantic_scholar(
-                article.doi, session, sem, last_call,
+                article.doi,
+                session,
+                sem,
+                last_call,
             )
             if data:
                 enrichments.append(cls._parse_semantic_scholar(data))
@@ -150,7 +171,10 @@ class DoiEnrichmentService:
 
     @classmethod
     def _apply_cascade(
-        cls, article: Article, initial_missing: set[str], enrichments: list[dict],
+        cls,
+        article: Article,
+        initial_missing: set[str],
+        enrichments: list[dict],
     ) -> tuple[bool, list[str]]:
         """Apply enrichment dicts to article in cascade order. Sync only."""
         missing = set(initial_missing)
@@ -219,12 +243,12 @@ class DoiEnrichmentService:
             cls._update_authors(article, pending_authors)
 
     @classmethod
-    def _apply_step(
+    def _apply_step(  # noqa: PLR0913
         cls,
         article: Article,
         enrichment: dict,
         missing: set[str],
-        changed: bool,
+        changed: bool,  # noqa: FBT001
         pending_authors: list[str],
         abstract_field: str | None = None,
     ) -> tuple[bool, list[str]]:
@@ -267,7 +291,9 @@ class DoiEnrichmentService:
         for order, full_name in enumerate(names, start=1):
             author, _ = Author.objects.get_or_create(full_name=full_name)
             ArticleAuthor.objects.get_or_create(
-                article=article, author=author, order=order,
+                article=article,
+                author=author,
+                order=order,
             )
 
     # --- API fetchers ---
@@ -286,7 +312,7 @@ class DoiEnrichmentService:
             async with sem["crossref"]:
                 await cls._rate_limit(last_call, "crossref", _CROSSREF_INTERVAL)
                 async with session.get(url) as resp:
-                    if resp.status == 404:
+                    if resp.status == _HTTP_NOT_FOUND:
                         return None
                     resp.raise_for_status()
                     data = await resp.json()
@@ -311,7 +337,7 @@ class DoiEnrichmentService:
             async with sem["openalex"]:
                 await cls._rate_limit(last_call, "openalex", _OPENALEX_INTERVAL)
                 async with session.get(url) as resp:
-                    if resp.status == 404:
+                    if resp.status == _HTTP_NOT_FOUND:
                         return None
                     resp.raise_for_status()
                     return await resp.json()
@@ -335,7 +361,7 @@ class DoiEnrichmentService:
             async with sem["s2"]:
                 await cls._rate_limit(last_call, "s2", _S2_INTERVAL)
                 async with session.get(url) as resp:
-                    if resp.status == 404:
+                    if resp.status == _HTTP_NOT_FOUND:
                         return None
                     resp.raise_for_status()
                     return await resp.json()
@@ -345,7 +371,9 @@ class DoiEnrichmentService:
 
     @staticmethod
     async def _rate_limit(
-        last_call: dict[str, float], api_name: str, min_interval: float,
+        last_call: dict[str, float],
+        api_name: str,
+        min_interval: float,
     ) -> None:
         """Sleep if needed to respect the minimum interval between calls."""
         try:
@@ -445,8 +473,7 @@ class DoiEnrichmentService:
             return ""
         word_positions: list[tuple[int, str]] = []
         for word, positions in inverted_index.items():
-            for pos in positions:
-                word_positions.append((pos, word))
+            word_positions.extend((pos, word) for pos in positions)
         word_positions.sort()
         return " ".join(word for _, word in word_positions)
 

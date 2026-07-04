@@ -1,5 +1,5 @@
 import { useState, useCallback, useMemo, useEffect, useRef } from "react";
-import { ChevronLeft, ChevronRight, Check, Filter } from "lucide-react";
+import { ChevronLeft, ChevronRight, Check } from "lucide-react";
 import { Header } from "./components/Header";
 import { SearchBar } from "./components/SearchBar";
 import { FilterPanel } from "./components/FilterPanel";
@@ -10,6 +10,7 @@ import { LoadingState } from "./components/LoadingState";
 import { createSearchJob, getSearchJob, getSourceStats } from "./api/search";
 import {
   Filters,
+  SearchJobParams,
   SearchProgress,
   SearchResult,
   SearchState,
@@ -18,6 +19,24 @@ import {
 } from "./types";
 
 const PER_PAGE = 5;
+const FILTER_CHANGE_DEBOUNCE_MS = 400;
+
+function parseYear(value: string): number | null {
+  if (!value) return null;
+  const parsed = parseInt(value, 10);
+  return Number.isNaN(parsed) ? null : parsed;
+}
+
+function buildParams(filters: Filters): SearchJobParams {
+  return {
+    peer_reviewed_only: filters.peerReviewedOnly,
+    indexed_only: filters.indexedOnly,
+    exclude_preprints: filters.excludePreprints,
+    year_from: parseYear(filters.dateFrom),
+    year_to: parseYear(filters.dateTo),
+    sort_by: filters.sortBy,
+  };
+}
 
 export default function App() {
   const [searchState, setSearchState] = useState<SearchState>("idle");
@@ -25,7 +44,8 @@ export default function App() {
   const [lastQuery, setLastQuery] = useState("");
   const [filters, setFilters] = useState<Filters>({ ...DEFAULT_FILTERS });
   const [rawResults, setRawResults] = useState<SearchResult[]>([]);
-  const [totalBeforeFilter, setTotalBeforeFilter] = useState(0);
+  const [totalResults, setTotalResults] = useState(0);
+  const [totalPages, setTotalPages] = useState(0);
   const [sourcesQueried, setSourcesQueried] = useState(0);
   const [sourcesFailed, setSourcesFailed] = useState<string[]>([]);
   const [lastSearchTime, setLastSearchTime] = useState<Date | null>(null);
@@ -37,6 +57,13 @@ export default function App() {
   const notifTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const searchSeqRef = useRef(0);
   const abortRef = useRef<AbortController | null>(null);
+  const pageAbortRef = useRef<AbortController | null>(null);
+  const currentJobIdRef = useRef<string | null>(null);
+  const filtersRef = useRef(filters);
+  const lastQueryRef = useRef("");
+  const didMountRef = useRef(false);
+
+  filtersRef.current = filters;
 
   useEffect(() => {
     const controller = new AbortController();
@@ -54,79 +81,6 @@ export default function App() {
     };
   }, []);
 
-  const filteredResults = useMemo(() => {
-    let results = [...rawResults];
-
-    if (filters.peerReviewedOnly)
-      results = results.filter((r) => r.eligibilityEvidence.peerReviewed);
-    if (filters.indexedOnly)
-      results = results.filter((r) => r.eligibilityEvidence.indexed);
-    if (filters.excludePreprints)
-      results = results.filter((r) => r.eligibilityEvidence.notPreprint);
-
-    if (filters.dateFrom) {
-      const from = parseInt(filters.dateFrom, 10);
-      if (!Number.isNaN(from))
-        results = results.filter((r) => (r.year ?? 0) >= from);
-    }
-    if (filters.dateTo) {
-      const to = parseInt(filters.dateTo, 10);
-      if (!Number.isNaN(to))
-        results = results.filter((r) => (r.year ?? 3000) <= to);
-    }
-
-    switch (filters.sortBy) {
-      case "newest":
-        results.sort((a, b) => (b.year ?? 0) - (a.year ?? 0));
-        break;
-      case "metadata":
-        results.sort((a, b) => {
-          const scoreA =
-            Object.keys(a.identifiers).length +
-            Math.round(a.eligibilityConfidence.overall / 25);
-          const scoreB =
-            Object.keys(b.identifiers).length +
-            Math.round(b.eligibilityConfidence.overall / 25);
-          return scoreB - scoreA;
-        });
-        break;
-      case "relevance":
-      default:
-        results.sort(
-          (a, b) =>
-            b.eligibilityConfidence.overall - a.eligibilityConfidence.overall,
-        );
-        break;
-    }
-
-    return results;
-  }, [rawResults, filters]);
-
-  const filteredOutCount = totalBeforeFilter - filteredResults.length;
-
-  const totalPages = Math.ceil(filteredResults.length / PER_PAGE);
-  const paginatedResults = useMemo(() => {
-    const start = (currentPage - 1) * PER_PAGE;
-    return filteredResults.slice(start, start + PER_PAGE);
-  }, [filteredResults, currentPage]);
-
-  const pageNumbers = useMemo(() => {
-    return Array.from({ length: totalPages }, (_, i) => i + 1).filter(
-      (page) => {
-        if (page === 1 || page === totalPages) return true;
-        return Math.abs(page - currentPage) <= 1;
-      },
-    );
-  }, [currentPage, totalPages]);
-
-  useEffect(() => {
-    setCurrentPage(1);
-  }, [rawResults]);
-
-  useEffect(() => {
-    setCurrentPage(1);
-  }, [filters]);
-
   const hasActiveFilters = useMemo(() => {
     return (
       filters.peerReviewedOnly ||
@@ -138,15 +92,55 @@ export default function App() {
     );
   }, [filters]);
 
+  const applyJobPayload = useCallback(
+    (payload: Awaited<ReturnType<typeof getSearchJob>>) => {
+      setRawResults(payload.results);
+      setTotalResults(payload.totalResults ?? payload.results.length);
+      setTotalPages(payload.totalPages ?? 0);
+      setCurrentPage(payload.page ?? 1);
+      setSourcesQueried(payload.sourceStats.total);
+      setSourcesFailed(
+        payload.progress.sourceFailed.length > 0
+          ? payload.progress.sourceFailed
+          : payload.sourceStats.failed,
+      );
+    },
+    [],
+  );
+
+  const fetchPage = useCallback(
+    async (page: number) => {
+      const jobId = currentJobIdRef.current;
+      if (!jobId) return;
+      pageAbortRef.current?.abort();
+      const controller = new AbortController();
+      pageAbortRef.current = controller;
+      try {
+        const payload = await getSearchJob(
+          jobId,
+          page,
+          PER_PAGE,
+          controller.signal,
+        );
+        applyJobPayload(payload);
+      } catch {
+        /* aborted or transient page fetch — keep current page */
+      }
+    },
+    [applyJobPayload],
+  );
+
   const handleSearch = useCallback(
     async (searchQuery?: string) => {
       const q = searchQuery ?? query;
       if (!q.trim()) return;
 
       abortRef.current?.abort();
+      pageAbortRef.current?.abort();
       const controller = new AbortController();
       abortRef.current = controller;
 
+      lastQueryRef.current = q;
       setLastQuery(q);
       setSearchState("loading");
       setCurrentPage(1);
@@ -159,11 +153,13 @@ export default function App() {
           {
             query: q,
             force_refresh: false,
+            ...buildParams(filtersRef.current),
           },
           controller.signal,
         );
         if (searchSeqRef.current !== searchSeq) return;
         setProgress(created);
+        currentJobIdRef.current = created.jobId;
 
         const POLL_INTERVAL_MS = 1000;
         const POLL_FAILURE_BACKOFF_MS = 5000;
@@ -172,7 +168,12 @@ export default function App() {
         while (searchSeqRef.current === searchSeq) {
           let payload: Awaited<ReturnType<typeof getSearchJob>>;
           try {
-            payload = await getSearchJob(created.jobId, controller.signal);
+            payload = await getSearchJob(
+              created.jobId,
+              1,
+              PER_PAGE,
+              controller.signal,
+            );
             consecutivePollFailures = 0;
           } catch {
             if (searchSeqRef.current !== searchSeq) return;
@@ -201,8 +202,7 @@ export default function App() {
             throw new Error(payload.error || "Search job failed");
           }
           if (payload.status === "completed" || payload.status === "partial") {
-            setRawResults(payload.results);
-            setTotalBeforeFilter(payload.results.length);
+            applyJobPayload(payload);
             setLastSearchTime(new Date());
 
             const failedSources =
@@ -228,11 +228,37 @@ export default function App() {
       } catch {
         if (searchSeqRef.current !== searchSeq) return;
         setRawResults([]);
-        setTotalBeforeFilter(0);
+        setTotalResults(0);
+        setTotalPages(0);
         setSearchState("error");
       }
     },
-    [query],
+    [query, applyJobPayload],
+  );
+
+  // Re-run the search server-side when filters/sort change (debounced), since
+  // filters are baked into the job at creation time. Skip the initial mount.
+  useEffect(() => {
+    if (!didMountRef.current) {
+      didMountRef.current = true;
+      return;
+    }
+    if (!lastQueryRef.current) return;
+    const timer = setTimeout(() => {
+      void handleSearch(lastQueryRef.current);
+    }, FILTER_CHANGE_DEBOUNCE_MS);
+    return () => { clearTimeout(timer); };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [filters]);
+
+  const handlePageChange = useCallback(
+    (page: number) => {
+      const next = Math.min(Math.max(1, page), Math.max(1, totalPages));
+      if (next === currentPage) return;
+      setCurrentPage(next);
+      void fetchPage(next);
+    },
+    [currentPage, totalPages, fetchPage],
   );
 
   const handleCopy = useCallback(async (text: string, type: string) => {
@@ -267,15 +293,6 @@ export default function App() {
     setFilters({ ...DEFAULT_FILTERS });
   }, []);
 
-  const handleClearStrictFilters = useCallback(() => {
-    setFilters((prev) => ({
-      ...prev,
-      peerReviewedOnly: false,
-      indexedOnly: false,
-      excludePreprints: false,
-    }));
-  }, []);
-
   const handleExampleClick = useCallback(
     (q: string) => {
       setQuery(q);
@@ -284,15 +301,23 @@ export default function App() {
     [handleSearch],
   );
 
-  const allFilteredOut = rawResults.length > 0 && filteredResults.length === 0;
   const showResults =
     searchState === "results" ||
-    (searchState === "partial" && filteredResults.length > 0);
+    (searchState === "partial" && rawResults.length > 0);
+
+  const pageNumbers = useMemo(() => {
+    return Array.from({ length: totalPages }, (_, i) => i + 1).filter(
+      (page) => {
+        if (page === 1 || page === totalPages) return true;
+        return Math.abs(page - currentPage) <= 1;
+      },
+    );
+  }, [currentPage, totalPages]);
 
   return (
     <div className="min-h-screen bg-bg-primary">
       <Header
-        resultCount={filteredResults.length}
+        resultCount={totalResults}
         lastSearchTime={lastSearchTime}
         sourcesQueried={sourcesQueried}
         sourcesFailed={sourcesFailed}
@@ -324,8 +349,8 @@ export default function App() {
               {showResults && (
                 <div className="mb-5">
                   <InfoBar
-                    totalResults={filteredResults.length}
-                    filteredOut={filteredOutCount}
+                    totalResults={totalResults}
+                    filteredOut={0}
                     sourcesFailed={sourcesFailed}
                     onClearFilters={handleClearFilters}
                     onToggleMobileFilters={() => {
@@ -338,7 +363,7 @@ export default function App() {
                 </div>
               )}
 
-              {searchState === "partial" && filteredResults.length > 0 && (
+              {searchState === "partial" && rawResults.length > 0 && (
                 <div className="mb-5 flex items-center gap-2 bg-warning-muted/20 border border-warning/20 rounded-lg px-4 py-2.5 text-xs text-warning">
                   <span>
                     Частичный результат: часть источников недоступна (
@@ -353,7 +378,7 @@ export default function App() {
 
               {showResults && (
                 <div className="space-y-5">
-                  {paginatedResults.map((result, index) => (
+                  {rawResults.map((result, index) => (
                     <div
                       key={result.id}
                       style={{ animationDelay: `${String(index * 60)}ms` }}
@@ -374,9 +399,7 @@ export default function App() {
                     <div className="flex items-center justify-center gap-2 pt-6 pb-2">
                       <button
                         type="button"
-                        onClick={() => {
-                          setCurrentPage((p) => Math.max(1, p - 1));
-                        }}
+                        onClick={() => { handlePageChange(currentPage - 1); }}
                         disabled={currentPage === 1}
                         className="flex items-center gap-1 px-3 py-2 text-xs text-text-secondary hover:text-text-primary bg-bg-elevated border border-border-default rounded-lg disabled:opacity-30 disabled:cursor-not-allowed transition-colors"
                       >
@@ -398,9 +421,7 @@ export default function App() {
                               )}
                               <button
                                 type="button"
-                                onClick={() => {
-                                  setCurrentPage(page);
-                                }}
+                                onClick={() => { handlePageChange(page); }}
                                 className={`w-9 h-9 rounded-lg text-xs font-medium transition-colors ${
                                   page === currentPage
                                     ? "bg-accent text-white"
@@ -415,9 +436,7 @@ export default function App() {
                       </div>
                       <button
                         type="button"
-                        onClick={() => {
-                          setCurrentPage((p) => Math.min(totalPages, p + 1));
-                        }}
+                        onClick={() => { handlePageChange(currentPage + 1); }}
                         disabled={currentPage === totalPages}
                         className="flex items-center gap-1 px-3 py-2 text-xs text-text-secondary hover:text-text-primary bg-bg-elevated border border-border-default rounded-lg disabled:opacity-30 disabled:cursor-not-allowed transition-colors"
                       >
@@ -432,9 +451,7 @@ export default function App() {
               {(searchState === "idle" ||
                 searchState === "empty" ||
                 searchState === "error" ||
-                (searchState === "partial" &&
-                  filteredResults.length === 0 &&
-                  !allFilteredOut)) && (
+                (searchState === "partial" && rawResults.length === 0)) && (
                 <EmptyState
                   state={searchState}
                   onRetry={() => {
@@ -443,36 +460,6 @@ export default function App() {
                   onExampleClick={handleExampleClick}
                   sourcesFailed={sourcesFailed}
                 />
-              )}
-
-              {allFilteredOut && (
-                <div className="flex flex-col items-center justify-center py-12 px-4 animate-fade-in">
-                  <div className="max-w-md text-center">
-                    <div className="w-14 h-14 mx-auto mb-5 rounded-2xl bg-bg-elevated flex items-center justify-center">
-                      <Filter className="w-7 h-7 text-text-tertiary" />
-                    </div>
-                    <h2 className="text-lg font-semibold text-text-primary mb-2">
-                      Все результаты отфильтрованы
-                    </h2>
-                    <p className="text-sm text-text-secondary mb-4 leading-relaxed">
-                      Найдено {totalBeforeFilter}{" "}
-                      {totalBeforeFilter === 1
-                        ? "результат"
-                        : totalBeforeFilter < 5
-                          ? "результата"
-                          : "результатов"}
-                      , но ни один не прошёл строгие фильтры. Ослабьте фильтры
-                      слева, чтобы увидеть результаты.
-                    </p>
-                    <button
-                      type="button"
-                      onClick={handleClearStrictFilters}
-                      className="inline-flex items-center gap-2 px-5 py-2.5 bg-accent hover:bg-accent-muted text-white text-sm font-medium rounded-lg transition-colors"
-                    >
-                      Сбросить строгие фильтры
-                    </button>
-                  </div>
-                </div>
               )}
             </div>
           </div>

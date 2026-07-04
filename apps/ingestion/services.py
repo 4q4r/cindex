@@ -1,10 +1,13 @@
+"""Scholarly source ingestion: fetch, enrich, validate, and index articles."""
+
 from __future__ import annotations
 
 import time
-from collections.abc import Callable, Iterable
 from datetime import timedelta
+from typing import TYPE_CHECKING
 
 import aiohttp
+import structlog
 from cloudscraper.exceptions import CloudflareException
 from django.utils import timezone
 from requests.exceptions import RequestException
@@ -14,6 +17,12 @@ from apps.articles.services import ArticleEligibilityService, IdentifierService
 from apps.core.translate import translate_query_for_source
 
 from .connectors import CONNECTORS, BaseConnector, ConnectorFetchError, RawArticle
+from .doi_enrichment import DoiEnrichmentService
+
+if TYPE_CHECKING:
+    from collections.abc import Callable, Iterable
+
+logger = structlog.get_logger(__name__)
 
 
 class IngestionService:
@@ -136,15 +145,15 @@ class IngestionService:
         source = cls._upsert_source(raw.source_key)
         journal, _ = Journal.objects.get_or_create(name=raw.journal or raw.source_key)
         article, _ = Article.objects.update_or_create(
-            source=source,
-            url=raw.url,
+            doi=raw.doi,
             defaults={
+                "source": source,
+                "url": raw.url,
                 "title": raw.title,
                 "abstract": raw.abstract,
                 "full_text": raw.full_text,
                 "language": raw.language,
                 "publication_year": raw.year,
-                "doi": raw.doi,
                 "journal": journal,
                 "volume": raw.volume,
                 "issue": raw.issue,
@@ -162,7 +171,9 @@ class IngestionService:
             for order, full_name in enumerate(parsed_authors, start=1):
                 author, _ = Author.objects.get_or_create(full_name=full_name)
                 ArticleAuthor.objects.get_or_create(
-                    article=article, author=author, order=order,
+                    article=article,
+                    author=author,
+                    order=order,
                 )
         elif not article.article_authors.exists():
             author, _ = Author.objects.get_or_create(full_name="Unknown author")
@@ -170,7 +181,7 @@ class IngestionService:
         return ArticleEligibilityService.apply(article)
 
     @staticmethod
-    def _emit_progress(
+    def _emit_progress(  # noqa: PLR0913
         progress_callback: Callable[[dict], None] | None,
         *,
         total: int,
@@ -197,7 +208,7 @@ class IngestionService:
         )
 
     @classmethod
-    def ingest_query(
+    def ingest_query(  # noqa: PLR0913
         cls,
         query: str,
         source_keys: Iterable[str] | None = None,
@@ -283,14 +294,12 @@ class IngestionService:
 
         # Post-ingestion: backfill missing metadata via DOI
         if saved:
-            from apps.ingestion.doi_enrichment import DoiEnrichmentService
-
             DoiEnrichmentService.enrich_sync(saved)
 
         return saved
 
     @classmethod
-    def _process_single_source(
+    def _process_single_source(  # noqa: PLR0913
         cls,
         *,
         source_key: str,
@@ -391,6 +400,12 @@ class IngestionService:
         articles: list[Article] = []
         for raw in enriched_raws:
             if not raw.doi or not raw.doi.startswith("10."):
+                logger.warning(
+                    "ingestion: dropping article without valid DOI",
+                    source_key=source_key,
+                    url=raw.url,
+                    title=raw.title[:120],
+                )
                 continue
             article = cls._save_article(raw)
             articles.append(article)
@@ -406,7 +421,7 @@ class IngestionService:
                     "enrich_seconds": enrich_seconds,
                     "save_seconds": save_seconds,
                     "total_seconds": total_seconds,
-                    "articles_count": len(enriched_raws),
+                    "articles_count": len(articles),
                 },
             )
         cls._emit_progress(

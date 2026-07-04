@@ -1,12 +1,14 @@
+"""Async healthcheck endpoint reporting database and cache status."""
+
 from __future__ import annotations
 
 from asgiref.sync import sync_to_async
 from django.core.cache import cache
 from django.db import connection
-from django.http import JsonResponse
+from django.http import HttpRequest, JsonResponse
 
 
-async def healthcheck_view(request):
+async def healthcheck_view(request: HttpRequest) -> JsonResponse:
     """Report database and cache health without blocking the event loop."""
     if request.method != "GET":
         return JsonResponse({"detail": "Method not allowed."}, status=405)

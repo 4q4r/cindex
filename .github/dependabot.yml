@@ -1,0 +1,117 @@
+---
+version: 2
+
+# Strict production dependency updates (best practices, GitHub Docs 2026).
+# - Patch + minor updates grouped per ecosystem to minimize PR noise.
+# - Major updates stay individual so each breaking bump gets its own review.
+# - Security updates grouped separately so they ship on a fast lane
+#   independent of routine version-update batches (safeguard.sh 2026).
+# - Weekly cadence, low open-PR caps, conventional commit prefixes,
+#   rebase-strategy disabled to avoid CI churn on small teams.
+# - Labels limited to ones Dependabot auto-creates (dependencies + the
+#   ecosystem label) so no label is silently dropped for not existing.
+
+updates:
+  # Python backend (pyproject.toml + uv.lock at repo root).
+  - package-ecosystem: pip
+    directory: "/"
+    schedule:
+      interval: weekly
+      day: monday
+      time: "06:00"
+      timezone: "UTC"
+    open-pull-requests-limit: 5
+    rebase-strategy: disabled
+    labels:
+      - dependencies
+      - python
+    commit-message:
+      prefix: "deps(python)"
+      include: scope
+    groups:
+      python-security:
+        applies-to: security-updates
+        update-types:
+          - patch
+          - minor
+          - major
+      python-production:
+        applies-to: version-updates
+        update-types:
+          - patch
+          - minor
+      python-dev:
+        applies-to: version-updates
+        dependency-type: development
+        update-types:
+          - patch
+          - minor
+
+  # Frontend (frontend/package.json + bun.lock, managed with bun not npm).
+  - package-ecosystem: npm
+    directory: "/frontend"
+    schedule:
+      interval: weekly
+      day: monday
+      time: "06:00"
+      timezone: "UTC"
+    open-pull-requests-limit: 5
+    rebase-strategy: disabled
+    labels:
+      - dependencies
+      - npm
+    commit-message:
+      prefix: "deps(frontend)"
+      include: scope
+    groups:
+      frontend-security:
+        applies-to: security-updates
+        update-types:
+          - patch
+          - minor
+          - major
+      frontend-production:
+        applies-to: version-updates
+        update-types:
+          - patch
+          - minor
+      frontend-dev:
+        applies-to: version-updates
+        dependency-type: development
+        update-types:
+          - patch
+          - minor
+
+  # Docker images (Dockerfile + docker-compose.yml).
+  - package-ecosystem: docker
+    directory: "/"
+    schedule:
+      interval: weekly
+      day: monday
+      time: "06:00"
+      timezone: "UTC"
+    open-pull-requests-limit: 3
+    rebase-strategy: disabled
+    labels:
+      - dependencies
+      - docker
+    commit-message:
+      prefix: "deps(docker)"
+      include: scope
+
+  # GitHub Actions used in CI workflows.
+  - package-ecosystem: github-actions
+    directory: "/"
+    schedule:
+      interval: weekly
+      day: monday
+      time: "06:00"
+      timezone: "UTC"
+    open-pull-requests-limit: 3
+    rebase-strategy: disabled
+    labels:
+      - dependencies
+      - github_actions
+    commit-message:
+      prefix: "deps(ci)"
+      include: scope

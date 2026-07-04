@@ -13,7 +13,6 @@ from apps.ingestion.models import LocalImportFile
 
 def test_parse_local_import_metadata_extracts_fields() -> None:
     """Filename metadata must be parsed into structured fields."""
-
     path = Path(
         "title=AI in medicine__authors=Jane Doe;John Smith__doi=10.1234%2Fexample.1"
         "__year=2024__journal=Test Journal__source=pubmed.pdf"
@@ -33,7 +32,6 @@ def test_scan_drop_dir_ingests_and_skips_unchanged_file(
     monkeypatch: object, tmp_path: Path, db
 ) -> None:
     """Scan must ingest changed files and skip unchanged ones."""
-
     drop_dir = tmp_path / "local_imports"
     drop_dir.mkdir()
     file_path = drop_dir / (
@@ -83,7 +81,6 @@ def test_extract_local_import_text_uses_ocr_for_garbled_pdf(
     monkeypatch, tmp_path: Path
 ) -> None:
     """PDF local import extraction should use OCR when native text is garbled."""
-
     monkeypatch.setattr(
         local_imports.pymupdf, "open", lambda *args, **kwargs: _OcrDocument()
     )

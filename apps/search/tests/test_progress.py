@@ -4,7 +4,7 @@ from apps.search.models import SearchWaitStat
 from apps.search.progress import get_search_wait_stats
 
 
-def test_get_search_wait_stats_empty(db):
+def test_get_search_wait_stats_empty(db) -> None:
     """With no completions, stats must return None for both averages."""
     stats = get_search_wait_stats()
 
@@ -12,7 +12,7 @@ def test_get_search_wait_stats_empty(db):
     assert stats["with_enrichment_seconds"] is None
 
 
-def test_record_completion_updates_running_average(db):
+def test_record_completion_updates_running_average(db) -> None:
     """Each completion averages with the previous value: new = (old + dur) / 2."""
     SearchWaitStat.record_completion(False, 30.0)
     SearchWaitStat.record_completion(False, 50.0)
@@ -26,7 +26,7 @@ def test_record_completion_updates_running_average(db):
     assert stats["without_enrichment_seconds"] == 33
 
 
-def test_record_completion_separates_kinds(db):
+def test_record_completion_separates_kinds(db) -> None:
     """With and without enrichment must be tracked separately."""
     SearchWaitStat.record_completion(False, 20.0)
     SearchWaitStat.record_completion(True, 100.0)
@@ -38,7 +38,7 @@ def test_record_completion_separates_kinds(db):
     assert stats["with_enrichment_seconds"] == 95
 
 
-def test_record_completion_ignores_negative_duration(db):
+def test_record_completion_ignores_negative_duration(db) -> None:
     """Negative durations must be ignored."""
     SearchWaitStat.record_completion(False, 10.0)
     SearchWaitStat.record_completion(False, -5.0)

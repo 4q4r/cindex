@@ -1,3 +1,5 @@
+"""Recovery helpers that requeue interrupted search jobs after a worker restart."""
+
 from __future__ import annotations
 
 from typing import Final
@@ -19,7 +21,9 @@ def resume_running_search_jobs() -> list[str]:
         The list of job IDs that were requeued for resumption.
 
     """
-    from apps.search.tasks import run_search_job
+    from apps.search.tasks import (  # noqa: PLC0415  # lazy import to avoid circular dependency
+        run_search_job,
+    )
 
     resumed_job_ids: list[str] = []
     running_jobs = SearchJob.objects.filter(status="running", finished_at__isnull=True)
