@@ -10,6 +10,8 @@
     "lint:check": "eslint . --max-warnings 0"
   },
   "dependencies": {
+    "@fontsource/atkinson-hyperlegible": "^5.2.8",
+    "@fontsource/crimson-pro": "^5.2.8",
     "clsx": "^2.1.1",
     "lucide-react": "^1.11.0",
     "react": "^19.2.5",
