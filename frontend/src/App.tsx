@@ -415,7 +415,7 @@ export default function App() {
                           handlePageChange(currentPage - 1);
                         }}
                         disabled={currentPage === 1}
-                        className="flex items-center gap-1 px-3 py-2 text-xs text-text-secondary hover:text-text-primary bg-bg-elevated border border-border-default rounded-lg disabled:opacity-30 disabled:cursor-not-allowed transition-colors"
+                        className="flex min-h-[44px] items-center gap-1 px-3 py-2.5 text-xs text-text-secondary hover:text-text-primary bg-bg-elevated border border-border-default rounded-lg disabled:opacity-30 disabled:cursor-not-allowed transition-colors"
                       >
                         <ChevronLeft className="w-4 h-4" />
                         Назад
@@ -438,7 +438,7 @@ export default function App() {
                                 onClick={() => {
                                   handlePageChange(page);
                                 }}
-                                className={`w-9 h-9 rounded-lg text-xs font-medium transition-colors ${
+                                className={`min-w-[44px] min-h-[44px] rounded-lg text-xs font-medium transition-colors ${
                                   page === currentPage
                                     ? "bg-accent text-white"
                                     : "text-text-secondary hover:bg-bg-hover hover:text-text-primary"
@@ -456,7 +456,7 @@ export default function App() {
                           handlePageChange(currentPage + 1);
                         }}
                         disabled={currentPage === totalPages}
-                        className="flex items-center gap-1 px-3 py-2 text-xs text-text-secondary hover:text-text-primary bg-bg-elevated border border-border-default rounded-lg disabled:opacity-30 disabled:cursor-not-allowed transition-colors"
+                        className="flex min-h-[44px] items-center gap-1 px-3 py-2.5 text-xs text-text-secondary hover:text-text-primary bg-bg-elevated border border-border-default rounded-lg disabled:opacity-30 disabled:cursor-not-allowed transition-colors"
                       >
                         Далее
                         <ChevronRight className="w-4 h-4" />
