@@ -1568,16 +1568,19 @@ class ExaConnector(AsyncApiConnector):
         r")\s*[,.]?\s*)+",
         re.IGNORECASE,
     )
-    _SECTION_HEADER_RE = re.compile(
-        r"^(?:###\s*)?(?:Subjects?|Keywords?|References|Bibliography"
+    _SECTION_HEADER_KEYWORDS = (
+        r"Subjects?|Keywords?|References|Bibliography"
         r"|Cited\s+by|Cite\s+(?:this\s+)?article|Related\s+articles"
         r"|Download\s+PDF|Share|Figures?|Tables?|Acknowledgments?"
         r"|Appendix|Supplementary|Copyright|License|Publisher\s+note"
         r"|Funding|Data\s+availability|Code\s+availability"
         r"|Ethics\s+declarations?|Author\s+information"
         r"|Author\s+contributions?|Competing\s+interests?"
-        r"|Additional\s+information|About\s+this\s+article|Comments)"
-        r"\s*:?\s*$",
+        r"|Additional\s+information|About\s+this\s+article|Comments"
+    )
+    _SECTION_HEADER_RE = re.compile(
+        rf"^(?:###\s*)?(?:{_SECTION_HEADER_KEYWORDS})\s*:?\s*$"
+        rf"|(?:###\s*)(?:{_SECTION_HEADER_KEYWORDS})\b\s*:?\s*",
         re.IGNORECASE | re.MULTILINE,
     )
 
