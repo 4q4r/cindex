@@ -18,7 +18,6 @@ dependencies = [
   "uvicorn>=0.30",
   "gunicorn>=23.0",
   "cloudscraper>=1.2.71",
-  "js2py>=0.74",
   "browserforge>=1.2.4",
   "websockets>=14.2",
   "uvicorn-worker>=0.4.0",
