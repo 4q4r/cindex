@@ -1,3 +1,7 @@
+import pytest
+from django.db import IntegrityError, transaction
+
+from apps.articles.models import Article, Source
 from apps.ingestion.connectors import RawArticle
 from apps.ingestion.services import IngestionService
 
@@ -165,3 +169,49 @@ def test_ingestion_skips_articles_without_doi(monkeypatch, db) -> None:
     )
 
     assert len(articles) == 0
+
+
+def test_article_doi_is_unique(db) -> None:
+    """Article.doi must enforce uniqueness at the database level."""
+    source = Source.objects.create(key="s1", name="S1", base_url="https://x")
+    Article.objects.create(source=source, title="t1", url="https://x/1", doi="10.1/a")
+    with pytest.raises(IntegrityError), transaction.atomic():
+        Article.objects.create(
+            source=source, title="t2", url="https://x/2", doi="10.1/a"
+        )
+
+
+def test_save_article_upserts_by_doi(db) -> None:
+    """_save_article upserts by DOI across sources.
+
+    A second ingestion of the same DOI from a different source must update
+    the existing row instead of creating a duplicate Article.
+    """
+    raw_a = RawArticle(
+        source_key="src-a",
+        title="From A",
+        url="https://a/1",
+        abstract="",
+        full_text="a",
+        language="en",
+        year=2024,
+        doi="10.5555/shared",
+        journal="J",
+    )
+    raw_b = RawArticle(
+        source_key="src-b",
+        title="From B",
+        url="https://b/1",
+        abstract="",
+        full_text="b",
+        language="en",
+        year=2024,
+        doi="10.5555/shared",
+        journal="J",
+    )
+    first = IngestionService._save_article(raw_a)
+    second = IngestionService._save_article(raw_b)
+    assert first.pk == second.pk
+    assert second.title == "From B"
+    assert second.source.key == "src-b"
+    assert Article.objects.filter(doi="10.5555/shared").count() == 1
