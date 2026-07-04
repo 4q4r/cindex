@@ -7,7 +7,6 @@ api_connectors.py and use aiohttp instead.
 
 from __future__ import annotations
 
-import json
 import os
 import re
 import time
@@ -64,7 +63,16 @@ class CiNiiConnector(BaseConnector):
         payload: dict,
         limit: int,
     ) -> list[RawArticle]:
-        """Extract from payload."""
+        """Extract from payload.
+
+        CiNii OpenSearch items carry the publication date as
+        ``prism:publicationDate`` (``dc:date`` is usually absent), the DOI as
+        a ``dc:identifier`` entry typed ``cir:DOI``, and authors as the
+        ``dc:creator`` list. The ``@id``/``link`` CRID is a long numeric
+        identifier whose first four digits (often ``1970``) are not a year,
+        so the year is read from the explicit date field first and the CRID
+        is never fed to the year scanner.
+        """
         entries = payload.get("items", [])
         items: list[RawArticle] = []
         for entry in entries[:limit]:
@@ -79,30 +87,77 @@ class CiNiiConnector(BaseConnector):
                 url_value = link_info
             if not title or not url_value:
                 continue
-            journal = str(
-                entry.get("prism:publicationName")
-                or entry.get("dc:publisher")
-                or entry.get("dc:source")
-                or "CiNii",
-            )
+            journal = self._extract_cinii_journal(entry)
             abstract = str(entry.get("description") or "")
-            combined = " ".join(
-                [title, abstract, journal, json.dumps(entry, ensure_ascii=False)],
+            authors_list = self._extract_cinii_authors(entry)
+            doi = self._extract_cinii_doi(entry) or self._extract_doi(
+                f"{title} {abstract}",
             )
+            year = self._extract_year(
+                str(entry.get("prism:publicationDate") or entry.get("dc:date") or ""),
+            ) or self._extract_year(f"{title} {abstract} {journal}")
+            authors = " ".join(authors_list).strip()
+            combined = f"{title} {abstract} {authors} {journal}"
             items.append(
                 self._raw(
                     title=title,
                     url=url_value,
                     abstract=abstract,
                     full_text=combined,
-                    doi=self._extract_doi(combined),
-                    year=self._extract_year(
-                        " ".join([str(entry.get("dc:date", "")), combined]),
-                    ),
+                    doi=doi,
+                    year=year,
                     journal=journal,
+                    authors=authors_list or None,
                 ),
             )
         return items
+
+    @staticmethod
+    def _extract_cinii_journal(entry: dict) -> str:
+        """Return the cleanest journal name from a CiNii item.
+
+        Prefers ``prism:publicationName``, then ``dc:publisher``, then a
+        string-valued ``dc:source``. ``dc:source`` may be a dict (``@id`` URI)
+        or a list of dicts, which would render as garbage, so non-string
+        shapes are skipped.
+        """
+        for key in ("prism:publicationName", "dc:publisher"):
+            value = entry.get(key)
+            if isinstance(value, str) and value.strip():
+                return value.strip()
+        source = entry.get("dc:source")
+        if isinstance(source, str) and source.strip():
+            return source.strip()
+        if isinstance(source, list):
+            for item in source:
+                if isinstance(item, str) and item.strip():
+                    return item.strip()
+        return "CiNii"
+
+    @staticmethod
+    def _extract_cinii_authors(entry: dict) -> list[str]:
+        """Return the ``dc:creator`` authors as a list of names."""
+        creator = entry.get("dc:creator")
+        if isinstance(creator, str):
+            return [creator] if creator.strip() else []
+        if isinstance(creator, list):
+            return [str(c).strip() for c in creator if str(c).strip()]
+        return []
+
+    @staticmethod
+    def _extract_cinii_doi(entry: dict) -> str:
+        """Return the DOI from a ``cir:DOI`` ``dc:identifier`` entry."""
+        identifiers = entry.get("dc:identifier")
+        if not isinstance(identifiers, list):
+            return ""
+        for ident in identifiers:
+            if not isinstance(ident, dict):
+                continue
+            if str(ident.get("@type", "")).lower() == "cir:doi":
+                value = str(ident.get("@value", "")).strip()
+                if value:
+                    return value
+        return ""
 
 
 class SciEngineConnector(BaseConnector):

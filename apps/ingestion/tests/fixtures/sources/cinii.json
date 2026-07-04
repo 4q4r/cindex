@@ -5,13 +5,47 @@
   "@type": "channel",
   "items": [
     {
+      "@id": "https://cir.nii.ac.jp/crid/1970012345678901234",
+      "@type": "item",
       "title": "CiNii Live Hook Article 2024",
       "link": {
-        "@id": "https://cir.nii.ac.jp/crid/1234567890"
+        "@id": "https://cir.nii.ac.jp/crid/1970012345678901234"
       },
+      "rdfs:seeAlso": {
+        "@id": "https://cir.nii.ac.jp/crid/1970012345678901234.json"
+      },
+      "dc:creator": ["Sato, Hanako", "Tanaka, Ichiro"],
+      "dc:type": "Article",
+      "prism:publicationName": "CiNii Journal",
+      "prism:publicationDate": "2024-05-01",
       "description": "Peer reviewed article with DOI 10.1234/cinii.2024.1",
-      "dc:date": "2024-05-01",
-      "prism:publicationName": "CiNii Journal"
+      "dc:identifier": [
+        { "@type": "cir:NAID", "@value": "10000000000" },
+        { "@type": "cir:DOI", "@value": "10.1234/cinii.2024.1" },
+        {
+          "@type": "cir:URI",
+          "@value": "https://example.org/doi/pdf/10.1234/cinii.2024.1"
+        }
+      ],
+      "dc:source": [{ "@id": "https://ci.nii.ac.jp/ncid/AA00000000#entity" }]
+    },
+    {
+      "@id": "https://cir.nii.ac.jp/crid/1970098765432109876",
+      "@type": "item",
+      "title": "Reinforcement and systemic machine learning for decision making",
+      "link": {
+        "@id": "https://cir.nii.ac.jp/crid/1970098765432109876"
+      },
+      "dc:creator": "Kulkarni, Parag",
+      "dc:type": "Book",
+      "dc:publisher": "IEEE Press",
+      "prism:publicationDate": "2012",
+      "description": "IEEE Press series on systems science and engineering, 1",
+      "dc:identifier": [
+        { "@type": "cir:NCID", "@value": "BB11467443" },
+        { "@type": "cir:ISBN", "@value": "9780470919996" }
+      ],
+      "dc:source": [{ "@id": "https://ci.nii.ac.jp/ncid/BB11467443#entity" }]
     }
   ]
 }
