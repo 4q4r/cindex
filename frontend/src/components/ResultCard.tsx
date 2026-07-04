@@ -63,7 +63,7 @@ function CriterionBadge({
 }) {
   return (
     <div
-      className={`flex items-center gap-1.5 px-2 py-0.5 rounded text-[11px] font-medium ${
+      className={`flex items-center gap-1.5 px-2 py-0.5 rounded text-xs font-medium ${
         value
           ? "bg-success-muted/40 text-success"
           : "bg-bg-elevated text-text-tertiary"
@@ -103,7 +103,7 @@ function ConfidenceBadge({ score }: { score: number }) {
 
   return (
     <div
-      className={`flex items-center gap-1 px-2 py-0.5 rounded text-[11px] font-medium ${color}`}
+      className={`flex items-center gap-1 px-2 py-0.5 rounded text-xs font-medium ${color}`}
     >
       <span>{label}</span>
     </div>
@@ -163,7 +163,7 @@ export const ResultCard = memo(function ResultCard({
           {identifiers.map(([label, value]) => (
             <span
               key={label}
-              className="text-[11px] text-text-tertiary bg-bg-elevated px-2 py-0.5 rounded"
+              className="text-xs text-text-tertiary bg-bg-elevated px-2 py-0.5 rounded"
             >
               {label}:{" "}
               <span className="text-text-secondary font-mono">{value}</span>
@@ -207,7 +207,7 @@ export const ResultCard = memo(function ResultCard({
           onClick={() => {
             setShowCitation(!showCitation);
           }}
-          className="text-[11px] uppercase tracking-wider text-text-tertiary hover:text-text-secondary flex items-center gap-1 transition-colors"
+          className="text-xs uppercase tracking-wider text-text-tertiary hover:text-text-secondary flex items-center gap-1 transition-colors"
         >
           {showCitation ? (
             <ChevronUp className="w-3 h-3" />
@@ -255,7 +255,7 @@ export const ResultCard = memo(function ResultCard({
         </a>
       </div>
 
-      <div className="flex items-center gap-4 mt-3 text-[11px] text-text-tertiary">
+      <div className="flex items-center gap-4 mt-3 text-xs text-text-tertiary">
         <div className="flex items-center gap-1">
           <Clock className="w-3 h-3" />
           <span>
@@ -269,7 +269,7 @@ export const ResultCard = memo(function ResultCard({
         onClick={() => {
           setExpanded(!expanded);
         }}
-        className="mt-3 text-[11px] uppercase tracking-wider text-text-tertiary hover:text-text-secondary flex items-center gap-1 transition-colors"
+        className="mt-3 text-xs uppercase tracking-wider text-text-tertiary hover:text-text-secondary flex items-center gap-1 transition-colors"
       >
         {expanded ? (
           <ChevronUp className="w-3 h-3" />
