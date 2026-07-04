@@ -1,0 +1,16 @@
+{
+  "records": [
+    {
+      "title": "Machine learning for neuroscience",
+      "abstract": "Machine learning methods are used for neuroscience problems.",
+      "journal": "Nature Neuroscience",
+      "year": 2025,
+      "doi": "",
+      "journal_ref": "Nature Neuroscience 2025",
+      "url": "https://arxiv.org/abs/2501.00001",
+      "authors": [
+        "Jane Doe"
+      ]
+    }
+  ]
+}

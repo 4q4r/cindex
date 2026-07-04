@@ -1,0 +1,16 @@
+__pycache__/
+*.py[cod]
+*.sqlite3
+.venv/
+.env
+.pytest_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+node_modules/
+.next/
+.codex-state/
+.agora-code/
+secrets/
+.claude-state/
+tmp/

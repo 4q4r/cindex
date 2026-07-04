@@ -1,0 +1,20 @@
+{
+  "resultList": {
+    "result": [
+      {
+        "title": "Europe PMC Fixture Article",
+        "abstractText": "Peer reviewed fixture abstract",
+        "journalTitle": "EPMC Journal",
+        "doi": "10.1234/epmc.fixture",
+        "pubYear": "2026",
+        "fullTextUrlList": {
+          "fullTextUrl": [
+            {
+              "url": "https://example.org/epmc/1"
+            }
+          ]
+        }
+      }
+    ]
+  }
+}

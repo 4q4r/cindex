@@ -1,0 +1,17 @@
+{
+  "hits": {
+    "hits": [
+      {
+        "id": 12345,
+        "metadata": {
+          "title": "Zenodo Open Science Article 2024",
+          "description": "An open science article about machine learning.",
+          "doi": "10.5281/zenodo.12345",
+          "publication_date": "2024-03-15",
+          "creators": [{"name": "Test, Author"}],
+          "journal": {"title": "Zenodo Test Journal"}
+        }
+      }
+    ]
+  }
+}

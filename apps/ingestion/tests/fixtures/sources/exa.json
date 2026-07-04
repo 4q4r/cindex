@@ -1,0 +1,18 @@
+{
+  "results": [
+    {
+      "title": "Artificial intelligence in neurobiology: current applications and future prospects",
+      "url": "https://example.org/articles/ai-neurobiology",
+      "publishedDate": "2024-03-18",
+      "author": "Jane Doe",
+      "text": "This research paper reviews how machine learning and artificial intelligence are used in neurobiology for classification, prediction, and brain signal analysis. The article discusses peer-reviewed evidence, translational workflows, and open questions for future neuroscience research."
+    },
+    {
+      "title": "Machine learning approaches for medical diagnostics",
+      "url": "https://example.org/articles/ml-medical-diagnostics",
+      "publishedDate": "2023-11-02",
+      "author": "John Smith",
+      "text": "A peer-reviewed research paper on machine learning in medical diagnostics, covering clinical validation, imaging, and biomarker discovery."
+    }
+  ]
+}

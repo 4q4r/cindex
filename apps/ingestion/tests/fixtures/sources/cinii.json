@@ -1,0 +1,17 @@
+{
+  "@context": {
+    "@vocab": "http://purl.org/rss/1.0/"
+  },
+  "@type": "channel",
+  "items": [
+    {
+      "title": "CiNii Live Hook Article 2024",
+      "link": {
+        "@id": "https://cir.nii.ac.jp/crid/1234567890"
+      },
+      "description": "Peer reviewed article with DOI 10.1234/cinii.2024.1",
+      "dc:date": "2024-05-01",
+      "prism:publicationName": "CiNii Journal"
+    }
+  ]
+}

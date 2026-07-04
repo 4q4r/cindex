@@ -1,0 +1,1 @@
+{"result":{"hits":{"@sent":1,"@total":1,"hit":[{"info":{"authors":{"author":[{"text":"Test Author"}]},"title":"DBLP Test Article on Machine Learning","venue":"Test Conference","year":"2024","type":"Conference and Workshop Papers","key":"conf/test/2024","url":"https://dblp.org/rec/conf/test/2024","doi":"10.1111/dblp.test.2024"}}]}}}

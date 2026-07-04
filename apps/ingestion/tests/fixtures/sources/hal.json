@@ -1,0 +1,1 @@
+{"response":{"numFound":1,"start":0,"docs":[{"halId_s":"hal-12345","title_s":["HAL Test Article on Machine Learning"],"authFullName_s":["Test Author"],"abstract_s":["A study on machine learning applications."],"doiId_s":"10.5555/hal.test.2024","publicationDateY_i":2024,"uri_s":"https://hal.archives-ouvertes.fr/hal-12345"}]}}

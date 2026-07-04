@@ -1,0 +1,14 @@
+{
+  "resultados": [
+    {
+      "cveArticulo": "999999999001",
+      "titulo": "Machine Learning Redalyc Evidence Study 2025 DOI 10.1234/redalyc.2025",
+      "resumen": "Peer reviewed machine learning article indexed in Scopus and Web of Science.",
+      "nomRevista": "Journal of Redalyc",
+      "doiTitulo": "10.1234/redalyc.2025",
+      "anioArticulo": "2025"
+    }
+  ],
+  "filtros": [],
+  "totalResultados": 1
+}

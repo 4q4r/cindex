@@ -1,0 +1,13 @@
+{
+  "collection": [
+    {
+      "doi": "10.1101/2024.02.20.654321",
+      "title": "Clinical Machine Learning Study 2024",
+      "authors": "Brown K; White M",
+      "abstract": "A clinical study applying machine learning to patient data.",
+      "date": "2024-02-20",
+      "category": "clinical_epidemiology",
+      "version": "1"
+    }
+  ]
+}

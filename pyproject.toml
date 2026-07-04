@@ -1,0 +1,78 @@
+[project]
+name = "cindex"
+version = "0.1.0"
+description = "Cross-regional scholarly citation search engine"
+requires-python = ">=3.13"
+dependencies = [
+  "Django>=5.2",
+  "djangorestframework>=3.16",
+  "drf-spectacular>=0.28",
+  "pydantic-settings>=2.3",
+  "django-redis>=5.4",
+  "celery[redis]>=5.5",
+  "redis>=5.0",
+  "psycopg[binary]>=3.2",
+  "beautifulsoup4>=4.12",
+  "lxml>=5.2",
+  "python-dotenv>=1.0",
+  "uvicorn>=0.30",
+  "gunicorn>=23.0",
+  "cloudscraper>=1.2.71",
+  "js2py>=0.74",
+  "browserforge>=1.2.4",
+  "websockets>=14.2",
+  "uvicorn-worker>=0.4.0",
+  "pymupdf>=1.27.2",
+  "aiohttp>=3.13.5",
+  "deep-translator>=1.11.4",
+  "django-structlog[celery]>=10.0",
+]
+
+[dependency-groups]
+dev = [
+  "pytest>=8.3",
+  "pytest-django>=4.9",
+  "pytest-cov>=5.0",
+  "factory-boy>=3.3",
+  "ruff>=0.8",
+]
+
+[tool.ruff]
+line-length = 88
+target-version = "py313"
+exclude = [".venv", "node_modules", "*/migrations/*", "frontend/.next"]
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "B", "UP", "DJ", "SIM", "RUF", "BLE", "C90"]
+
+[tool.pytest.ini_options]
+DJANGO_SETTINGS_MODULE = "config.settings"
+python_files = ["test_*.py"]
+python_classes = ["Test*"]
+python_functions = ["test_*"]
+addopts = [
+  "--strict-markers",
+  "--strict-config",
+  "-ra",
+  "--tb=short",
+  "--cov=apps",
+  "--cov-report=term-missing",
+  "--cov-fail-under=80",
+]
+markers = [
+  "live_smoke: runs live network smoke checks for source connectors",
+  "live_quality: runs strict non-empty quality gate across source/query matrix",
+]
+
+[tool.coverage.run]
+source = ["apps"]
+omit = [
+  "*/migrations/*",
+  "*/tests/*",
+  "apps/core/exceptions.py",
+  "apps/core/healthcheck.py",
+  "apps/ingestion/connectors/html_connectors.py",
+  "apps/ingestion/connectors/api_connectors.py",
+  "apps/ingestion/connectors/base.py",
+  "apps/ingestion/connectors/registry.py",
+]
