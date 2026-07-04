@@ -44,7 +44,9 @@ function SelectDropdown({
         setOpen(false);
     };
     document.addEventListener("mousedown", handler);
-    return () => document.removeEventListener("mousedown", handler);
+    return () => {
+      document.removeEventListener("mousedown", handler);
+    };
   }, []);
 
   const current = options.find((o) => o.value === value);
@@ -56,7 +58,9 @@ function SelectDropdown({
       </div>
       <button
         type="button"
-        onClick={() => setOpen(!open)}
+        onClick={() => {
+          setOpen(!open);
+        }}
         aria-label={label}
         aria-haspopup="listbox"
         className="w-full flex items-center justify-between bg-bg-input border border-border-default rounded-lg px-3 py-2 text-sm text-text-primary hover:border-accent/30 transition-colors"
@@ -103,7 +107,9 @@ function CheckboxItem({
   return (
     <button
       type="button"
-      onClick={() => onChange(!checked)}
+      onClick={() => {
+        onChange(!checked);
+      }}
       className="flex items-center gap-2.5 cursor-pointer group py-1 text-left"
     >
       <div
@@ -138,12 +144,12 @@ export function FilterPanel({
         label="Стиль цитирования"
         value={filters.citationStyle}
         options={CITATION_STYLE_OPTIONS}
-        onChange={(v) =>
+        onChange={(v) => {
           updateFilter(
             "citationStyle",
             v as "gost2018" | "mla" | "apa" | "vancouver" | "ieee" | "harvard",
-          )
-        }
+          );
+        }}
       />
 
       <div>
@@ -154,17 +160,23 @@ export function FilterPanel({
           <CheckboxItem
             label="Только peer-reviewed/refereed"
             checked={filters.peerReviewedOnly}
-            onChange={(v) => updateFilter("peerReviewedOnly", v)}
+            onChange={(v) => {
+              updateFilter("peerReviewedOnly", v);
+            }}
           />
           <CheckboxItem
             label="Только индексируемые (Scopus/WoS и др.)"
             checked={filters.indexedOnly}
-            onChange={(v) => updateFilter("indexedOnly", v)}
+            onChange={(v) => {
+              updateFilter("indexedOnly", v);
+            }}
           />
           <CheckboxItem
             label="Исключить preprint и author manuscript"
             checked={filters.excludePreprints}
-            onChange={(v) => updateFilter("excludePreprints", v)}
+            onChange={(v) => {
+              updateFilter("excludePreprints", v);
+            }}
           />
         </div>
       </div>
@@ -180,7 +192,9 @@ export function FilterPanel({
             type="number"
             placeholder="От"
             value={filters.dateFrom}
-            onChange={(e) => updateFilter("dateFrom", e.target.value)}
+            onChange={(e) => {
+              updateFilter("dateFrom", e.target.value);
+            }}
             aria-label="Дата с"
             className="w-full bg-bg-input border border-border-default rounded-lg px-3 py-2 text-sm text-text-primary placeholder:text-text-tertiary focus:outline-none focus:border-accent/50 transition-colors"
             min="1900"
@@ -193,7 +207,9 @@ export function FilterPanel({
             type="number"
             placeholder="До"
             value={filters.dateTo}
-            onChange={(e) => updateFilter("dateTo", e.target.value)}
+            onChange={(e) => {
+              updateFilter("dateTo", e.target.value);
+            }}
             aria-label="Дата до"
             className="w-full bg-bg-input border border-border-default rounded-lg px-3 py-2 text-sm text-text-primary placeholder:text-text-tertiary focus:outline-none focus:border-accent/50 transition-colors"
             min="1900"
@@ -206,9 +222,9 @@ export function FilterPanel({
         label="Сортировка"
         value={filters.sortBy}
         options={SORT_OPTIONS}
-        onChange={(v) =>
-          updateFilter("sortBy", v as "relevance" | "newest" | "metadata")
-        }
+        onChange={(v) => {
+          updateFilter("sortBy", v as "relevance" | "newest" | "metadata");
+        }}
       />
     </div>
   );
@@ -230,6 +246,12 @@ export function FilterPanel({
           <div
             className="absolute inset-0 bg-black/60"
             onClick={onMobileClose}
+            onKeyDown={(e) => {
+              if (e.key === "Escape") onMobileClose();
+            }}
+            role="button"
+            tabIndex={0}
+            aria-label="Закрыть фильтры"
           />
           <div className="absolute left-0 top-0 bottom-0 w-[320px] max-w-[85vw] bg-bg-primary border-r border-border-default overflow-y-auto animate-slide-in-left">
             <div className="p-5">

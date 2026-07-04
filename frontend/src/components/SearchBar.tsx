@@ -31,7 +31,9 @@ export function SearchBar({
                 name="query"
                 type="text"
                 value={query}
-                onChange={(e) => onQueryChange(e.target.value)}
+                onChange={(e) => {
+                  onQueryChange(e.target.value);
+                }}
                 onKeyDown={handleKeyDown}
                 placeholder="Тема, ключевики, DOI, автор..."
                 aria-label="Тема, ключевики, DOI, автор"
@@ -41,7 +43,9 @@ export function SearchBar({
               {query && (
                 <button
                   type="button"
-                  onClick={() => onQueryChange("")}
+                  onClick={() => {
+                    onQueryChange("");
+                  }}
                   className="absolute right-3 top-1/2 -translate-y-1/2 p-1 text-text-tertiary hover:text-text-secondary transition-colors"
                   aria-label="Очистить запрос"
                 >
@@ -60,7 +64,7 @@ export function SearchBar({
           </div>
 
           <div className="flex items-center gap-4 mt-2 text-[11px] text-text-tertiary">
-            <span>"точная фраза" для точного совпадения</span>
+            <span>&quot;точная фраза&quot; для точного совпадения</span>
             <span className="text-border-default">|</span>
             <span>AND / OR для булевой логики</span>
             <span className="text-border-default">|</span>

@@ -51,8 +51,8 @@ export const Header = memo(function Header({
               }
             >
               {searchState === "idle"
-                ? `доступно ${activeSources} источников`
-                : `активно ${activeSources} из ${sourcesQueried}`}
+                ? `доступно ${String(activeSources)} источников`
+                : `активно ${String(activeSources)} из ${String(sourcesQueried)}`}
             </span>
           </div>
 

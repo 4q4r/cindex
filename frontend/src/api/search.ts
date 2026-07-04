@@ -35,7 +35,7 @@ export async function getSourceStats(
     signal,
   });
   if (!response.ok) {
-    throw new Error(`Source stats API failed: ${response.status}`);
+    throw new Error(`Source stats API failed: ${String(response.status)}`);
   }
   const data = (await response.json()) as {
     total?: number;
@@ -74,12 +74,10 @@ export function mapApiResult(
     doi: item.doi ?? "",
     identifiers: item.identifiers ?? {},
     eligibilityEvidence: {
-      peerReviewed: Boolean(item.eligibility_evidence.peer_reviewed),
-      indexed: Boolean(item.eligibility_evidence.indexed),
-      doiAndJournalCard: Boolean(
-        item.eligibility_evidence.doi_and_journal_card,
-      ),
-      notPreprint: Boolean(item.eligibility_evidence.not_preprint),
+      peerReviewed: item.eligibility_evidence.peer_reviewed,
+      indexed: item.eligibility_evidence.indexed,
+      doiAndJournalCard: item.eligibility_evidence.doi_and_journal_card,
+      notPreprint: item.eligibility_evidence.not_preprint,
     },
     eligibilityConfidence: {
       peerReviewed: normalizeConfidence(
@@ -111,7 +109,7 @@ export async function searchArticles(
   });
 
   if (!response.ok) {
-    throw new Error(`Search API failed: ${response.status}`);
+    throw new Error(`Search API failed: ${String(response.status)}`);
   }
 
   const data = (await response.json()) as ApiSearchResponse;
@@ -142,7 +140,7 @@ export async function createSearchJob(
     signal,
   });
   if (!response.ok) {
-    throw new Error(`Search job create failed: ${response.status}`);
+    throw new Error(`Search job create failed: ${String(response.status)}`);
   }
   const data = (await response.json()) as ApiSearchJobResponse;
   return {
@@ -191,7 +189,7 @@ export async function getSearchJob(
     signal,
   });
   if (!response.ok) {
-    throw new Error(`Search job get failed: ${response.status}`);
+    throw new Error(`Search job get failed: ${String(response.status)}`);
   }
   const data = (await response.json()) as ApiSearchJobResponse;
   return {
