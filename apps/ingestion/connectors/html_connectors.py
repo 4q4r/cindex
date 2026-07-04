@@ -583,12 +583,128 @@ class SciELOConnector(BaseConnector):
         "https://www.scielo.org.mx/oai/scielo-oai.php",
     )
 
+    _RSS_URL = "https://search.scielo.org/"
+
     def fetch(self, query: str, limit: int = 5) -> list[RawArticle]:
-        """Fetch records from the upstream source."""
+        """Fetch records from the upstream source.
+
+        Prefer the SciELO RSS keyword search (real relevance) over the
+        date-only OAI harvest, which returns arbitrary recent articles
+        unrelated to the query. The RSS endpoint throttles repeated requests
+        with HTTP 403, so a short backoff is applied before falling back to
+        OAI and then HTML.
+        """
         try:
-            return self._fetch_oai(query, limit)
+            items = self._fetch_rss(query, limit)
+            if items:
+                return items
         except ConnectorFetchError:
-            return self._fetch_html(query, limit)
+            pass
+        try:
+            items = self._fetch_oai(query, limit)
+            if items:
+                return items
+        except ConnectorFetchError:
+            pass
+        return self._fetch_html(query, limit)
+
+    def _fetch_rss(self, query: str, limit: int) -> list[RawArticle]:
+        """Fetch via the SciELO RSS search feed."""
+        params = {"q": query, "count": str(max(limit, 5)), "output": "rss"}
+        last_exc: ConnectorFetchError | None = None
+        for attempt in range(3):
+            try:
+                text = self._request_text(self._RSS_URL, params=params)
+            except ConnectorFetchError as exc:
+                last_exc = exc
+                time.sleep(8 * (attempt + 1))
+                continue
+            return self._parse_rss(text, query, limit)
+        msg = f"scielo: rss search throttled: {last_exc}"
+        raise ConnectorFetchError(msg)
+
+    def _parse_rss(
+        self,
+        xml_text: str,
+        query: str,  # noqa: ARG002  # RSS is a real keyword search; relevance is inherent
+        limit: int,
+    ) -> list[RawArticle]:
+        """Parse SciELO RSS items into RawArticles.
+
+        Titles are multilingual ``primary / secondary / tertiary`` strings;
+        the first segment is the article's primary title. The publication
+        year is encoded in the SciELO PID inside the resource link
+        (``S{issn}{YYYY}{volume}{issue}{article}-{collection}``).
+        """
+        soup = BeautifulSoup(xml_text, "xml")
+        items: list[RawArticle] = []
+        for node in soup.find_all("item"):
+            title_node = node.find("title")
+            title_raw = title_node.get_text(" ", strip=True) if title_node else ""
+            title = title_raw.split(" / ")[0].strip() if title_raw else ""
+            if not title:
+                continue
+            link_node = node.find("link")
+            url_value = link_node.get_text(strip=True) if link_node else ""
+            if not url_value:
+                continue
+            desc_node = node.find("description")
+            desc = desc_node.get_text(" ", strip=True) if desc_node else ""
+            author_node = node.find("author")
+            author = author_node.get_text(" ", strip=True) if author_node else ""
+            abstract = self._clean_rss_abstract(desc)
+            year = self._extract_year(url_value) or self._extract_year(desc)
+            doi = self._extract_doi(desc) or self._extract_doi(url_value)
+            journal = "SciELO"
+            combined = f"{title} {abstract} {author} {journal} {url_value} {desc}"
+            if not self._is_article_like_item(title, url_value, doi, year):
+                continue
+            items.append(
+                self._raw(
+                    title=title,
+                    url=url_value,
+                    abstract=abstract,
+                    full_text=combined,
+                    doi=doi,
+                    year=year,
+                    journal=journal,
+                ),
+            )
+            if len(items) >= limit:
+                break
+        return items
+
+    @staticmethod
+    def _clean_rss_abstract(desc: str) -> str:
+        """Strip the leading author list and language label from an RSS description.
+
+        SciELO RSS descriptions are structured as::
+
+            Autor(es): <author list> Resumo em <lang> <Resumen|Resumo|Abstract> <text>
+
+        The ``Resumo em <lang>`` token is a label meaning "Abstract in
+        <language>", not the abstract itself; the real abstract begins after
+        the language-specific header word that follows it. Return that block,
+        or the cleaned tail when no marker is present.
+        """
+        if not desc:
+            return ""
+        header = (
+            r"Resumo em \w+\s+(?:Resum[oa]s?|Resumen|Abstract|"
+            r"RESUM[OA]S?|RESUMEN|ABSTRACT)\b"
+        )
+        match = re.search(header, desc, re.IGNORECASE)
+        if match:
+            return desc[match.end() :].strip()[:1500]
+        marker = re.search(
+            r"(Resum[oa]s?|Resumen|Abstract|RESUM[OA]S?|RESUMEN|ABSTRACT)\b",
+            desc,
+            re.IGNORECASE,
+        )
+        if marker:
+            return desc[marker.end() :].strip()[:1500]
+        # No abstract block: the description is only the author list.
+        return ""
 
     def _parse_oai_record(self, rec: ET.Element) -> RawArticle | None:
         """Parse a single OAI-PMH record into a RawArticle.

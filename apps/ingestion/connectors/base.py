@@ -336,6 +336,11 @@ class BaseConnector:
         """Generate browser-like request headers."""
         headers = cls._get_header_generator().generate()
         headers.setdefault("Accept", "text/html,application/xhtml+xml,*/*")
+        # browserforge emits "Accept-Encoding: gzip, deflate, br" but the
+        # runtime image has no brotli decoder, so brotli responses would be
+        # returned as compressed bytes and ``response.text`` would yield
+        # garbage. Restrict to encodings urllib3 decodes transparently.
+        headers["Accept-Encoding"] = "gzip, deflate"
         return dict(headers)
 
     @classmethod
