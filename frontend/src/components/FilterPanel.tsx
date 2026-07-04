@@ -193,7 +193,7 @@ function SelectDropdown({
           id={listboxId}
           role="listbox"
           aria-labelledby={labelId}
-          className="absolute top-full left-0 right-0 mt-1 bg-bg-elevated border border-border-default rounded-lg shadow-xl z-50 overflow-hidden"
+          className="absolute top-full left-0 right-0 mt-1 bg-bg-elevated border border-border-default rounded-lg shadow-xl z-dropdown overflow-hidden"
         >
           {options.map((opt, i) => {
             const selected = opt.value === value;
@@ -475,7 +475,7 @@ export function FilterPanel({
       </aside>
 
       {isMobileOpen && (
-        <div className="fixed inset-0 z-[60] lg:hidden">
+        <div className="fixed inset-0 z-drawer lg:hidden">
           <button
             type="button"
             onClick={onMobileClose}

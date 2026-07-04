@@ -229,7 +229,7 @@ export const ResultCard = memo(function ResultCard({
           onClick={() => {
             onCopy(citation, "citation");
           }}
-          className="flex items-center gap-1.5 text-xs text-text-tertiary hover:text-accent-text bg-bg-elevated border border-border-default px-3 py-1.5 rounded-lg transition-colors"
+          className="press-feedback flex items-center gap-1.5 text-xs text-text-tertiary hover:text-accent-text bg-bg-elevated border border-border-default px-3 py-1.5 rounded-lg transition-colors"
         >
           <Copy className="w-3.5 h-3.5" />
           Копировать цитирование
@@ -239,7 +239,7 @@ export const ResultCard = memo(function ResultCard({
           onClick={() => {
             onCopy(result.preview, "preview");
           }}
-          className="flex items-center gap-1.5 text-xs text-text-tertiary hover:text-accent-text bg-bg-elevated border border-border-default px-3 py-1.5 rounded-lg transition-colors"
+          className="press-feedback flex items-center gap-1.5 text-xs text-text-tertiary hover:text-accent-text bg-bg-elevated border border-border-default px-3 py-1.5 rounded-lg transition-colors"
         >
           <Copy className="w-3.5 h-3.5" />
           Копировать превью
@@ -248,7 +248,7 @@ export const ResultCard = memo(function ResultCard({
           href={doi ? `https://doi.org/${doi}` : result.url}
           target="_blank"
           rel="noopener noreferrer"
-          className="flex items-center gap-1.5 text-xs text-text-tertiary hover:text-accent-text bg-bg-elevated border border-border-default px-3 py-1.5 rounded-lg transition-colors"
+          className="press-feedback flex items-center gap-1.5 text-xs text-text-tertiary hover:text-accent-text bg-bg-elevated border border-border-default px-3 py-1.5 rounded-lg transition-colors"
         >
           <ExternalLink className="w-3.5 h-3.5" />
           Открыть источник

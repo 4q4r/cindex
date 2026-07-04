@@ -20,7 +20,7 @@ export function SearchBar({
   };
 
   return (
-    <div className="sticky top-0 z-40 bg-bg-primary/90 backdrop-blur-sm border-b border-border-subtle">
+    <div className="sticky top-0 z-sticky bg-bg-primary/90 backdrop-blur-sm border-b border-border-subtle">
       <div className="px-6 py-4">
         <div className="max-w-3xl">
           <div className="relative flex items-center gap-2">
@@ -57,7 +57,7 @@ export function SearchBar({
               type="button"
               onClick={onSearch}
               disabled={isLoading || !query.trim()}
-              className="px-6 py-3.5 bg-accent hover:bg-accent-muted disabled:opacity-40 disabled:cursor-not-allowed text-white font-medium rounded-lg transition-colors text-sm shrink-0"
+              className="press-feedback px-6 py-3.5 bg-accent hover:bg-accent-muted disabled:opacity-40 disabled:cursor-not-allowed text-white font-medium rounded-lg transition-colors text-sm shrink-0"
             >
               {isLoading ? "Поиск..." : "Искать"}
             </button>

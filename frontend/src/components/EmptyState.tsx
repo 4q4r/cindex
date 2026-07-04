@@ -68,7 +68,7 @@ export const EmptyState = memo(function EmptyState({
                   onClick={() => {
                     onExampleClick(ex.query);
                   }}
-                  className="w-full group flex items-center gap-3 bg-bg-card border border-border-default rounded-lg p-3 hover:border-accent/30 hover:bg-bg-elevated transition-all text-left"
+                  className="press-feedback w-full group flex items-center gap-3 bg-bg-card border border-border-default rounded-lg p-3 hover:border-accent/30 hover:bg-bg-elevated transition-all text-left"
                 >
                   <Search className="w-4 h-4 text-text-tertiary group-hover:text-accent transition-colors shrink-0" />
                   <div className="flex-1 min-w-0">
@@ -106,7 +106,7 @@ export const EmptyState = memo(function EmptyState({
           <button
             type="button"
             onClick={onRetry}
-            className="inline-flex items-center gap-2 px-5 py-2.5 bg-accent hover:bg-accent-muted text-white text-sm font-medium rounded-lg transition-colors"
+            className="press-feedback inline-flex items-center gap-2 px-5 py-2.5 bg-accent hover:bg-accent-muted text-white text-sm font-medium rounded-lg transition-colors"
           >
             <RefreshCw className="w-4 h-4" />
             Повторить поиск
@@ -133,7 +133,7 @@ export const EmptyState = memo(function EmptyState({
           <button
             type="button"
             onClick={onRetry}
-            className="inline-flex items-center gap-2 px-5 py-2.5 bg-accent hover:bg-accent-muted text-white text-sm font-medium rounded-lg transition-colors"
+            className="press-feedback inline-flex items-center gap-2 px-5 py-2.5 bg-accent hover:bg-accent-muted text-white text-sm font-medium rounded-lg transition-colors"
           >
             <RefreshCw className="w-4 h-4" />
             Повторить
@@ -170,7 +170,7 @@ export const EmptyState = memo(function EmptyState({
           <button
             type="button"
             onClick={onRetry}
-            className="inline-flex items-center gap-2 px-5 py-2.5 bg-accent hover:bg-accent-muted text-white text-sm font-medium rounded-lg transition-colors"
+            className="press-feedback inline-flex items-center gap-2 px-5 py-2.5 bg-accent hover:bg-accent-muted text-white text-sm font-medium rounded-lg transition-colors"
           >
             <RefreshCw className="w-4 h-4" />
             Повторить по всем источникам
