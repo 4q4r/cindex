@@ -320,7 +320,7 @@ export default function App() {
     <div className="min-h-dvh bg-bg-primary">
       <a
         href="#main-content"
-        className="sr-only focus:not-sr-only focus:fixed focus:top-3 focus:left-3 focus:z-[100] focus:px-4 focus:py-2.5 focus:rounded-lg focus:bg-bg-card focus:text-text-primary focus:border focus:border-accent focus:shadow-xl"
+        className="sr-only focus:not-sr-only focus:fixed focus:top-3 focus:left-3 focus:z-skip focus:px-4 focus:py-2.5 focus:rounded-lg focus:bg-bg-card focus:text-text-primary focus:border focus:border-accent focus:shadow-xl"
       >
         Перейти к содержимому
       </a>
@@ -491,7 +491,7 @@ export default function App() {
         <div
           role="status"
           aria-live="polite"
-          className="fixed bottom-6 right-6 z-50 flex items-center gap-2 bg-bg-card border border-success/30 text-success px-4 py-2.5 rounded-lg shadow-xl animate-fade-in"
+          className="fixed bottom-6 right-6 z-toast flex items-center gap-2 bg-bg-card border border-success/30 text-success px-4 py-2.5 rounded-lg shadow-xl animate-fade-in"
         >
           <Check className="w-4 h-4" aria-hidden="true" />
           <span className="text-sm">{copyNotification}</span>
