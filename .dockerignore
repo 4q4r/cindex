@@ -6,6 +6,9 @@
 node_modules
 .next
 coverage
+
+# collectstatic output is produced inside the image; never copy host copy.
+staticfiles
 secrets
 db.sqlite3
 *.sqlite3
