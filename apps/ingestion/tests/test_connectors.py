@@ -4,6 +4,7 @@ from bs4 import BeautifulSoup
 from apps.ingestion.connectors import (
     AJOLConnector,
     BaseConnector,
+    CiNiiConnector,
     DOAJConnector,
     EuropePMCConnector,
     MathNetConnector,
@@ -127,6 +128,78 @@ def test_doaj_payload_extraction() -> None:
     assert len(items) == 1
     assert items[0].source_key == "doaj"
     assert items[0].journal == "Ecology OA"
+
+
+def test_cinii_payload_extraction_prefers_real_year_and_doi() -> None:
+    """Test cinii payload extraction prefers real year and doi helper.
+
+    The CiNii OpenSearch ``@id``/``link`` CRID is a long numeric identifier
+    whose first four digits (``1970`` here) are not a publication year, and
+    the DOI lives in a typed ``dc:identifier`` entry, so the parser must read
+    the year from ``prism:publicationDate`` and the DOI from the
+    ``cir:DOI`` identifier rather than scanning the raw JSON dump.
+    """
+    payload = {
+        "items": [
+            {
+                "@id": "https://cir.nii.ac.jp/crid/1970012345678901234",
+                "title": "CiNii Live Hook Article 2024",
+                "link": {"@id": "https://cir.nii.ac.jp/crid/1970012345678901234"},
+                "dc:creator": ["Sato, Hanako", "Tanaka, Ichiro"],
+                "prism:publicationName": "CiNii Journal",
+                "prism:publicationDate": "2024-05-01",
+                "description": "Peer reviewed article with DOI 10.1234/cinii.2024.1",
+                "dc:identifier": [
+                    {"@type": "cir:NAID", "@value": "10000000000"},
+                    {"@type": "cir:DOI", "@value": "10.1234/cinii.2024.1"},
+                ],
+                "dc:source": [{"@id": "https://ci.nii.ac.jp/ncid/AA00000000"}],
+            },
+        ],
+    }
+    items = CiNiiConnector()._extract_from_payload("machine learning", payload, limit=3)
+
+    assert len(items) == 1
+    assert items[0].year == 2024
+    assert items[0].doi == "10.1234/cinii.2024.1"
+    assert items[0].journal == "CiNii Journal"
+    assert items[0].authors == ("Sato, Hanako", "Tanaka, Ichiro")
+    assert items[0].url == "https://cir.nii.ac.jp/crid/1970012345678901234"
+
+
+def test_cinii_book_without_doi_keeps_clean_journal() -> None:
+    """Test cinii book without doi keeps clean journal helper.
+
+    A book item has no ``prism:publicationName`` and a dict-shaped
+    ``dc:source`` (a URI ``@id``), so the journal must fall back to
+    ``dc:publisher`` rather than render the dict as garbage, and the DOI
+    must stay empty instead of leaking a URI fragment.
+    """
+    payload = {
+        "items": [
+            {
+                "@id": "https://cir.nii.ac.jp/crid/1970098765432109876",
+                "title": "Reinforcement and systemic machine learning",
+                "link": {"@id": "https://cir.nii.ac.jp/crid/1970098765432109876"},
+                "dc:creator": "Kulkarni, Parag",
+                "dc:publisher": "IEEE Press",
+                "prism:publicationDate": "2012",
+                "description": "IEEE Press series on systems science and engineering",
+                "dc:identifier": [
+                    {"@type": "cir:NCID", "@value": "BB11467443"},
+                    {"@type": "cir:ISBN", "@value": "9780470919996"},
+                ],
+                "dc:source": [{"@id": "https://ci.nii.ac.jp/ncid/BB11467443"}],
+            },
+        ],
+    }
+    items = CiNiiConnector()._extract_from_payload("machine learning", payload, limit=3)
+
+    assert len(items) == 1
+    assert items[0].year == 2012
+    assert items[0].doi == ""
+    assert items[0].journal == "IEEE Press"
+    assert items[0].authors == ("Kulkarni, Parag",)
 
 
 def test_ajol_oa_filter_keeps_only_open_access(monkeypatch) -> None:
