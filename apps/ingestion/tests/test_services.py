@@ -1,4 +1,5 @@
-from apps.ingestion.connectors import RawArticle
+from apps.articles.models import Source
+from apps.ingestion.connectors import ConnectorFetchError, RawArticle
 from apps.ingestion.services import IngestionService
 
 
@@ -165,3 +166,40 @@ def test_ingestion_skips_articles_without_doi(monkeypatch, db) -> None:
     )
 
     assert len(articles) == 0
+
+
+class FailingConnector:
+    """Connector whose fetch raises ConnectorFetchError.
+
+    Models the SciEngine / Medknow openalex paths before the swallow fix:
+    fetch must surface the error so the ingestion service marks the source
+    failed instead of silently reporting zero articles as a success.
+    """
+
+    def fetch(self, query: str, limit: int = 5):
+        raise ConnectorFetchError("failing: simulated upstream failure")
+
+    def enrich_raw(self, raw: RawArticle) -> RawArticle:
+        return raw
+
+
+def test_ingestion_surfaces_connector_fetch_error_as_failed_source(
+    monkeypatch, db
+) -> None:
+    """A fetch ConnectorFetchError must mark the source failed.
+
+    The error must propagate instead of being swallowed into an empty
+    list reported as a successful zero-article result.
+    """
+    monkeypatch.setattr(
+        "apps.ingestion.services.CONNECTORS", {"failing": FailingConnector}
+    )
+
+    articles = IngestionService.ingest_query(
+        "test", source_keys=["failing"], per_source_limit=1
+    )
+
+    assert articles == []
+    source = Source.objects.get(key="failing")
+    assert source.total_failures == 1
+    assert source.last_error
