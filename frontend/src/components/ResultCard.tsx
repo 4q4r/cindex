@@ -139,7 +139,7 @@ export const ResultCard = memo(function ResultCard({
     >
       <div className="flex items-start justify-between gap-3 mb-3">
         <div className="flex-1 min-w-0">
-          <h3 className="text-[15px] font-medium text-text-primary leading-snug">
+          <h3 className="text-[15px] font-medium text-text-primary leading-snug font-serif">
             <HighlightedText text={result.title} query={query} />
           </h3>
         </div>
