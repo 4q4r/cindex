@@ -15,12 +15,12 @@ interface LoadingStateProps {
 type StageKey = SearchProgress["stage"];
 type KnownStageKey = Exclude<StageKey, "queued">;
 
-type StageMeta = {
+interface StageMeta {
   title: string;
   description: string;
   range: string;
   icon: typeof Search;
-};
+}
 
 const STAGE_META: Record<KnownStageKey | "default", StageMeta> = {
   default: {
@@ -92,12 +92,12 @@ function formatDuration(seconds: number | null | undefined): string {
   const minutes = Math.floor(rounded / 60);
   const remainingSeconds = rounded % 60;
   if (minutes === 0) {
-    return `${remainingSeconds} с`;
+    return `${String(remainingSeconds)} с`;
   }
   if (remainingSeconds === 0) {
-    return `${minutes} мин`;
+    return `${String(minutes)} мин`;
   }
-  return `${minutes} мин ${remainingSeconds} с`;
+  return `${String(minutes)} мин ${String(remainingSeconds)} с`;
 }
 
 function stageMeta(stage: SearchProgress["stage"] | undefined): StageMeta {
@@ -114,10 +114,10 @@ export const LoadingState = memo(function LoadingState({
   const stage = stageMeta(progress?.stage);
   const sourceInfo =
     progress && progress.sourceTotal > 0
-      ? `${progress.sourceDone}/${progress.sourceTotal}`
+      ? `${String(progress.sourceDone)}/${String(progress.sourceTotal)}`
       : "—";
   const StepIcon = stage.icon;
-  const substageLabel = progress?.substageLabel?.trim() ?? "";
+  const substageLabel = progress?.substageLabel.trim() ?? "";
   const currentStep =
     progress?.stage === "checking_index"
       ? 1
@@ -189,7 +189,7 @@ export const LoadingState = memo(function LoadingState({
         <div className="w-full h-1 bg-bg-elevated rounded-full overflow-hidden">
           <div
             className="h-full bg-accent rounded-full transition-all duration-300"
-            style={{ width: `${percent}%` }}
+            style={{ width: `${String(percent)}%` }}
           />
         </div>
         <div className="mt-3 space-y-1.5 text-xs">

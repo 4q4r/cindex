@@ -31,7 +31,7 @@ function journalPart(item: SearchResult): string {
 
 function doiPart(item: SearchResult): string {
   if (item.doi) return ` DOI: ${item.doi}`;
-  const fallback = item.identifiers?.doi || item.identifiers?.DOI;
+  const fallback = item.identifiers.doi || item.identifiers.DOI;
   return fallback ? ` DOI: ${fallback}` : "";
 }
 

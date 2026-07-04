@@ -49,7 +49,9 @@ export default function App() {
         setSourcesQueried(0);
         setSourcesFailed([]);
       });
-    return () => controller.abort();
+    return () => {
+      controller.abort();
+    };
   }, []);
 
   const filteredResults = useMemo(() => {
@@ -80,10 +82,10 @@ export default function App() {
       case "metadata":
         results.sort((a, b) => {
           const scoreA =
-            Object.keys(a.identifiers || {}).length +
+            Object.keys(a.identifiers).length +
             Math.round(a.eligibilityConfidence.overall / 25);
           const scoreB =
-            Object.keys(b.identifiers || {}).length +
+            Object.keys(b.identifiers).length +
             Math.round(b.eligibilityConfidence.overall / 25);
           return scoreB - scoreA;
         });
@@ -138,7 +140,7 @@ export default function App() {
 
   const handleSearch = useCallback(
     async (searchQuery?: string) => {
-      const q = searchQuery || query;
+      const q = searchQuery ?? query;
       if (!q.trim()) return;
 
       abortRef.current?.abort();
@@ -220,17 +222,6 @@ export default function App() {
             }
             return;
           }
-          if (
-            payload.status === "failed" &&
-            payload.results.length === 0 &&
-            payload.error.trim().length === 0
-          ) {
-            setRawResults([]);
-            setTotalBeforeFilter(0);
-            setLastSearchTime(new Date());
-            setSearchState("empty");
-            return;
-          }
 
           await new Promise((resolve) => setTimeout(resolve, POLL_INTERVAL_MS));
         }
@@ -251,25 +242,24 @@ export default function App() {
         type === "citation" ? "Цитирование скопировано" : "Превью скопировано",
       );
       if (notifTimeoutRef.current) clearTimeout(notifTimeoutRef.current);
-      notifTimeoutRef.current = setTimeout(
-        () => setCopyNotification(null),
-        2000,
-      );
+      notifTimeoutRef.current = setTimeout(() => {
+        setCopyNotification(null);
+      }, 2000);
     } catch {
       const textarea = document.createElement("textarea");
       textarea.value = text;
       document.body.appendChild(textarea);
       textarea.select();
+      // eslint-disable-next-line @typescript-eslint/no-deprecated -- legacy clipboard fallback for non-secure contexts where navigator.clipboard is unavailable
       document.execCommand("copy");
       document.body.removeChild(textarea);
       setCopyNotification(
         type === "citation" ? "Цитирование скопировано" : "Превью скопировано",
       );
       if (notifTimeoutRef.current) clearTimeout(notifTimeoutRef.current);
-      notifTimeoutRef.current = setTimeout(
-        () => setCopyNotification(null),
-        2000,
-      );
+      notifTimeoutRef.current = setTimeout(() => {
+        setCopyNotification(null);
+      }, 2000);
     }
   }, []);
 
@@ -315,14 +305,18 @@ export default function App() {
             filters={filters}
             onFiltersChange={setFilters}
             isMobileOpen={mobileFiltersOpen}
-            onMobileClose={() => setMobileFiltersOpen(false)}
+            onMobileClose={() => {
+              setMobileFiltersOpen(false);
+            }}
           />
 
           <div className="flex-1 min-w-0 h-[calc(100vh-92px)] overflow-y-auto pr-1">
             <SearchBar
               query={query}
               onQueryChange={setQuery}
-              onSearch={() => handleSearch()}
+              onSearch={() => {
+                void handleSearch();
+              }}
               isLoading={searchState === "loading"}
             />
 
@@ -334,7 +328,9 @@ export default function App() {
                     filteredOut={filteredOutCount}
                     sourcesFailed={sourcesFailed}
                     onClearFilters={handleClearFilters}
-                    onToggleMobileFilters={() => setMobileFiltersOpen(true)}
+                    onToggleMobileFilters={() => {
+                      setMobileFiltersOpen(true);
+                    }}
                     viewMode={viewMode}
                     onViewModeChange={setViewMode}
                     hasActiveFilters={hasActiveFilters}
@@ -360,14 +356,16 @@ export default function App() {
                   {paginatedResults.map((result, index) => (
                     <div
                       key={result.id}
-                      style={{ animationDelay: `${index * 60}ms` }}
+                      style={{ animationDelay: `${String(index * 60)}ms` }}
                     >
                       <ResultCard
                         result={result}
                         query={lastQuery}
                         viewMode={viewMode}
                         citationStyle={filters.citationStyle}
-                        onCopy={handleCopy}
+                        onCopy={(text, type) => {
+                          void handleCopy(text, type);
+                        }}
                       />
                     </div>
                   ))}
@@ -376,9 +374,9 @@ export default function App() {
                     <div className="flex items-center justify-center gap-2 pt-6 pb-2">
                       <button
                         type="button"
-                        onClick={() =>
-                          setCurrentPage((p) => Math.max(1, p - 1))
-                        }
+                        onClick={() => {
+                          setCurrentPage((p) => Math.max(1, p - 1));
+                        }}
                         disabled={currentPage === 1}
                         className="flex items-center gap-1 px-3 py-2 text-xs text-text-secondary hover:text-text-primary bg-bg-elevated border border-border-default rounded-lg disabled:opacity-30 disabled:cursor-not-allowed transition-colors"
                       >
@@ -400,7 +398,9 @@ export default function App() {
                               )}
                               <button
                                 type="button"
-                                onClick={() => setCurrentPage(page)}
+                                onClick={() => {
+                                  setCurrentPage(page);
+                                }}
                                 className={`w-9 h-9 rounded-lg text-xs font-medium transition-colors ${
                                   page === currentPage
                                     ? "bg-accent text-white"
@@ -415,9 +415,9 @@ export default function App() {
                       </div>
                       <button
                         type="button"
-                        onClick={() =>
-                          setCurrentPage((p) => Math.min(totalPages, p + 1))
-                        }
+                        onClick={() => {
+                          setCurrentPage((p) => Math.min(totalPages, p + 1));
+                        }}
                         disabled={currentPage === totalPages}
                         className="flex items-center gap-1 px-3 py-2 text-xs text-text-secondary hover:text-text-primary bg-bg-elevated border border-border-default rounded-lg disabled:opacity-30 disabled:cursor-not-allowed transition-colors"
                       >
@@ -437,7 +437,9 @@ export default function App() {
                   !allFilteredOut)) && (
                 <EmptyState
                   state={searchState}
-                  onRetry={() => handleSearch()}
+                  onRetry={() => {
+                    void handleSearch();
+                  }}
                   onExampleClick={handleExampleClick}
                   sourcesFailed={sourcesFailed}
                 />

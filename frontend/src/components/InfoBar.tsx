@@ -71,7 +71,7 @@ export const InfoBar = memo(function InfoBar({
         <div className="flex items-center bg-bg-elevated border border-border-default rounded-lg overflow-hidden">
           <button
             type="button"
-            onClick={() => onViewModeChange("comfortable")}
+            onClick={() => { onViewModeChange("comfortable"); }}
             className={`px-3 py-1.5 text-xs transition-colors ${
               viewMode === "comfortable"
                 ? "bg-accent/15 text-accent"
@@ -82,7 +82,7 @@ export const InfoBar = memo(function InfoBar({
           </button>
           <button
             type="button"
-            onClick={() => onViewModeChange("compact")}
+            onClick={() => { onViewModeChange("compact"); }}
             className={`px-3 py-1.5 text-xs transition-colors ${
               viewMode === "compact"
                 ? "bg-accent/15 text-accent"

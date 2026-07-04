@@ -65,7 +65,7 @@ export const EmptyState = memo(function EmptyState({
                 <button
                   type="button"
                   key={ex.query}
-                  onClick={() => onExampleClick(ex.query)}
+                  onClick={() => { onExampleClick(ex.query); }}
                   className="w-full group flex items-center gap-3 bg-bg-card border border-border-default rounded-lg p-3 hover:border-accent/30 hover:bg-bg-elevated transition-all text-left"
                 >
                   <Search className="w-4 h-4 text-text-tertiary group-hover:text-accent transition-colors shrink-0" />

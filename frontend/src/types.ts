@@ -21,14 +21,14 @@ export interface ApiSearchJobResponse {
     | "searching_index"
     | "completed"
     | "failed";
-  substage: string;
-  substage_label: string;
+  substage?: string;
+  substage_label?: string;
   message: string;
   progress_percent: number;
   source_total: number;
   source_done: number;
   source_live: number;
-  source_failed: string[];
+  source_failed?: string[];
   average_wait_without_enrichment_seconds?: number | null;
   average_wait_with_enrichment_seconds?: number | null;
   source_stats?: {
@@ -37,16 +37,16 @@ export interface ApiSearchJobResponse {
     failed: string[];
   };
   count?: number;
-  index_hits_before: number;
-  index_hits_after: number;
-  rescan_triggered: boolean;
-  rescan_reason: string;
-  freshness_days_used: number;
+  index_hits_before?: number;
+  index_hits_after?: number;
+  rescan_triggered?: boolean;
+  rescan_reason?: string;
+  freshness_days_used?: number;
   created_at: string;
   updated_at: string;
   finished_at: string | null;
-  error: string;
-  results: ApiSearchResult[];
+  error?: string;
+  results?: ApiSearchResult[];
 }
 
 export interface ApiSearchResult {
@@ -57,11 +57,11 @@ export interface ApiSearchResult {
   publication_date: string | null;
   source: string;
   journal: string;
-  authors: string[];
-  volume: string;
-  issue: string;
-  pages: string;
-  doi: string;
+  authors?: string[];
+  volume?: string;
+  issue?: string;
+  pages?: string;
+  doi?: string;
   identifiers?: Record<string, string>;
   eligibility_evidence: {
     peer_reviewed: boolean;

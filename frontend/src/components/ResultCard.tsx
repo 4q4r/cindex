@@ -126,10 +126,10 @@ export const ResultCard = memo(function ResultCard({
     [citationStyle, result],
   );
   const identifiers = useMemo(
-    () => Object.entries(result.identifiers || {}),
+    () => Object.entries(result.identifiers),
     [result.identifiers],
   );
-  const doi = result.identifiers?.doi ?? result.identifiers?.DOI;
+  const doi = result.identifiers.doi || result.identifiers.DOI;
 
   return (
     <article
@@ -204,7 +204,9 @@ export const ResultCard = memo(function ResultCard({
       <div className="mb-3">
         <button
           type="button"
-          onClick={() => setShowCitation(!showCitation)}
+          onClick={() => {
+            setShowCitation(!showCitation);
+          }}
           className="text-[11px] uppercase tracking-wider text-text-tertiary hover:text-text-secondary flex items-center gap-1 transition-colors"
         >
           {showCitation ? (
@@ -224,7 +226,9 @@ export const ResultCard = memo(function ResultCard({
       <div className="flex items-center gap-2 flex-wrap">
         <button
           type="button"
-          onClick={() => onCopy(citation, "citation")}
+          onClick={() => {
+            onCopy(citation, "citation");
+          }}
           className="flex items-center gap-1.5 text-xs text-text-tertiary hover:text-accent bg-bg-elevated border border-border-default px-3 py-1.5 rounded-lg transition-colors"
         >
           <Copy className="w-3.5 h-3.5" />
@@ -232,7 +236,9 @@ export const ResultCard = memo(function ResultCard({
         </button>
         <button
           type="button"
-          onClick={() => onCopy(result.preview, "preview")}
+          onClick={() => {
+            onCopy(result.preview, "preview");
+          }}
           className="flex items-center gap-1.5 text-xs text-text-tertiary hover:text-accent bg-bg-elevated border border-border-default px-3 py-1.5 rounded-lg transition-colors"
         >
           <Copy className="w-3.5 h-3.5" />
@@ -260,7 +266,9 @@ export const ResultCard = memo(function ResultCard({
 
       <button
         type="button"
-        onClick={() => setExpanded(!expanded)}
+        onClick={() => {
+          setExpanded(!expanded);
+        }}
         className="mt-3 text-[11px] uppercase tracking-wider text-text-tertiary hover:text-text-secondary flex items-center gap-1 transition-colors"
       >
         {expanded ? (
