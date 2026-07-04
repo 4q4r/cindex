@@ -137,7 +137,7 @@ export const ResultCard = memo(function ResultCard({
         isCompact ? "p-4" : "p-6"
       }`}
     >
-      <div className="flex items-start justify-between gap-3 mb-3">
+      <div className="flex items-start justify-between gap-3">
         <div className="flex-1 min-w-0">
           <h3 className="text-[15px] font-medium text-text-primary leading-snug font-serif">
             <HighlightedText text={result.title} query={query} />
@@ -145,6 +145,11 @@ export const ResultCard = memo(function ResultCard({
         </div>
         <ConfidenceBadge score={result.eligibilityConfidence.overall} />
       </div>
+
+      <div
+        className="mt-3 mb-3 border-t border-border-subtle/70"
+        aria-hidden="true"
+      />
 
       <div
         className={`text-sm text-text-secondary ${isCompact ? "mb-2" : "mb-3"} leading-relaxed`}
