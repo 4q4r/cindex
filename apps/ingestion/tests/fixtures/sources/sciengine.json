@@ -1,0 +1,32 @@
+{
+  "relateList": [
+    {
+      "id": "202211010",
+      "doi": "10.12016/j.issn.2096-1456.2022.11.010",
+      "pubYear": "2022",
+      "pubDateStr": "Nov 20, 2022",
+      "title_en": "Development of artificial intelligence application in oral clinical diagnosis and treatment",
+      "title_cn": "人工智能在口腔临床诊疗中的应用进展",
+      "fullname_en": ["Chang LI", "Cui HUANG", "Hongye YANG"],
+      "fullname_cn": ["李昌", "黄翠", "杨红叶"],
+      "intro_en": "<p id=\"p00015\">With the arrival of the era of big data, artificial intelligence has developed rapidly and is widely used in medical fields such as image recognition and assisted diagnosis.</p>",
+      "intro_cn": "<p>随着大数据时代的到来，人工智能快速发展。</p>",
+      "resourceTypeStr": "Article",
+      "cResourceType": "JOURNAL_ARTICLE"
+    },
+    {
+      "id": "202412005",
+      "doi": "10.1007/s11425-024-2001-5",
+      "pubYear": "2024",
+      "pubDateStr": "Mar 15, 2024",
+      "title_en": "Machine learning models for protein structure prediction: a review",
+      "title_cn": "",
+      "fullname_en": ["Wei ZHANG", "Min LIU"],
+      "fullname_cn": [],
+      "intro_en": "<p>Recent advances in deep learning have transformed protein structure prediction, enabling near-experimental accuracy from sequence alone.</p>",
+      "intro_cn": "",
+      "resourceTypeStr": "Review",
+      "cResourceType": "JOURNAL_ARTICLE"
+    }
+  ]
+}

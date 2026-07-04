@@ -11,6 +11,7 @@ from apps.ingestion.connectors import (
     OpenEditionConnector,
     PerseeConnector,
     RawArticle,
+    SciEngineConnector,
     SourceProfile,
 )
 
@@ -376,3 +377,54 @@ def test_persee_html_parser_keeps_real_articles() -> None:
     assert "machine learning" in first.abstract.lower()
     assert items[1].doi == "10.4000/example.2026.1"
     assert items[1].year == 2026
+
+
+def test_sciengine_payload_extraction_rebuilds_doi_url_and_strips_html() -> None:
+    """Test sciengine payload extraction rebuilds doi url and strips html helper.
+
+    The SciEngine ``/SciSearch/searchNew`` endpoint returns ``relateList``
+    items that carry a DOI but no article URL and no journal, with the
+    abstract delivered as an HTML fragment (``intro_en``/``intro_cn``) and
+    authors as a ``fullname_en``/``fullname_cn`` list. The parser must
+    rebuild the URL from the DOI, strip the HTML from the abstract, read the
+    year from ``pubYear`` and report ``SciEngine`` as the journal rather than
+    leaking nav-menu garbage.
+    """
+    payload = {
+        "relateList": [
+            {
+                "id": "202211010",
+                "doi": "10.12016/j.issn.2096-1456.2022.11.010",
+                "pubYear": "2022",
+                "pubDateStr": "Nov 20, 2022",
+                "title_en": (
+                    "Development of artificial intelligence application in "
+                    "oral clinical diagnosis and treatment"
+                ),
+                "title_cn": "",
+                "fullname_en": ["Chang LI", "Cui HUANG", "Hongye YANG"],
+                "fullname_cn": [],
+                "intro_en": (
+                    '<p id="p00015">With the arrival of the era of big data, '
+                    "artificial intelligence has developed rapidly.</p>"
+                ),
+                "intro_cn": "",
+            },
+        ],
+    }
+    items = SciEngineConnector()._extract_from_payload(
+        "artificial intelligence",
+        payload,
+        limit=3,
+    )
+
+    assert len(items) == 1
+    first = items[0]
+    assert first.title.startswith("Development of artificial intelligence")
+    assert first.url == "https://doi.org/10.12016/j.issn.2096-1456.2022.11.010"
+    assert first.doi == "10.12016/j.issn.2096-1456.2022.11.010"
+    assert first.year == 2022
+    assert first.journal == "SciEngine"
+    assert first.authors == ("Chang LI", "Cui HUANG", "Hongye YANG")
+    assert "<p" not in first.abstract
+    assert "big data" in first.abstract.lower()
