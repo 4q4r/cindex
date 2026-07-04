@@ -38,20 +38,125 @@ function buildParams(filters: Filters): SearchJobParams {
   };
 }
 
+const CITATION_STYLES = [
+  "gost2018",
+  "mla",
+  "apa",
+  "vancouver",
+  "ieee",
+  "harvard",
+] as const;
+const SORT_OPTIONS = ["relevance", "newest", "metadata"] as const;
+
+interface UrlState {
+  query: string;
+  filters: Filters;
+  viewMode: ViewMode;
+  page: number;
+}
+
+function parseBooleanParam(value: string | null, fallback: boolean): boolean {
+  if (value === null) return fallback;
+  return value === "1" || value === "true";
+}
+
+function parseUrlState(): UrlState {
+  const params = new URLSearchParams(window.location.search);
+  const filters: Filters = { ...DEFAULT_FILTERS };
+
+  if (params.has("peer")) {
+    filters.peerReviewedOnly = parseBooleanParam(
+      params.get("peer"),
+      DEFAULT_FILTERS.peerReviewedOnly,
+    );
+  }
+  if (params.has("indexed")) {
+    filters.indexedOnly = parseBooleanParam(
+      params.get("indexed"),
+      DEFAULT_FILTERS.indexedOnly,
+    );
+  }
+  if (params.has("preprints")) {
+    filters.excludePreprints = parseBooleanParam(
+      params.get("preprints"),
+      DEFAULT_FILTERS.excludePreprints,
+    );
+  }
+
+  const from = params.get("from");
+  if (from !== null && /^\d{4}$/.test(from)) filters.dateFrom = from;
+  const to = params.get("to");
+  if (to !== null && /^\d{4}$/.test(to)) filters.dateTo = to;
+
+  const sort = params.get("sort");
+  if (sort !== null && (SORT_OPTIONS as readonly string[]).includes(sort)) {
+    filters.sortBy = sort as Filters["sortBy"];
+  }
+
+  const cite = params.get("cite");
+  if (cite !== null && (CITATION_STYLES as readonly string[]).includes(cite)) {
+    filters.citationStyle = cite as Filters["citationStyle"];
+  }
+
+  const view = params.get("view");
+  const viewMode: ViewMode =
+    view === "compact" || view === "comfortable" ? view : "comfortable";
+
+  const pageParam = params.get("page");
+  let page = 1;
+  if (pageParam !== null) {
+    const parsed = parseInt(pageParam, 10);
+    if (Number.isFinite(parsed) && parsed >= 1) page = parsed;
+  }
+
+  return { query: params.get("q") ?? "", filters, viewMode, page };
+}
+
+function serializeUrlState(state: UrlState): string {
+  const params = new URLSearchParams();
+  if (state.query) params.set("q", state.query);
+
+  const f = state.filters;
+  if (f.peerReviewedOnly !== DEFAULT_FILTERS.peerReviewedOnly) {
+    params.set("peer", f.peerReviewedOnly ? "1" : "0");
+  }
+  if (f.indexedOnly !== DEFAULT_FILTERS.indexedOnly) {
+    params.set("indexed", f.indexedOnly ? "1" : "0");
+  }
+  if (f.excludePreprints !== DEFAULT_FILTERS.excludePreprints) {
+    params.set("preprints", f.excludePreprints ? "1" : "0");
+  }
+  if (f.dateFrom) params.set("from", f.dateFrom);
+  if (f.dateTo) params.set("to", f.dateTo);
+  if (f.sortBy !== DEFAULT_FILTERS.sortBy) params.set("sort", f.sortBy);
+  if (f.citationStyle !== DEFAULT_FILTERS.citationStyle) {
+    params.set("cite", f.citationStyle);
+  }
+  if (state.viewMode !== "comfortable") params.set("view", state.viewMode);
+  if (state.page > 1) params.set("page", String(state.page));
+
+  const qs = params.toString();
+  return qs ? `?${qs}` : "";
+}
+
 export default function App() {
+  const initialRef = useRef<UrlState | null>(null);
+  initialRef.current ??= parseUrlState();
+  const initial = initialRef.current;
+
   const [searchState, setSearchState] = useState<SearchState>("idle");
-  const [query, setQuery] = useState("");
-  const [lastQuery, setLastQuery] = useState("");
-  const [filters, setFilters] = useState<Filters>({ ...DEFAULT_FILTERS });
+  const [query, setQuery] = useState(initial.query);
+  const [lastQuery, setLastQuery] = useState(initial.query);
+  const [filters, setFilters] = useState<Filters>(initial.filters);
   const [rawResults, setRawResults] = useState<SearchResult[]>([]);
   const [totalResults, setTotalResults] = useState(0);
   const [totalPages, setTotalPages] = useState(0);
   const [sourcesQueried, setSourcesQueried] = useState(0);
   const [sourcesFailed, setSourcesFailed] = useState<string[]>([]);
   const [lastSearchTime, setLastSearchTime] = useState<Date | null>(null);
-  const [viewMode, setViewMode] = useState<ViewMode>("comfortable");
+  const [viewMode, setViewMode] = useState<ViewMode>(initial.viewMode);
   const [mobileFiltersOpen, setMobileFiltersOpen] = useState(false);
-  const [currentPage, setCurrentPage] = useState(1);
+  const [currentPage, setCurrentPage] = useState(initial.page);
   const [copyNotification, setCopyNotification] = useState<string | null>(null);
   const [progress, setProgress] = useState<SearchProgress | null>(null);
   const notifTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -60,10 +165,12 @@ export default function App() {
   const pageAbortRef = useRef<AbortController | null>(null);
   const currentJobIdRef = useRef<string | null>(null);
   const filtersRef = useRef(filters);
-  const lastQueryRef = useRef("");
+  const lastQueryRef = useRef(initial.query);
+  const totalPagesRef = useRef(totalPages);
   const didMountRef = useRef(false);
 
   filtersRef.current = filters;
+  totalPagesRef.current = totalPages;
 
   useEffect(() => {
     const controller = new AbortController();
@@ -252,6 +359,31 @@ export default function App() {
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [filters]);
+
+  // Restore the search from a deep link on first mount: run the query with the
+  // URL-derived filters, then jump to the linked page if it still exists.
+  useEffect(() => {
+    if (!initial.query) return;
+    void (async () => {
+      await handleSearch(initial.query);
+      if (initial.page > 1 && initial.page <= totalPagesRef.current) {
+        setCurrentPage(initial.page);
+        void fetchPage(initial.page);
+      }
+    })();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  // Reflect committed search state in the URL for shareable deep links. Uses
+  // replaceState so the back button leaves the app rather than walking through
+  // every intermediate filter/page state.
+  useEffect(() => {
+    const target = `${window.location.pathname}${serializeUrlState({ query: lastQuery, filters, viewMode, page: currentPage })}`;
+    const current = `${window.location.pathname}${window.location.search}`;
+    if (target !== current) {
+      history.replaceState(null, "", target);
+    }
+  }, [lastQuery, filters, viewMode, currentPage]);
 
   const handlePageChange = useCallback(
     (page: number) => {
