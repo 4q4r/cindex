@@ -29,7 +29,7 @@ def _drop_pg_fulltext_gin_index(apps, schema_editor):
 
 class Migration(migrations.Migration):
     dependencies = [
-        ("articles", "0008_alter_articleauthor_options_alter_article_doi"),
+        ("articles", "0009_alter_article_doi"),
     ]
 
     operations = [

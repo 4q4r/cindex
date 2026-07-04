@@ -29,7 +29,6 @@ class AppSettings(BaseSettings):
     redis_url: str = "redis://redis:6379/0"
     search_final_top_k: int = 30
     search_query_freshness_days: int = 14
-    nightly_ingestion_interval_seconds: int = 0
     exa_quota_sync_interval_seconds: int = 0
     local_import_directory: str = str(BASE_DIR / "local_imports")
     local_import_scan_interval_seconds: int = 30
