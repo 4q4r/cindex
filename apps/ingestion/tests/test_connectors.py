@@ -127,8 +127,14 @@ def test_doaj_payload_extraction() -> None:
     assert items[0].journal == "Ecology OA"
 
 
-def test_ajol_oa_filter_keeps_only_open_access() -> None:
-    """Test ajol oa filter keeps only open access helper."""
+def test_ajol_oa_filter_keeps_only_open_access(monkeypatch) -> None:
+    """Test ajol oa filter keeps only open access helper.
+
+    ``enrich_raw`` fetches the article page over the network; the OA
+    filter logic under test does not depend on enrichment, so patch it
+    to a passthrough and keep the test offline.
+    """
+    monkeypatch.setattr(AJOLConnector, "enrich_raw", lambda self, raw: raw)
     html = """
     <html><body>
       <article>
