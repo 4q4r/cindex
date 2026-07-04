@@ -186,7 +186,6 @@ def test_pdf_article_enrichment_uses_extracted_text() -> None:
 
 def test_pdf_extraction_uses_ocr_when_native_text_is_garbled(monkeypatch) -> None:
     """Garbled native PDF text should trigger OCR fallback."""
-
     monkeypatch.setattr(pymupdf, "open", lambda *args, **kwargs: _OcrDocument())
     connector = PdfConnector()
 

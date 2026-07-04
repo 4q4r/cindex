@@ -1,4 +1,8 @@
-from apps.ingestion.connectors import RawArticle
+import pytest
+from django.db import IntegrityError, transaction
+
+from apps.articles.models import Article, Source
+from apps.ingestion.connectors import ConnectorFetchError, RawArticle
 from apps.ingestion.services import IngestionService
 
 
@@ -20,7 +24,7 @@ class DummyConnector:
                 peer_review_evidence="peer reviewed",
                 indexing_evidence="scopus web of science",
                 preprint_evidence="journal article",
-            )
+            ),
         ]
 
     def enrich_raw(self, raw: RawArticle) -> RawArticle:
@@ -45,7 +49,7 @@ class EnrichingConnector:
                 peer_review_evidence="peer reviewed",
                 indexing_evidence="scopus",
                 preprint_evidence="journal article",
-            )
+            ),
         ]
 
     def enrich_raw(self, raw: RawArticle) -> RawArticle:
@@ -72,19 +76,20 @@ class ProgressConnector:
                 peer_review_evidence="peer reviewed",
                 indexing_evidence="scopus",
                 preprint_evidence="journal article",
-            )
+            ),
         ]
 
     def enrich_raw(self, raw: RawArticle) -> RawArticle:
         return raw
 
 
-def test_ingestion_emits_russian_progress_phases(monkeypatch, db):
+def test_ingestion_emits_russian_progress_phases(monkeypatch, db) -> None:
     """Test ingestion emits russian progress phases helper."""
     events: list[dict] = []
 
     monkeypatch.setattr(
-        "apps.ingestion.services.CONNECTORS", {"dummy": ProgressConnector}
+        "apps.ingestion.services.CONNECTORS",
+        {"dummy": ProgressConnector},
     )
 
     articles = IngestionService.ingest_query(
@@ -105,13 +110,14 @@ def test_ingestion_emits_russian_progress_phases(monkeypatch, db):
     assert "Источник обработан" in labels
 
 
-def test_ingestion_indexes_eligible_article(monkeypatch, db):
+def test_ingestion_indexes_eligible_article(monkeypatch, db) -> None:
     """Test ingestion persists eligible article records."""
-
     monkeypatch.setattr("apps.ingestion.services.CONNECTORS", {"dummy": DummyConnector})
 
     articles = IngestionService.ingest_query(
-        "test", source_keys=["dummy"], per_source_limit=2
+        "test",
+        source_keys=["dummy"],
+        per_source_limit=2,
     )
 
     assert len(articles) == 1
@@ -119,14 +125,17 @@ def test_ingestion_indexes_eligible_article(monkeypatch, db):
     assert articles[0].full_text.startswith("journal article doi")
 
 
-def test_ingestion_applies_enrichment_hook(monkeypatch, db):
+def test_ingestion_applies_enrichment_hook(monkeypatch, db) -> None:
     """Test ingestion applies enrichment hook helper."""
     monkeypatch.setattr(
-        "apps.ingestion.services.CONNECTORS", {"dummy": EnrichingConnector}
+        "apps.ingestion.services.CONNECTORS",
+        {"dummy": EnrichingConnector},
     )
 
     articles = IngestionService.ingest_query(
-        "test", source_keys=["dummy"], per_source_limit=1
+        "test",
+        source_keys=["dummy"],
+        per_source_limit=1,
     )
 
     assert len(articles) == 1
@@ -148,22 +157,114 @@ class NoDoiConnector:
                 year=2024,
                 doi="",
                 journal="No DOI Journal",
-            )
+            ),
         ]
 
     def enrich_raw(self, raw: RawArticle) -> RawArticle:
         return raw
 
 
-def test_ingestion_skips_articles_without_doi(monkeypatch, db):
+def test_ingestion_skips_articles_without_doi(monkeypatch, db) -> None:
     """Articles without a valid DOI should not be saved."""
-
     monkeypatch.setattr(
-        "apps.ingestion.services.CONNECTORS", {"no-doi": NoDoiConnector}
+        "apps.ingestion.services.CONNECTORS",
+        {"no-doi": NoDoiConnector},
     )
 
     articles = IngestionService.ingest_query(
-        "test", source_keys=["no-doi"], per_source_limit=1
+        "test",
+        source_keys=["no-doi"],
+        per_source_limit=1,
     )
 
     assert len(articles) == 0
+
+
+def test_article_doi_is_unique(db) -> None:
+    """Article.doi must enforce uniqueness at the database level."""
+    source = Source.objects.create(key="s1", name="S1", base_url="https://x")
+    Article.objects.create(source=source, title="t1", url="https://x/1", doi="10.1/a")
+    with pytest.raises(IntegrityError), transaction.atomic():
+        Article.objects.create(
+            source=source,
+            title="t2",
+            url="https://x/2",
+            doi="10.1/a",
+        )
+
+
+def test_save_article_upserts_by_doi(db) -> None:
+    """_save_article upserts by DOI across sources.
+
+    A second ingestion of the same DOI from a different source must update
+    the existing row instead of creating a duplicate Article.
+    """
+    raw_a = RawArticle(
+        source_key="src-a",
+        title="From A",
+        url="https://a/1",
+        abstract="",
+        full_text="a",
+        language="en",
+        year=2024,
+        doi="10.5555/shared",
+        journal="J",
+    )
+    raw_b = RawArticle(
+        source_key="src-b",
+        title="From B",
+        url="https://b/1",
+        abstract="",
+        full_text="b",
+        language="en",
+        year=2024,
+        doi="10.5555/shared",
+        journal="J",
+    )
+    first = IngestionService._save_article(raw_a)
+    second = IngestionService._save_article(raw_b)
+    assert first.pk == second.pk
+    assert second.title == "From B"
+    assert second.source.key == "src-b"
+    assert Article.objects.filter(doi="10.5555/shared").count() == 1
+
+
+class FailingConnector:
+    """Connector whose fetch raises ConnectorFetchError.
+
+    Models the SciEngine / Medknow openalex paths before the swallow fix:
+    fetch must surface the error so the ingestion service marks the source
+    failed instead of silently reporting zero articles as a success.
+    """
+
+    def fetch(self, query: str, limit: int = 5):
+        raise ConnectorFetchError("failing: simulated upstream failure")
+
+    def enrich_raw(self, raw: RawArticle) -> RawArticle:
+        return raw
+
+
+def test_ingestion_surfaces_connector_fetch_error_as_failed_source(
+    monkeypatch,
+    db,
+) -> None:
+    """A fetch ConnectorFetchError must mark the source failed.
+
+    The error must propagate instead of being swallowed into an empty
+    list reported as a successful zero-article result.
+    """
+    monkeypatch.setattr(
+        "apps.ingestion.services.CONNECTORS",
+        {"failing": FailingConnector},
+    )
+
+    articles = IngestionService.ingest_query(
+        "test",
+        source_keys=["failing"],
+        per_source_limit=1,
+    )
+
+    assert articles == []
+    source = Source.objects.get(key="failing")
+    assert source.total_failures == 1
+    assert source.last_error

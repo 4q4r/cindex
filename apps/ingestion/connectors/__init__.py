@@ -1,3 +1,5 @@
+"""Source connector package for the ingestion app."""
+
 from __future__ import annotations
 
 from .api_connectors import (
