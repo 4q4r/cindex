@@ -4,6 +4,11 @@ from __future__ import annotations
 
 import hashlib
 import uuid
+from math import ceil
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from collections.abc import Mapping
 
 from django.core.cache import cache
 from django.db import transaction
@@ -16,10 +21,12 @@ from rest_framework.views import APIView
 
 from apps.ingestion.tasks import ingest_search_query
 
+from .filters import SORT_RELEVANCE, SearchFilters
 from .models import SearchJob
 from .progress import get_search_wait_stats, get_source_stats
 from .serializers import (
     SearchJobCreateSerializer,
+    SearchJobDetailQuerySerializer,
     SearchJobSerializer,
     SearchRequestSerializer,
     SearchResultSerializer,
@@ -46,8 +53,53 @@ def _job_progress_percent(job: SearchJob) -> int:
     return STAGE_PROGRESS.get(job.stage, 10)
 
 
-def _serialize_job(job: SearchJob) -> dict:
-    """Serialize a search job into the public API payload shape."""
+def _filters_from_validated(data: Mapping[str, object]) -> SearchFilters:
+    """Build a :class:`SearchFilters` from a serializer's validated data."""
+    return SearchFilters(
+        peer_reviewed_only=bool(data.get("peer_reviewed_only", False)),
+        indexed_only=bool(data.get("indexed_only", False)),
+        exclude_preprints=bool(data.get("exclude_preprints", False)),
+        year_from=_coerce_optional_int(data.get("year_from")),
+        year_to=_coerce_optional_int(data.get("year_to")),
+        sort_by=str(data.get("sort_by", SORT_RELEVANCE)),
+    )
+
+
+def _coerce_optional_int(value: object) -> int | None:
+    """Coerce a serializer value into an optional int."""
+    if value is None or value == "":
+        return None
+    return int(value)  # type: ignore[arg-type]
+
+
+def _filters_from_job(job: SearchJob) -> SearchFilters:
+    """Build a :class:`SearchFilters` from a persisted search job."""
+    return SearchFilters(
+        peer_reviewed_only=job.peer_reviewed_only,
+        indexed_only=job.indexed_only,
+        exclude_preprints=job.exclude_preprints,
+        year_from=job.year_from,
+        year_to=job.year_to,
+        sort_by=job.sort_by,
+    )
+
+
+def _serialize_job(
+    job: SearchJob,
+    *,
+    results: list[dict] | None = None,
+    pagination: Mapping[str, int] | None = None,
+) -> dict:
+    """Serialize a search job into the public API payload shape.
+
+    Args:
+        job: The persisted (or in-memory placeholder) search job.
+        results: Optional override for the serialized results slice; when
+            ``None`` the full ``job.results`` list is serialized.
+        pagination: Optional pagination metadata (``page``, ``per_page``,
+            ``total_pages``, ``total_results``) merged into the payload.
+
+    """
     average_wait_stats = get_search_wait_stats()
 
     serializer = SearchJobSerializer(
@@ -77,11 +129,21 @@ def _serialize_job(job: SearchJob) -> dict:
             "rescan_triggered": job.rescan_triggered,
             "rescan_reason": job.rescan_reason,
             "freshness_days_used": job.freshness_days_used,
+            "peer_reviewed_only": job.peer_reviewed_only,
+            "indexed_only": job.indexed_only,
+            "exclude_preprints": job.exclude_preprints,
+            "year_from": job.year_from,
+            "year_to": job.year_to,
+            "sort_by": job.sort_by,
+            "page": pagination.get("page") if pagination else None,
+            "per_page": pagination.get("per_page") if pagination else None,
+            "total_pages": pagination.get("total_pages") if pagination else None,
+            "total_results": pagination.get("total_results") if pagination else None,
             "created_at": job.created_at,
             "updated_at": job.updated_at,
             "finished_at": job.finished_at,
             "error": job.error,
-            "results": job.results,
+            "results": results if results is not None else job.results,
         },
     )
     return serializer.data
@@ -92,10 +154,39 @@ def _normalize_job_text(value: str) -> str:
     return " ".join(value.split()).casefold()
 
 
-def _search_job_lock_key(query: str, expression: str, force_refresh: bool) -> str:  # noqa: FBT001  # internal helper
+def _search_job_key_material(
+    query: str,
+    expression: str,
+    force_refresh: bool,  # noqa: FBT001  # internal helper
+    filters: SearchFilters,
+) -> str:
+    """Build the normalized search-job key material.
+
+    The filter signature participates in the key so that two jobs sharing a
+    query/expression but requesting different filters do not attach to each
+    other or share a creation lock.
+    """
+    return "|".join(
+        (
+            _normalize_job_text(query),
+            _normalize_job_text(expression),
+            str(int(force_refresh)),
+            filters.signature(),
+        ),
+    )
+
+
+def _search_job_lock_key(
+    query: str,
+    expression: str,
+    force_refresh: bool,  # noqa: FBT001  # internal helper
+    filters: SearchFilters,
+) -> str:
     """Build a stable cache key for search-job creation locking."""
     digest = hashlib.sha256(
-        _search_job_key_material(query, expression, force_refresh).encode("utf-8"),
+        _search_job_key_material(query, expression, force_refresh, filters).encode(
+            "utf-8",
+        ),
     ).hexdigest()
     return f"search-job-create:{digest}"
 
@@ -104,37 +195,32 @@ def _search_job_pending_key(
     query: str,
     expression: str,
     force_refresh: bool,  # noqa: FBT001  # internal helper
+    filters: SearchFilters,
 ) -> str:
     """Build a cache key that temporarily reserves a job id during creation."""
     digest = hashlib.sha256(
-        _search_job_key_material(query, expression, force_refresh).encode("utf-8"),
+        _search_job_key_material(query, expression, force_refresh, filters).encode(
+            "utf-8",
+        ),
     ).hexdigest()
     return f"search-job-pending:{digest}"
-
-
-def _search_job_key_material(
-    query: str,
-    expression: str,
-    force_refresh: bool,  # noqa: FBT001  # internal helper
-) -> str:
-    """Build the normalized search-job key material."""
-    return "|".join(
-        (
-            _normalize_job_text(query),
-            _normalize_job_text(expression),
-            str(int(force_refresh)),
-        ),
-    )
 
 
 def _find_active_search_job(
     query: str,
     expression: str,
     force_refresh: bool,  # noqa: FBT001  # internal helper
+    filters: SearchFilters,
 ) -> SearchJob | None:
-    """Return the latest matching active search job if one exists."""
+    """Return the latest matching active search job if one exists.
+
+    A match requires the same normalized query/expression, the same
+    ``force_refresh`` flag, and the same filter signature -- different filters
+    produce different jobs even for an identical query.
+    """
     normalized_query = _normalize_job_text(query)
     normalized_expression = _normalize_job_text(expression)
+    target_signature = filters.signature()
     for job in (
         SearchJob.objects.filter(
             force_refresh_requested=force_refresh,
@@ -146,6 +232,7 @@ def _find_active_search_job(
         if (
             _normalize_job_text(job.query) == normalized_query
             and _normalize_job_text(job.expression) == normalized_expression
+            and _filters_from_job(job).signature() == target_signature
         ):
             return job
     return None
@@ -155,6 +242,7 @@ def _build_pending_search_job(
     query: str,
     expression: str,
     force_refresh: bool,  # noqa: FBT001  # internal helper
+    filters: SearchFilters,
     job_id: uuid.UUID,
 ) -> SearchJob:
     """Build an in-memory search job placeholder for a creation race."""
@@ -181,10 +269,34 @@ def _build_pending_search_job(
         rescan_reason="",
         results=[],
         error="",
+        peer_reviewed_only=filters.peer_reviewed_only,
+        indexed_only=filters.indexed_only,
+        exclude_preprints=filters.exclude_preprints,
+        year_from=filters.year_from,
+        year_to=filters.year_to,
+        sort_by=filters.normalized_sort(),
         created_at=now,
         updated_at=now,
         finished_at=None,
     )
+
+
+def _paginate_results(
+    results: list[dict],
+    page: int,
+    per_page: int,
+) -> tuple[list[dict], dict[str, int]]:
+    """Slice a stored results list into a single page plus pagination metadata."""
+    total_results = len(results)
+    total_pages = ceil(total_results / per_page) if per_page else 0
+    start = (page - 1) * per_page
+    end = start + per_page
+    return results[start:end], {
+        "page": page,
+        "per_page": per_page,
+        "total_pages": total_pages,
+        "total_results": total_results,
+    }
 
 
 class SourceStatsView(APIView):
@@ -216,6 +328,9 @@ class SearchView(APIView):
         query = serializer.validated_data["query"]
         expression = serializer.validated_data.get("expression", "")
         force_refresh = serializer.validated_data["force_refresh"]
+        filters = _filters_from_validated(serializer.validated_data)
+        page = int(serializer.validated_data["page"])
+        per_page = int(serializer.validated_data["per_page"])
 
         if force_refresh:
             ingest_search_query.delay(query)
@@ -224,15 +339,20 @@ class SearchView(APIView):
             query=query,
             expression=expression,
             force_refresh=False,
+            filters=filters,
         )
+        page_results, pagination = _paginate_results(results, page, per_page)
         stats = self._source_stats()
 
         return Response(
             {
                 "query": query,
-                "count": len(results),
+                "count": pagination["total_results"],
+                "page": pagination["page"],
+                "per_page": pagination["per_page"],
+                "total_pages": pagination["total_pages"],
                 "source_stats": stats,
-                "results": SearchResultSerializer(results, many=True).data,
+                "results": SearchResultSerializer(page_results, many=True).data,
             },
         )
 
@@ -250,15 +370,17 @@ class SearchJobCreateView(APIView):
         query = serializer.validated_data["query"]
         expression = serializer.validated_data.get("expression", "")
         force_refresh = serializer.validated_data.get("force_refresh", False)
-        pending_key = _search_job_pending_key(query, expression, force_refresh)
+        filters = _filters_from_validated(serializer.validated_data)
+        pending_key = _search_job_pending_key(query, expression, force_refresh, filters)
 
         job: SearchJob | None = _find_active_search_job(
             query,
             expression,
             force_refresh,
+            filters,
         )
         attached_to_existing = job is not None
-        lock_key = _search_job_lock_key(query, expression, force_refresh)
+        lock_key = _search_job_lock_key(query, expression, force_refresh, filters)
 
         if job is None and cache.add(
             lock_key,
@@ -278,6 +400,12 @@ class SearchJobCreateView(APIView):
                         query=query,
                         expression=expression,
                         force_refresh_requested=force_refresh,
+                        peer_reviewed_only=filters.peer_reviewed_only,
+                        indexed_only=filters.indexed_only,
+                        exclude_preprints=filters.exclude_preprints,
+                        year_from=filters.year_from,
+                        year_to=filters.year_to,
+                        sort_by=filters.normalized_sort(),
                         source_failed=[],
                         source_timings={},
                         results=[],
@@ -303,6 +431,7 @@ class SearchJobCreateView(APIView):
                         query=query,
                         expression=expression,
                         force_refresh=force_refresh,
+                        filters=filters,
                         job_id=reserved_job_id,
                     )
                     attached_to_existing = True
@@ -312,6 +441,12 @@ class SearchJobCreateView(APIView):
                         query=query,
                         expression=expression,
                         force_refresh_requested=force_refresh,
+                        peer_reviewed_only=filters.peer_reviewed_only,
+                        indexed_only=filters.indexed_only,
+                        exclude_preprints=filters.exclude_preprints,
+                        year_from=filters.year_from,
+                        year_to=filters.year_to,
+                        sort_by=filters.normalized_sort(),
                         source_failed=[],
                         source_timings={},
                         results=[],
@@ -333,17 +468,24 @@ class SearchJobCreateView(APIView):
 
 
 class SearchJobDetailView(APIView):
-    """Return the current state of a search job."""
+    """Return the current state of a search job, paginated server-side."""
 
     permission_classes = (AllowAny,)
     authentication_classes = ()
 
-    def get(self, request: Request, job_id: uuid.UUID) -> Response:  # noqa: ARG002  # DRF view method signature
+    def get(self, request: Request, job_id: uuid.UUID) -> Response:
         """Handle the GET request."""
         job = get_object_or_404(SearchJob, id=job_id)
-        payload = _serialize_job(job)
+        query_serializer = SearchJobDetailQuerySerializer(data=request.query_params)
+        query_serializer.is_valid(raise_exception=True)
+        page = int(query_serializer.validated_data["page"])
+        per_page = int(query_serializer.validated_data["per_page"])
+
+        page_results, pagination = _paginate_results(job.results, page, per_page)
+        serialized_page = SearchResultSerializer(page_results, many=True).data
+        payload = _serialize_job(job, results=serialized_page, pagination=pagination)
         payload["source_stats"] = get_source_stats()
-        payload["count"] = len(payload["results"])
+        payload["count"] = pagination["total_results"]
         return Response(payload)
 
 

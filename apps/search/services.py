@@ -5,12 +5,23 @@ from __future__ import annotations
 from typing import ClassVar
 
 from django.conf import settings
-from django.db.models import Case, FloatField, Q, QuerySet, Value, When
+from django.contrib.postgres.search import SearchQuery, SearchVectorField
+from django.db import connections
+from django.db.models import Case, FloatField, IntegerField, Q, QuerySet, Value, When
+from django.db.models.expressions import RawSQL
 
 from apps.articles.models import Article
 from apps.core.text import canonical_text_key, normalize_doi, normalize_scholarly_text
 from apps.core.translate import expand_search_terms
 from apps.ingestion.services import IngestionService
+
+from .filters import (
+    DEFAULT_FILTERS,
+    SORT_METADATA,
+    SORT_NEWEST,
+    SORT_RELEVANCE,
+    SearchFilters,
+)
 
 
 class SearchService:
@@ -113,6 +124,99 @@ class SearchService:
         )
 
     @classmethod
+    def _apply_filters(
+        cls,
+        queryset: QuerySet[Article],
+        filters: SearchFilters,
+    ) -> QuerySet[Article]:
+        """Apply server-side eligibility and year-range filters to a queryset.
+
+        Filtering happens before the top-K truncation so strict eligibility
+        filters do not discard eligible articles that ranked just outside the
+        top-K window.
+        """
+        if filters.peer_reviewed_only:
+            queryset = queryset.filter(is_peer_reviewed_or_refereed=True)
+        if filters.indexed_only:
+            queryset = queryset.filter(is_indexed_in_reputable_db=True)
+        if filters.exclude_preprints:
+            queryset = queryset.filter(is_not_preprint_or_author_manuscript=True)
+        if filters.year_from is not None:
+            queryset = queryset.filter(publication_year__gte=filters.year_from)
+        if filters.year_to is not None:
+            queryset = queryset.filter(publication_year__lte=filters.year_to)
+        return queryset
+
+    @classmethod
+    def _apply_sort(
+        cls,
+        queryset: QuerySet[Article],
+        sort_by: str,
+    ) -> QuerySet[Article]:
+        """Apply the requested ordering to a scored queryset.
+
+        ``relevance`` keeps the existing score-descending ordering; ``newest``
+        orders by publication year; ``metadata`` ranks by a metadata
+        completeness proxy (eligibility flags + journal presence) computed
+        database-side without extra joins.
+        """
+        sort = (
+            sort_by
+            if sort_by in {SORT_RELEVANCE, SORT_NEWEST, SORT_METADATA}
+            else SORT_RELEVANCE
+        )
+        if sort == SORT_NEWEST:
+            return queryset.order_by("-publication_year", "-updated_at", "id")
+        if sort == SORT_METADATA:
+            queryset = queryset.annotate(
+                metadata_score=(
+                    Case(
+                        When(
+                            is_peer_reviewed_or_refereed=True,
+                            then=Value(2),
+                        ),
+                        default=Value(0),
+                        output_field=IntegerField(),
+                    )
+                    + Case(
+                        When(is_indexed_in_reputable_db=True, then=Value(2)),
+                        default=Value(0),
+                        output_field=IntegerField(),
+                    )
+                    + Case(
+                        When(has_doi_and_journal_card=True, then=Value(1)),
+                        default=Value(0),
+                        output_field=IntegerField(),
+                    )
+                    + Case(
+                        When(
+                            is_not_preprint_or_author_manuscript=True,
+                            then=Value(1),
+                        ),
+                        default=Value(0),
+                        output_field=IntegerField(),
+                    )
+                    + Case(
+                        When(journal__isnull=False, then=Value(1)),
+                        default=Value(0),
+                        output_field=IntegerField(),
+                    )
+                ),
+            )
+            return queryset.order_by(
+                "-metadata_score",
+                "-publication_year",
+                "-updated_at",
+                "id",
+            )
+        return queryset.order_by(
+            "-search_score",
+            "-publication_year",
+            "-updated_at",
+            "id",
+        )
+
+    @classmethod
     def _dedupe_key(cls, article: Article) -> str:
         """Compute the stable deduplication key."""
         doi = normalize_doi(article.doi or "")
@@ -212,60 +316,173 @@ class SearchService:
             score = score + cls._crosslang_term_score(term)
         return score * cls._source_penalty()
 
+    @staticmethod
+    def _is_postgres() -> bool:
+        """Return True when the default database connection is PostgreSQL."""
+        return connections["default"].vendor == "postgresql"
+
+    @staticmethod
+    def _pg_fts_vector() -> RawSQL:
+        """Return a raw tsvector expression matching the GIN index in 0009.
+
+        The expression is intentionally written as raw SQL so it stays
+        byte-identical to the index definition in migration
+        ``articles/0009_pg_fulltext_gin_index`` -- PostgreSQL only uses a GIN
+        expression index for ``vector @@ query`` when the indexed expression
+        matches the query expression exactly.
+        """
+        return RawSQL(
+            "to_tsvector('simple', coalesce(title, '') || ' ' || "
+            "coalesce(abstract, '') || ' ' || coalesce(full_text, ''))",
+            (),
+            output_field=SearchVectorField(),
+        )
+
+    @classmethod
+    def _pg_search_query(
+        cls,
+        search_text: str,
+        cross_lingual: list[str],
+    ) -> SearchQuery:
+        """Build a tsquery combining the main text and cross-lingual terms.
+
+        Cross-lingual translations are OR-ed into the query so an article
+        written in a different language than the query still matches.
+        """
+        query = SearchQuery(search_text, search_type="websearch", config="simple")
+        for translated in cross_lingual:
+            cleaned = translated.strip()
+            if not cleaned:
+                continue
+            query = query | SearchQuery(
+                cleaned,
+                search_type="websearch",
+                config="simple",
+            )
+        return query
+
+    @classmethod
+    def _cross_lingual_terms(cls, query: str) -> tuple[list[str], list[str]]:
+        """Return cross-lingual phrases and their individual tokens."""
+        cross_lingual = expand_search_terms(query)
+        tokens: list[str] = []
+        for translated in cross_lingual:
+            tokens.extend(t for t in translated.split() if len(t) > 1)
+        return list(cross_lingual), tokens
+
+    @classmethod
+    def _build_sqlite_queryset(
+        cls,
+        search_text: str,
+        terms: list[str],
+        cross_lingual: list[str],
+        cross_lingual_tokens: list[str],
+        filters: SearchFilters,
+    ) -> QuerySet[Article]:
+        """Build the icontains OR-tree queryset for non-PostgreSQL backends."""
+        filters_q = Q(title__icontains=search_text)
+        filters_q |= Q(abstract__icontains=search_text)
+        filters_q |= Q(full_text__icontains=search_text)
+        filters_q |= Q(journal__name__icontains=search_text)
+        filters_q |= Q(doi__icontains=search_text)
+        for term in terms:
+            filters_q |= Q(title__icontains=term)
+            filters_q |= Q(abstract__icontains=term)
+            filters_q |= Q(full_text__icontains=term)
+            filters_q |= Q(journal__name__icontains=term)
+            filters_q |= Q(doi__icontains=term)
+        for translated in cross_lingual:
+            tokens = [t for t in translated.split() if len(t) > 1]
+            filters_q |= Q(title__icontains=translated)
+            filters_q |= Q(abstract__icontains=translated)
+            filters_q |= Q(full_text__icontains=translated)
+            for token in tokens:
+                filters_q |= Q(title__icontains=token)
+                filters_q |= Q(abstract__icontains=token)
+                filters_q |= Q(full_text__icontains=token)
+        queryset = cls._articles_queryset().filter(filters_q)
+        queryset = cls._apply_filters(queryset, filters)
+        queryset = queryset.annotate(
+            search_score=cls._score_expression(
+                search_text,
+                terms,
+                cross_lingual=cross_lingual_tokens,
+            ),
+        )
+        return cls._apply_sort(queryset, filters.sort_by)
+
+    @classmethod
+    def _build_pg_queryset(
+        cls,
+        search_text: str,
+        terms: list[str],
+        cross_lingual: list[str],
+        cross_lingual_tokens: list[str],
+        filters: SearchFilters,
+    ) -> QuerySet[Article]:
+        """Build the PostgreSQL full-text queryset using a GIN-indexed tsvector.
+
+        The primary filter is ``vector @@ tsquery`` (index-accelerated); the
+        existing Case/When scoring expression is applied on top so DOI exact
+        boosts, source penalties, and cross-lingual token weights are preserved.
+        Server-side eligibility and year-range filters are applied before the
+        top-K truncation.
+        """
+        queryset = (
+            cls._articles_queryset()
+            .annotate(
+                _fts_vector=cls._pg_fts_vector(),
+            )
+            .filter(_fts_vector=cls._pg_search_query(search_text, cross_lingual))
+        )
+        queryset = cls._apply_filters(queryset, filters)
+        queryset = queryset.annotate(
+            search_score=cls._score_expression(
+                search_text,
+                terms,
+                cross_lingual=cross_lingual_tokens,
+            ),
+        )
+        return cls._apply_sort(queryset, filters.sort_by)
+
     @classmethod
     def _search_queryset(
         cls,
         query: str,
         expression: str,
+        filters: SearchFilters = DEFAULT_FILTERS,
     ) -> tuple[QuerySet[Article], str, list[str]]:
         """Build the article queryset for the current search.
 
-        Expands the search with cross-lingual equivalents so that articles
-        saved in a different language than the query are still matched.
+        On PostgreSQL the primary filter is a GIN-indexed full-text search over
+        title, abstract, and full_text; on other backends (used for the SQLite
+        test database) it falls back to an icontains OR-tree. Both paths expand
+        the search with cross-lingual equivalents so articles saved in a
+        different language than the query are still matched, and both apply the
+        server-side eligibility/year filters and requested ordering before the
+        top-K truncation.
         """
         search_text = cls._search_text(query, expression)
         terms = cls._search_terms(query, expression)
         if not search_text:
             return cls._articles_queryset().none(), search_text, terms
-
-        filters = Q(title__icontains=search_text)
-        filters |= Q(abstract__icontains=search_text)
-        filters |= Q(full_text__icontains=search_text)
-        filters |= Q(journal__name__icontains=search_text)
-        filters |= Q(doi__icontains=search_text)
-        for term in terms:
-            filters |= Q(title__icontains=term)
-            filters |= Q(abstract__icontains=term)
-            filters |= Q(full_text__icontains=term)
-            filters |= Q(journal__name__icontains=term)
-            filters |= Q(doi__icontains=term)
-
-        cross_lingual = expand_search_terms(query)
-        cross_lingual_tokens: list[str] = []
-        for translated in cross_lingual:
-            # Split translated phrases into individual tokens for broader matching.
-            tokens = [t for t in translated.split() if len(t) > 1]
-            cross_lingual_tokens.extend(tokens)
-            filters |= Q(title__icontains=translated)
-            filters |= Q(abstract__icontains=translated)
-            filters |= Q(full_text__icontains=translated)
-            for token in tokens:
-                filters |= Q(title__icontains=token)
-                filters |= Q(abstract__icontains=token)
-                filters |= Q(full_text__icontains=token)
-
-        queryset = (
-            cls._articles_queryset()
-            .filter(filters)
-            .annotate(
-                search_score=cls._score_expression(
-                    search_text,
-                    terms,
-                    cross_lingual=cross_lingual_tokens,
-                ),
+        cross_lingual, cross_lingual_tokens = cls._cross_lingual_terms(query)
+        if cls._is_postgres():
+            queryset = cls._build_pg_queryset(
+                search_text,
+                terms,
+                cross_lingual,
+                cross_lingual_tokens,
+                filters,
             )
-            .order_by("-search_score", "-publication_year", "-updated_at", "id")
-        )
+        else:
+            queryset = cls._build_sqlite_queryset(
+                search_text,
+                terms,
+                cross_lingual,
+                cross_lingual_tokens,
+                filters,
+            )
         return queryset, search_text, terms
 
     @classmethod
@@ -274,9 +491,10 @@ class SearchService:
         query: str,
         expression: str,
         size: int = 30,
+        filters: SearchFilters = DEFAULT_FILTERS,
     ) -> list[dict]:
         """Execute the article-level search pipeline."""
-        queryset, _, _ = cls._search_queryset(query, expression)
+        queryset, _, _ = cls._search_queryset(query, expression, filters)
         ranked_articles: list[dict] = []
         seen_keys: set[str] = set()
         for article in queryset[: max(size, settings.APP.search_final_top_k)]:
@@ -310,7 +528,13 @@ class SearchService:
 
     @classmethod
     def index_hit_count(cls, query: str, expression: str) -> int:
-        """Return the number of indexed hits for the current query."""
+        """Return the number of indexed hits for the current query.
+
+        Intentionally unfiltered: this count drives the rescan-decision logic
+        in ``run_search_job`` (empty corpus -> rescan), which must reflect the
+        corpus as a whole rather than the requesting client's eligibility
+        filters.
+        """
         try:
             queryset, _, _ = cls._search_queryset(query, expression)
             return int(queryset.count())
@@ -324,6 +548,7 @@ class SearchService:
         expression: str,
         force_refresh: bool = False,  # noqa: FBT001, FBT002  # public API positional bool
         fallback_to_recent: bool = False,  # noqa: FBT001, FBT002  # public API positional bool
+        filters: SearchFilters = DEFAULT_FILTERS,
     ) -> list[dict]:
         """Run the article search pipeline and return ranked results."""
         if force_refresh:
@@ -333,6 +558,7 @@ class SearchService:
                 query=query,
                 expression=expression,
                 size=settings.APP.search_final_top_k,
+                filters=filters,
             )
             if results:
                 return results

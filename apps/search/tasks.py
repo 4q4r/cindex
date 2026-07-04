@@ -12,10 +12,24 @@ from django.utils import timezone
 
 from apps.ingestion.services import IngestionService
 
+from .filters import SearchFilters
 from .models import SearchJob, SearchWaitStat
 from .services import SearchService
 
 logger = structlog.get_logger(__name__)
+
+
+def _filters_from_job(job: SearchJob) -> SearchFilters:
+    """Reconstruct the server-side filters persisted on a search job."""
+    return SearchFilters(
+        peer_reviewed_only=job.peer_reviewed_only,
+        indexed_only=job.indexed_only,
+        exclude_preprints=job.exclude_preprints,
+        year_from=job.year_from,
+        year_to=job.year_to,
+        sort_by=job.sort_by,
+    )
+
 
 STAGE_PROGRESS: dict[str, int] = {
     "queued": 5,
@@ -363,6 +377,7 @@ def run_search_job(job_id: str) -> None:
             expression=job.expression,
             force_refresh=False,
             fallback_to_recent=False,
+            filters=_filters_from_job(job),
         )
         hits_after = SearchService.index_hit_count(job.query, job.expression)
 
