@@ -1,4 +1,10 @@
-from django.contrib import admin
+"""Django admin configuration for ingestion-run and local-import tracking."""
+
+from django.contrib import admin, messages
+from django.db.models import QuerySet
+from django.http import HttpRequest
+
+from apps.ingestion.exa_usage import sync_exa_usage_snapshots
 
 from .models import ExaApiKeyQuota, IngestionRun, LocalImportFile
 
@@ -40,12 +46,12 @@ class ExaApiKeyQuotaAdmin(admin.ModelAdmin):
         return f"{start} → {end}"
 
     @admin.action(description="Refresh Exa usage snapshots")
-    def refresh_from_exa(self, request, queryset) -> None:
+    def refresh_from_exa(
+        self,
+        request: HttpRequest,
+        queryset: QuerySet[ExaApiKeyQuota],  # noqa: ARG002
+    ) -> None:
         """Refresh Exa usage snapshots from the official team-management API."""
-        from django.contrib import messages
-
-        from apps.ingestion.exa_usage import sync_exa_usage_snapshots
-
         updated, failed = sync_exa_usage_snapshots()
         if failed:
             messages.warning(

@@ -4,6 +4,11 @@ from __future__ import annotations
 
 import multiprocessing
 import os
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from gunicorn.arbiter import Arbiter
+    from gunicorn.workers.base import Worker
 
 
 def _env_int(name: str, default: int) -> int:
@@ -40,10 +45,15 @@ accesslog = "-"
 errorlog = "-"
 
 
-def post_fork(server, worker) -> None:
+def post_fork(server: Arbiter, worker: Worker) -> None:  # noqa: ARG001  # gunicorn hook signature
     """Close inherited DB connections after fork to avoid shared sockets."""
     try:
-        from django.db import connections
+        from django.db import connections  # noqa: PLC0415  # lazy import
     except ImportError:
         return
     connections.close_all()
+
+
+# Gunicorn loads this module by its dotted path `gunicorn.conf`.
+# The dotted module name is required by gunicorn's config-loading convention.
+# ruff: noqa: N999

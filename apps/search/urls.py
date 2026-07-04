@@ -1,3 +1,5 @@
+"""URL routing for the search app API endpoints."""
+
 from django.urls import path
 
 from .views import (

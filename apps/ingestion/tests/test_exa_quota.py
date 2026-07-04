@@ -2,17 +2,19 @@ from __future__ import annotations
 
 from datetime import UTC, datetime
 from decimal import Decimal
-
-import pytest
+from typing import TYPE_CHECKING
 
 from apps.ingestion.exa_usage import sync_exa_usage_snapshots
 from apps.ingestion.models import ExaApiKeyQuota
+
+if TYPE_CHECKING:
+    import pytest
 
 
 class _FakeJsonResponse:
     """Minimal aiohttp-like response for testing."""
 
-    def __init__(self, payload: dict):
+    def __init__(self, payload: dict) -> None:
         self._payload = payload
 
     async def json(self):
@@ -20,7 +22,7 @@ class _FakeJsonResponse:
 
     def raise_for_status(self) -> None:
         """Mimic a successful response."""
-        return None
+        return
 
     async def __aenter__(self):
         return self
@@ -32,13 +34,14 @@ class _FakeJsonResponse:
 class _FakeSession:
     """Fake aiohttp.ClientSession that returns canned responses."""
 
-    def __init__(self, responses: dict):
+    def __init__(self, responses: dict) -> None:
         self._responses = responses
 
     def get(self, url, **kwargs):
         response = self._responses.get(str(url))
         if response is None:
-            raise AssertionError(f"unexpected URL {url}")
+            msg = f"unexpected URL {url}"
+            raise AssertionError(msg)
         return response
 
     async def __aenter__(self):
@@ -50,7 +53,6 @@ class _FakeSession:
 
 def test_exa_usage_sync_persists_team_keys(monkeypatch: pytest.MonkeyPatch, db) -> None:
     """Exa usage sync should persist snapshots from official management API."""
-
     _keys_response = _FakeJsonResponse(
         {
             "apiKeys": [

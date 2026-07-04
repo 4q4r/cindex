@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from typing import Never
 from uuid import uuid4
 
 from apps.search import tasks as search_tasks
@@ -91,8 +92,9 @@ def test_run_search_job_skips_ingestion_after_completed_live_scan(
         index_hits_before=136,
     )
 
-    def fake_ingest_query(**_kwargs):
-        raise AssertionError("ingestion should not run after a completed live scan")
+    def fake_ingest_query(**_kwargs) -> Never:
+        msg = "ingestion should not run after a completed live scan"
+        raise AssertionError(msg)
 
     monkeypatch.setattr(
         search_tasks,

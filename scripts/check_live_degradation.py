@@ -29,8 +29,9 @@ def main() -> int:
             degraded.append(source_key)
 
     if degraded:
+        msg = f"Degraded sources (prev>0, now=0): {', '.join(sorted(degraded))}"
         raise SystemExit(
-            f"Degraded sources (prev>0, now=0): {', '.join(sorted(degraded))}",
+            msg,
         )
     return 0
 
