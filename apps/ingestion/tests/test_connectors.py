@@ -88,14 +88,14 @@ def test_europe_pmc_payload_extraction() -> None:
                     "doi": "10.1111/sysbio.2023.1",
                     "pubYear": "2023",
                     "fullTextUrlList": {
-                        "fullTextUrl": [{"url": "https://example.org/full"}]
+                        "fullTextUrl": [{"url": "https://example.org/full"}],
                     },
-                }
-            ]
-        }
+                },
+            ],
+        },
     }
     items = EuropePMCConnector()._extract_from_payload(
-        "systems biology", payload, limit=5
+        "systems biology", payload, limit=5,
     )
 
     assert len(items) == 1
@@ -116,9 +116,9 @@ def test_doaj_payload_extraction() -> None:
                     "journal": {"title": "Ecology OA"},
                     "identifier": [{"type": "doi", "id": "10.2222/ecology.2022.9"}],
                     "link": [{"url": "https://example.org/oa-ecology"}],
-                }
-            }
-        ]
+                },
+            },
+        ],
     }
     items = DOAJConnector()._extract_from_payload("ecology", payload, limit=5)
 
@@ -225,7 +225,7 @@ def test_openedition_filters_hypotheses_blog_posts() -> None:
     </oai:OAI-PMH>
     """
     items, token = OpenEditionConnector()._parse_oai_records(
-        xml, "history france", remaining=5
+        xml, "history france", remaining=5,
     )
 
     assert token == ""
