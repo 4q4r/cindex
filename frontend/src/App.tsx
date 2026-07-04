@@ -438,6 +438,9 @@ export default function App() {
                                 onClick={() => {
                                   handlePageChange(page);
                                 }}
+                                aria-current={
+                                  page === currentPage ? "page" : undefined
+                                }
                                 className={`min-w-[44px] min-h-[44px] rounded-lg text-xs font-medium transition-colors ${
                                   page === currentPage
                                     ? "bg-accent text-white"
@@ -485,8 +488,12 @@ export default function App() {
       </div>
 
       {copyNotification && (
-        <div className="fixed bottom-6 right-6 z-50 flex items-center gap-2 bg-bg-card border border-success/30 text-success px-4 py-2.5 rounded-lg shadow-xl animate-fade-in">
-          <Check className="w-4 h-4" />
+        <div
+          role="status"
+          aria-live="polite"
+          className="fixed bottom-6 right-6 z-50 flex items-center gap-2 bg-bg-card border border-success/30 text-success px-4 py-2.5 rounded-lg shadow-xl animate-fade-in"
+        >
+          <Check className="w-4 h-4" aria-hidden="true" />
           <span className="text-sm">{copyNotification}</span>
         </div>
       )}
