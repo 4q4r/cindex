@@ -243,7 +243,7 @@ export function FilterPanel({
                   : "year-range-help"
               }
               aria-invalid={yearError ? true : undefined}
-              className={`w-full bg-bg-input border rounded-lg px-3 py-2 text-sm text-text-primary placeholder:text-text-tertiary focus:border-accent/50 transition-colors ${
+              className={`w-full bg-bg-input border rounded-lg px-3 py-2 text-sm tabular-nums text-text-primary placeholder:text-text-tertiary focus:border-accent/50 transition-colors ${
                 yearError ? "border-danger/60" : "border-border-default"
               }`}
               min={String(MIN_YEAR)}
@@ -274,7 +274,7 @@ export function FilterPanel({
                   : "year-range-help"
               }
               aria-invalid={yearError ? true : undefined}
-              className={`w-full bg-bg-input border rounded-lg px-3 py-2 text-sm text-text-primary placeholder:text-text-tertiary focus:border-accent/50 transition-colors ${
+              className={`w-full bg-bg-input border rounded-lg px-3 py-2 text-sm tabular-nums text-text-primary placeholder:text-text-tertiary focus:border-accent/50 transition-colors ${
                 yearError ? "border-danger/60" : "border-border-default"
               }`}
               min={String(MIN_YEAR)}

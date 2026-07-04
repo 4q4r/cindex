@@ -26,12 +26,14 @@ export const InfoBar = memo(function InfoBar({
     <div className="flex items-center justify-between gap-4 flex-wrap">
       <div className="flex items-center gap-3 flex-wrap">
         <span className="text-sm text-text-secondary">
-          <span className="text-text-primary font-medium">{totalResults}</span>{" "}
+          <span className="text-text-primary font-medium tabular-nums">
+            {totalResults}
+          </span>{" "}
           результатов
         </span>
 
         {filteredOut > 0 && (
-          <span className="text-xs text-text-tertiary">
+          <span className="text-xs text-text-tertiary tabular-nums">
             ({filteredOut} отфильтровано)
           </span>
         )}
