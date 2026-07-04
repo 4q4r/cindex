@@ -47,7 +47,7 @@ export const EmptyState = memo(function EmptyState({
       <div className="flex flex-col items-center justify-center py-6 lg:py-2 px-4 animate-fade-in">
         <div className="max-w-5xl w-full text-center">
           <div className="w-14 h-14 mx-auto mb-4 rounded-2xl bg-accent-subtle/30 flex items-center justify-center">
-            <BookOpen className="w-7 h-7 text-accent/70" />
+            <BookOpen className="w-7 h-7 text-accent" />
           </div>
           <h2 className="text-xl font-semibold text-text-primary mb-2">
             Поиск научных источников
@@ -65,7 +65,9 @@ export const EmptyState = memo(function EmptyState({
                 <button
                   type="button"
                   key={ex.query}
-                  onClick={() => { onExampleClick(ex.query); }}
+                  onClick={() => {
+                    onExampleClick(ex.query);
+                  }}
                   className="w-full group flex items-center gap-3 bg-bg-card border border-border-default rounded-lg p-3 hover:border-accent/30 hover:bg-bg-elevated transition-all text-left"
                 >
                   <Search className="w-4 h-4 text-text-tertiary group-hover:text-accent transition-colors shrink-0" />

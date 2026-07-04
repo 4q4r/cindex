@@ -108,7 +108,7 @@ function SelectDropdown({
               }}
               className={`w-full min-h-[44px] text-left px-3 py-2 text-sm hover:bg-bg-hover transition-colors ${
                 opt.value === value
-                  ? "text-accent bg-accent-subtle/30"
+                  ? "text-accent-text bg-accent-subtle/30"
                   : "text-text-secondary"
               }`}
             >
