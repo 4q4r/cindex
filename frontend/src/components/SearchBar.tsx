@@ -46,7 +46,7 @@ export function SearchBar({
                   onClick={() => {
                     onQueryChange("");
                   }}
-                  className="absolute right-3 top-1/2 -translate-y-1/2 p-1 text-text-tertiary hover:text-text-secondary transition-colors"
+                  className="absolute right-3 top-1/2 -translate-y-1/2 p-1 text-text-tertiary hover:text-text-secondary transition-colors before:absolute before:inset-[-10px] before:content-[''] before:rounded-lg"
                   aria-label="Очистить запрос"
                 >
                   <X className="w-4 h-4" />

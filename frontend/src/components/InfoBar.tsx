@@ -47,7 +47,7 @@ export const InfoBar = memo(function InfoBar({
           <button
             type="button"
             onClick={onClearFilters}
-            className="flex items-center gap-1 text-xs text-accent hover:text-accent-muted transition-colors"
+            className="flex min-h-[44px] items-center gap-1 px-1 text-xs text-accent hover:text-accent-muted transition-colors"
           >
             <X className="w-3 h-3" />
             Сбросить фильтры
@@ -59,7 +59,7 @@ export const InfoBar = memo(function InfoBar({
         <button
           type="button"
           onClick={onToggleMobileFilters}
-          className="lg:hidden flex items-center gap-1.5 text-xs text-text-secondary hover:text-text-primary bg-bg-elevated border border-border-default px-3 py-1.5 rounded-lg transition-colors"
+          className="lg:hidden flex min-h-[44px] items-center gap-1.5 text-xs text-text-secondary hover:text-text-primary bg-bg-elevated border border-border-default px-3 py-2 rounded-lg transition-colors"
         >
           <SlidersHorizontal className="w-3.5 h-3.5" />
           Фильтры
@@ -71,8 +71,10 @@ export const InfoBar = memo(function InfoBar({
         <div className="flex items-center bg-bg-elevated border border-border-default rounded-lg overflow-hidden">
           <button
             type="button"
-            onClick={() => { onViewModeChange("comfortable"); }}
-            className={`px-3 py-1.5 text-xs transition-colors ${
+            onClick={() => {
+              onViewModeChange("comfortable");
+            }}
+            className={`min-h-[44px] px-3 py-2 text-xs transition-colors ${
               viewMode === "comfortable"
                 ? "bg-accent/15 text-accent"
                 : "text-text-tertiary hover:text-text-secondary"
@@ -82,8 +84,10 @@ export const InfoBar = memo(function InfoBar({
           </button>
           <button
             type="button"
-            onClick={() => { onViewModeChange("compact"); }}
-            className={`px-3 py-1.5 text-xs transition-colors ${
+            onClick={() => {
+              onViewModeChange("compact");
+            }}
+            className={`min-h-[44px] px-3 py-2 text-xs transition-colors ${
               viewMode === "compact"
                 ? "bg-accent/15 text-accent"
                 : "text-text-tertiary hover:text-text-secondary"

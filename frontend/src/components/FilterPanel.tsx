@@ -63,7 +63,7 @@ function SelectDropdown({
         }}
         aria-label={label}
         aria-haspopup="listbox"
-        className="w-full flex items-center justify-between bg-bg-input border border-border-default rounded-lg px-3 py-2 text-sm text-text-primary hover:border-accent/30 transition-colors"
+        className="w-full min-h-[44px] flex items-center justify-between bg-bg-input border border-border-default rounded-lg px-3 py-2 text-sm text-text-primary hover:border-accent/30 transition-colors"
       >
         <span>{current?.label}</span>
         <ChevronDown
@@ -80,7 +80,7 @@ function SelectDropdown({
                 onChange(opt.value);
                 setOpen(false);
               }}
-              className={`w-full text-left px-3 py-2 text-sm hover:bg-bg-hover transition-colors ${
+              className={`w-full min-h-[44px] text-left px-3 py-2 text-sm hover:bg-bg-hover transition-colors ${
                 opt.value === value
                   ? "text-accent bg-accent-subtle/30"
                   : "text-text-secondary"
@@ -110,7 +110,7 @@ function CheckboxItem({
       onClick={() => {
         onChange(!checked);
       }}
-      className="flex items-center gap-2.5 cursor-pointer group py-1 text-left"
+      className="flex min-h-[44px] items-center gap-2.5 cursor-pointer group py-2 text-left"
     >
       <div
         className={`w-4 h-4 rounded border flex items-center justify-center transition-colors shrink-0 ${
@@ -265,7 +265,7 @@ export function FilterPanel({
                 <button
                   type="button"
                   onClick={onMobileClose}
-                  className="p-1 text-text-tertiary hover:text-text-primary"
+                  className="min-w-[44px] min-h-[44px] flex items-center justify-center -mr-2 text-text-tertiary hover:text-text-primary transition-colors"
                 >
                   <X className="w-5 h-5" />
                 </button>
