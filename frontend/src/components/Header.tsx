@@ -46,9 +46,9 @@ export const Header = memo(function Header({
           <div className="flex items-center gap-1.5">
             <Radio className="w-3.5 h-3.5" />
             <span
-              className={
+              className={`tabular-nums ${
                 sourcesFailed.length > 0 ? "text-warning" : "text-success"
-              }
+              }`}
             >
               {searchState === "idle"
                 ? `доступно ${String(activeSources)} источников`
@@ -60,13 +60,15 @@ export const Header = memo(function Header({
             <>
               <div className="flex items-center gap-1.5">
                 <BookOpen className="w-3.5 h-3.5" />
-                <span>Найдено: {resultCount}</span>
+                <span className="tabular-nums">Найдено: {resultCount}</span>
               </div>
 
               {lastSearchTime && (
                 <div className="flex items-center gap-1.5">
                   <Clock className="w-3.5 h-3.5" />
-                  <span>Поиск: {formatTime(lastSearchTime)}</span>
+                  <span className="tabular-nums">
+                    Поиск: {formatTime(lastSearchTime)}
+                  </span>
                 </div>
               )}
             </>

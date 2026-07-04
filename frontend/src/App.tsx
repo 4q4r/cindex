@@ -317,7 +317,7 @@ export default function App() {
   }, [currentPage, totalPages]);
 
   return (
-    <div className="min-h-screen bg-bg-primary">
+    <div className="min-h-dvh bg-bg-primary">
       <a
         href="#main-content"
         className="sr-only focus:not-sr-only focus:fixed focus:top-3 focus:left-3 focus:z-[100] focus:px-4 focus:py-2.5 focus:rounded-lg focus:bg-bg-card focus:text-text-primary focus:border focus:border-accent focus:shadow-xl"
@@ -345,7 +345,7 @@ export default function App() {
 
           <main
             id="main-content"
-            className="flex-1 min-w-0 h-[calc(100vh-92px)] overflow-y-auto pr-1"
+            className="flex-1 min-w-0 h-[calc(100dvh-92px)] overflow-y-auto pr-1"
           >
             <SearchBar
               query={query}
@@ -441,7 +441,7 @@ export default function App() {
                                 aria-current={
                                   page === currentPage ? "page" : undefined
                                 }
-                                className={`min-w-[44px] min-h-[44px] rounded-lg text-xs font-medium transition-colors ${
+                                className={`min-w-[44px] min-h-[44px] rounded-lg text-xs font-medium tabular-nums transition-colors ${
                                   page === currentPage
                                     ? "bg-accent text-white"
                                     : "text-text-secondary hover:bg-bg-hover hover:text-text-primary"
