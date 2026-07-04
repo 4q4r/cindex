@@ -94,32 +94,6 @@ export function mapApiResult(
   };
 }
 
-export async function searchArticles(
-  payload: SearchApiRequest,
-): Promise<SearchApiPayload> {
-  const response = await fetch(`${API_PREFIX}/search`, {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-    },
-    body: JSON.stringify(payload),
-  });
-
-  if (!response.ok) {
-    throw new Error(`Search API failed: ${response.status}`);
-  }
-
-  const data = (await response.json()) as ApiSearchResponse;
-  return {
-    results: data.results.map(mapApiResult),
-    sourceStats: {
-      total: data.source_stats?.total ?? 0,
-      live: data.source_stats?.live ?? 0,
-      failed: data.source_stats?.failed ?? [],
-    },
-  };
-}
-
 export async function createSearchJob(
   payload: SearchApiRequest,
   signal?: AbortSignal,
