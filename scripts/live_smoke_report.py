@@ -59,12 +59,15 @@ def build_report(per_source_limit: int) -> dict:
             elapsed_ms = int((time.perf_counter() - started) * 1000)
             source_report.results.append(
                 QueryResult(
-                    query=query, count=count, elapsed_ms=elapsed_ms, error=error,
+                    query=query,
+                    count=count,
+                    elapsed_ms=elapsed_ms,
+                    error=error,
                 ),
             )
         reports.append(source_report)
 
-    payload = {
+    return {
         "generated_at": int(time.time()),
         "per_source_limit": per_source_limit,
         "sources": [
@@ -77,7 +80,6 @@ def build_report(per_source_limit: int) -> dict:
             for r in reports
         ],
     }
-    return payload
 
 
 def main() -> int:
@@ -91,7 +93,8 @@ def main() -> int:
     out_path = Path(args.out)
     out_path.parent.mkdir(parents=True, exist_ok=True)
     out_path.write_text(
-        json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8",
+        json.dumps(report, ensure_ascii=False, indent=2),
+        encoding="utf-8",
     )
 
     has_errors = any(x["errors"] for x in report["sources"])

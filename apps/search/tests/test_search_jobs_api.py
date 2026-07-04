@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from typing import Never
 from uuid import UUID
 
 from rest_framework.test import APIClient
@@ -7,13 +8,12 @@ from rest_framework.test import APIClient
 from apps.search.models import SearchJob
 
 
-def test_create_search_job_enqueues_task(monkeypatch, db):
+def test_create_search_job_enqueues_task(monkeypatch, db) -> None:
     """Test create search job enqueues task helper."""
     captured: dict[str, str] = {}
 
-    def fake_delay(job_id: str):
+    def fake_delay(job_id: str) -> None:
         captured["job_id"] = job_id
-        return None
 
     monkeypatch.setattr("apps.search.views.run_search_job.delay", fake_delay)
     client = APIClient()
@@ -35,7 +35,7 @@ def test_create_search_job_enqueues_task(monkeypatch, db):
     assert captured["job_id"] == str(payload["id"])
 
 
-def test_create_search_job_attaches_to_running_job(monkeypatch, db):
+def test_create_search_job_attaches_to_running_job(monkeypatch, db) -> None:
     """Test create search job attaches to running job helper."""
     SearchJob.objects.create(
         query="machine learning diagnosis",
@@ -52,8 +52,9 @@ def test_create_search_job_attaches_to_running_job(monkeypatch, db):
         results=[],
     )
 
-    def fake_delay(job_id: str):
-        raise AssertionError(f"delay should not be called for attached job: {job_id}")
+    def fake_delay(job_id: str) -> Never:
+        msg = f"delay should not be called for attached job: {job_id}"
+        raise AssertionError(msg)
 
     monkeypatch.setattr("apps.search.views.run_search_job.delay", fake_delay)
     client = APIClient()
@@ -73,7 +74,7 @@ def test_create_search_job_attaches_to_running_job(monkeypatch, db):
     assert payload["attached_to_existing"] is True
 
 
-def test_get_search_job_returns_payload(db):
+def test_get_search_job_returns_payload(db) -> None:
     """Test get search job returns payload helper."""
     job = SearchJob.objects.create(
         query="deep learning",

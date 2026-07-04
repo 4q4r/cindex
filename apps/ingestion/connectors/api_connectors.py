@@ -13,18 +13,20 @@ import contextlib
 import os
 import re
 from datetime import datetime
+from typing import TYPE_CHECKING
 from urllib.parse import quote_plus, urlparse
 from xml.etree import ElementTree as ET
 
 import aiohttp
 import structlog
-from bs4 import BeautifulSoup
 
 from apps.core.text import normalize_scholarly_text
 
 from .base import (
     DOI_PATTERN,
     INDEXING_TOKENS,
+    MAX_PUBLICATION_YEAR,
+    MIN_PUBLICATION_YEAR,
     PEER_REVIEW_TOKENS,
     PREPRINT_TOKENS,
     AsyncApiConnector,
@@ -32,6 +34,9 @@ from .base import (
     RawArticle,
     SourceProfile,
 )
+
+if TYPE_CHECKING:
+    from bs4 import BeautifulSoup
 
 logger = structlog.get_logger(__name__)
 
@@ -55,7 +60,10 @@ class EuropePMCConnector(AsyncApiConnector):
         )
 
     def _extract_from_payload(
-        self, query: str, payload: dict, limit: int,
+        self,
+        query: str,  # noqa: ARG002  # required by base class signature
+        payload: dict,
+        limit: int,
     ) -> list[RawArticle]:
         records = payload.get("resultList", {}).get("result", [])
         items: list[RawArticle] = []
@@ -63,7 +71,7 @@ class EuropePMCConnector(AsyncApiConnector):
             title = rec.get("title", "").strip()
             abstract = rec.get("abstractText", "")
             journal = rec.get("journalTitle", "Europe PMC")
-            doi = rec.get("doi", "") or self._extract_doi(" ".join([title, abstract]))
+            doi = rec.get("doi", "") or self._extract_doi(f"{title} {abstract}")
             year = rec.get("pubYear")
             url = rec.get("fullTextUrlList", {}).get("fullTextUrl", [{}])
             url_value = url[0].get("url") if url else rec.get("id", "")
@@ -89,7 +97,7 @@ class EuropePMCConnector(AsyncApiConnector):
                     title=title,
                     url=url_value,
                     abstract=abstract,
-                    full_text=" ".join([title, abstract]),
+                    full_text=f"{title} {abstract}",
                     doi=doi,
                     year=int(year) if str(year).isdigit() else None,
                     journal=journal,
@@ -121,15 +129,17 @@ class OpenAlexConnector(AsyncApiConnector):
         try:
             word_positions = []
             for word, positions in inverted_index.items():
-                for pos in positions:
-                    word_positions.append((pos, word))
+                word_positions.extend((pos, word) for pos in positions)
             word_positions.sort(key=lambda x: x[0])
             return " ".join([word for _, word in word_positions])
         except (ValueError, KeyError, TypeError):
             return ""
 
     def _extract_from_payload(
-        self, query: str, payload: dict, limit: int,
+        self,
+        query: str,  # noqa: ARG002  # required by base class signature
+        payload: dict,
+        limit: int,
     ) -> list[RawArticle]:
         results = payload.get("results", [])
         items: list[RawArticle] = []
@@ -158,7 +168,7 @@ class OpenAlexConnector(AsyncApiConnector):
             year = None
             if pub_date_str:
                 with contextlib.suppress(ValueError):
-                    year = int(datetime.strptime(pub_date_str, "%Y-%m-%d").year)
+                    year = int(datetime.strptime(pub_date_str, "%Y-%m-%d").year)  # noqa: DTZ007  # only .year is used; timezone irrelevant
             items.append(
                 self._raw(
                     title=title,
@@ -190,7 +200,10 @@ class CrossrefConnector(AsyncApiConnector):
         return f"{self.profile.search_url}?query={quote_plus(query)}&rows={limit}"
 
     def _extract_from_payload(
-        self, query: str, payload: dict, limit: int,
+        self,
+        query: str,  # noqa: ARG002  # required by base class signature
+        payload: dict,
+        limit: int,
     ) -> list[RawArticle]:
         items_list = payload.get("message", {}).get("items", [])
         items: list[RawArticle] = []
@@ -200,7 +213,7 @@ class CrossrefConnector(AsyncApiConnector):
             abstracts = item.get("abstract", "")
             if isinstance(abstracts, list):
                 abstracts = " ".join(abstracts)
-            doi = item.get("DOI", "") or self._extract_doi(" ".join([title, abstracts]))
+            doi = item.get("DOI", "") or self._extract_doi(f"{title} {abstracts}")
             year = None
             published = (
                 item.get("published-print") or item.get("published-online") or {}
@@ -227,7 +240,7 @@ class CrossrefConnector(AsyncApiConnector):
                     title=title,
                     url=url,
                     abstract=abstracts,
-                    full_text=" ".join([title, abstracts]),
+                    full_text=f"{title} {abstracts}",
                     doi=doi,
                     year=year,
                     journal=journal,
@@ -260,7 +273,7 @@ class PubMedConnector(AsyncApiConnector):
 
     async def _fetch_async(self, query: str, limit: int) -> list[RawArticle]:
         try:
-            import aiohttp
+            import aiohttp  # noqa: PLC0415  # lazy import to avoid circular dependency
         except ImportError:
             return self._fetch_sync(query, limit)
         search_url = self._api_url(query, limit)
@@ -272,8 +285,9 @@ class PubMedConnector(AsyncApiConnector):
                 resp.raise_for_status()
                 search_data = await resp.json()
         except Exception as exc:
+            msg = f"{self.profile.source_key}: async search failed: {exc}"
             raise ConnectorFetchError(
-                f"{self.profile.source_key}: async search failed: {exc}",
+                msg,
             ) from exc
         pmids = search_data.get("esearchresult", {}).get("idlist", [])
         if not pmids:
@@ -290,8 +304,9 @@ class PubMedConnector(AsyncApiConnector):
                 resp.raise_for_status()
                 summary_data = await resp.json()
         except Exception as exc:
+            msg = f"{self.profile.source_key}: async summary failed: {exc}"
             raise ConnectorFetchError(
-                f"{self.profile.source_key}: async summary failed: {exc}",
+                msg,
             ) from exc
         # Fetch abstracts via efetch (esummary omits them)
         abstract_map: dict[str, str] = {}
@@ -312,7 +327,10 @@ class PubMedConnector(AsyncApiConnector):
         return self._parse_pubmed_summary(summary_data, limit, abstract_map)
 
     def _extract_from_payload(
-        self, query: str, payload: dict, limit: int,
+        self,
+        query: str,  # noqa: ARG002  # required by base class signature
+        payload: dict,
+        limit: int,
     ) -> list[RawArticle]:
         """Extract from PubMed JSON fixture or API payload."""
         # Support both esummary format and simple records format
@@ -396,7 +414,7 @@ class PubMedConnector(AsyncApiConnector):
                     title=title,
                     url=url,
                     abstract=abstract,
-                    full_text=" ".join([title, abstract]) if abstract else title,
+                    full_text=f"{title} {abstract}" if abstract else title,
                     doi=doi,
                     year=year,
                     journal=journal,
@@ -409,7 +427,7 @@ class PubMedConnector(AsyncApiConnector):
     def _parse_efetch_abstracts(xml_text: str) -> dict[str, str]:
         """Parse PubMed efetch XML, returning pmid -> abstract mapping."""
         try:
-            root = ET.fromstring(xml_text)
+            root = ET.fromstring(xml_text)  # noqa: S314  # trusted API XML response
         except ET.ParseError:
             return {}
         abstracts: dict[str, str] = {}
@@ -512,7 +530,7 @@ class DOAJConnector(AsyncApiConnector):
             title=title,
             url=url,
             abstract=abstract,
-            full_text=" ".join([title, abstract]),
+            full_text=f"{title} {abstract}",
             doi=doi,
             year=year,
             journal=journal,
@@ -520,7 +538,10 @@ class DOAJConnector(AsyncApiConnector):
         )
 
     def _extract_from_payload(
-        self, query: str, payload: dict, limit: int,
+        self,
+        query: str,  # noqa: ARG002  # required by base class signature
+        payload: dict,
+        limit: int,
     ) -> list[RawArticle]:
         results = payload.get("results", [])
         items: list[RawArticle] = []
@@ -548,7 +569,7 @@ class COREConnector(AsyncApiConnector):
 
     async def _fetch_async(self, query: str, limit: int) -> list[RawArticle]:
         try:
-            import aiohttp
+            import aiohttp  # noqa: PLC0415  # lazy import to avoid circular dependency
         except ImportError:
             return self._fetch_sync(query, limit)
         url = self._api_url(query, limit)
@@ -564,20 +585,25 @@ class COREConnector(AsyncApiConnector):
                 resp.raise_for_status()
                 payload = await resp.json()
         except Exception as exc:
+            msg = f"{self.profile.source_key}: async request failed: {exc}"
             raise ConnectorFetchError(
-                f"{self.profile.source_key}: async request failed: {exc}",
+                msg,
             ) from exc
         if not isinstance(payload, dict):
+            msg = f"{self.profile.source_key}: invalid payload type"
             raise ConnectorFetchError(
-                f"{self.profile.source_key}: invalid payload type",
+                msg,
             )
         return self._extract_from_payload(query, payload, limit)
 
     def _extract_from_html(
-        self, query: str, soup: BeautifulSoup, limit: int,
+        self,
+        query: str,  # noqa: ARG002  # required by base class signature
+        soup: BeautifulSoup,
+        limit: int,
     ) -> list[RawArticle]:
         """Parse CORE __NEXT_DATA__ payload from HTML pages."""
-        import json as _json
+        import json as _json  # noqa: PLC0415  # lazy import to avoid circular dependency
 
         for script in soup.select('script[id="__NEXT_DATA__"]'):
             try:
@@ -609,19 +635,23 @@ class COREConnector(AsyncApiConnector):
                             title=title,
                             url=url,
                             abstract=abstract,
-                            full_text=" ".join([title, abstract]),
+                            full_text=f"{title} {abstract}",
                             doi=doi,
                             year=year,
                             journal=journal,
                         ),
                     )
-                return items
             except (ValueError, KeyError, TypeError):
                 logger.warning("core: __NEXT_DATA__ parse failed", exc_info=True)
+            else:
+                return items
         return []
 
     def _extract_from_payload(
-        self, query: str, payload: dict, limit: int,
+        self,
+        query: str,  # noqa: ARG002  # required by base class signature
+        payload: dict,
+        limit: int,
     ) -> list[RawArticle]:
         results = payload.get("results", [])
         items: list[RawArticle] = []
@@ -654,7 +684,7 @@ class COREConnector(AsyncApiConnector):
                     title=title,
                     url=url,
                     abstract=abstract,
-                    full_text=" ".join([title, abstract]),
+                    full_text=f"{title} {abstract}",
                     doi=doi,
                     year=year,
                     journal=journal,
@@ -684,7 +714,10 @@ class PMCConnector(AsyncApiConnector):
         )
 
     def _extract_from_payload(
-        self, query: str, payload: dict, limit: int,
+        self,
+        query: str,  # noqa: ARG002  # required by base class signature
+        payload: dict,
+        limit: int,
     ) -> list[RawArticle]:
         records = payload.get("resultList", {}).get("result", [])
         items: list[RawArticle] = []
@@ -692,7 +725,7 @@ class PMCConnector(AsyncApiConnector):
             title = rec.get("title", "").strip()
             abstract = rec.get("abstractText", "")
             journal = rec.get("journalTitle", "PMC")
-            doi = rec.get("doi", "") or self._extract_doi(" ".join([title, abstract]))
+            doi = rec.get("doi", "") or self._extract_doi(f"{title} {abstract}")
             year = rec.get("pubYear")
             pmcid = rec.get("pmcid", "")
             url = ""
@@ -724,7 +757,7 @@ class PMCConnector(AsyncApiConnector):
                     title=title,
                     url=url,
                     abstract=abstract,
-                    full_text=" ".join([title, abstract]),
+                    full_text=f"{title} {abstract}",
                     doi=doi,
                     year=int(year) if str(year).isdigit() else None,
                     journal=journal,
@@ -754,7 +787,7 @@ class ArXivConnector(AsyncApiConnector):
 
     async def _fetch_async(self, query: str, limit: int) -> list[RawArticle]:
         try:
-            import aiohttp
+            import aiohttp  # noqa: PLC0415  # lazy import to avoid circular dependency
         except ImportError:
             return self._fetch_sync(query, limit)
         url = self._api_url(query, limit)
@@ -763,13 +796,17 @@ class ArXivConnector(AsyncApiConnector):
                 resp.raise_for_status()
                 xml_text = await resp.text()
         except Exception as exc:
+            msg = f"{self.profile.source_key}: async request failed: {exc}"
             raise ConnectorFetchError(
-                f"{self.profile.source_key}: async request failed: {exc}",
+                msg,
             ) from exc
         return self._parse_arxiv_xml(xml_text, limit)
 
     def _extract_from_payload(
-        self, query: str, payload: dict, limit: int,
+        self,
+        query: str,  # noqa: ARG002  # required by base class signature
+        payload: dict,
+        limit: int,
     ) -> list[RawArticle]:
         """Extract from arXiv-style JSON fixture or API payload."""
         records = payload.get("records", payload.get("results", []))
@@ -797,7 +834,7 @@ class ArXivConnector(AsyncApiConnector):
                     title=title,
                     url=url,
                     abstract=abstract,
-                    full_text=" ".join([title, abstract]),
+                    full_text=f"{title} {abstract}",
                     doi=doi,
                     year=year,
                     journal="arXiv",
@@ -808,10 +845,11 @@ class ArXivConnector(AsyncApiConnector):
 
     def _parse_arxiv_xml(self, xml_text: str, limit: int) -> list[RawArticle]:
         try:
-            root = ET.fromstring(xml_text)
+            root = ET.fromstring(xml_text)  # noqa: S314  # trusted API XML response
         except Exception as exc:
+            msg = f"{self.profile.source_key}: XML parse failed: {exc}"
             raise ConnectorFetchError(
-                f"{self.profile.source_key}: XML parse failed: {exc}",
+                msg,
             ) from exc
         ns = {"atom": "http://www.w3.org/2005/Atom"}
         items: list[RawArticle] = []
@@ -841,7 +879,7 @@ class ArXivConnector(AsyncApiConnector):
                     title=title,
                     url=url,
                     abstract=abstract,
-                    full_text=" ".join([title, abstract]),
+                    full_text=f"{title} {abstract}",
                     doi=doi,
                     year=year,
                     journal="arXiv",
@@ -868,7 +906,10 @@ class DBLPConnector(AsyncApiConnector):
         return f"{self.profile.search_url}?q={quote_plus(query)}&format=json&h={limit}"
 
     def _extract_from_payload(
-        self, query: str, payload: dict, limit: int,
+        self,
+        query: str,  # noqa: ARG002  # required by base class signature
+        payload: dict,
+        limit: int,
     ) -> list[RawArticle]:
         hits = payload.get("result", {}).get("hits", {}).get("hit", [])
         if isinstance(hits, dict):
@@ -937,7 +978,10 @@ class HALConnector(AsyncApiConnector):
         )
 
     def _extract_from_payload(
-        self, query: str, payload: dict, limit: int,
+        self,
+        query: str,  # noqa: ARG002  # required by base class signature
+        payload: dict,
+        limit: int,
     ) -> list[RawArticle]:
         docs = payload.get("response", {}).get("docs", [])
         items: list[RawArticle] = []
@@ -967,7 +1011,7 @@ class HALConnector(AsyncApiConnector):
                     title=title,
                     url=url,
                     abstract=abstract,
-                    full_text=" ".join([title, abstract]),
+                    full_text=f"{title} {abstract}",
                     doi=doi,
                     year=year,
                     journal=journal,
@@ -996,7 +1040,10 @@ class ZenodoConnector(AsyncApiConnector):
         )
 
     def _extract_from_payload(
-        self, query: str, payload: dict, limit: int,
+        self,
+        query: str,  # noqa: ARG002  # required by base class signature
+        payload: dict,
+        limit: int,
     ) -> list[RawArticle]:
         hits = payload.get("hits", {}).get("hits", [])
         items: list[RawArticle] = []
@@ -1029,7 +1076,7 @@ class ZenodoConnector(AsyncApiConnector):
                     title=title,
                     url=url,
                     abstract=abstract,
-                    full_text=" ".join([title, abstract]),
+                    full_text=f"{title} {abstract}",
                     doi=doi,
                     year=year,
                     journal=journal,
@@ -1052,7 +1099,7 @@ class IACRConnector(AsyncApiConnector):
 
     async def _fetch_async(self, query: str, limit: int) -> list[RawArticle]:
         try:
-            import aiohttp
+            import aiohttp  # noqa: PLC0415  # lazy import to avoid circular dependency
         except ImportError:
             return self._fetch_sync(query, limit)
         url = f"https://eprint.iacr.org/search?search={quote_plus(query)}"
@@ -1067,13 +1114,17 @@ class IACRConnector(AsyncApiConnector):
                 resp.raise_for_status()
                 html = await resp.text()
         except Exception as exc:
+            msg = f"{self.profile.source_key}: async request failed: {exc}"
             raise ConnectorFetchError(
-                f"{self.profile.source_key}: async request failed: {exc}",
+                msg,
             ) from exc
         return self._parse_iacr_html(html, limit)
 
     def _extract_from_payload(
-        self, query: str, payload: dict, limit: int,
+        self,
+        query: str,  # noqa: ARG002  # required by base class signature
+        payload: dict,
+        limit: int,
     ) -> list[RawArticle]:
         """Extract from IACR JSON fixture."""
         papers = payload.get("papers", payload.get("results", []))
@@ -1103,7 +1154,7 @@ class IACRConnector(AsyncApiConnector):
         return items
 
     def _parse_iacr_html(self, html: str, limit: int) -> list[RawArticle]:
-        from bs4 import BeautifulSoup
+        from bs4 import BeautifulSoup  # noqa: PLC0415, I001  # lazy import to avoid circular dependency
 
         soup = BeautifulSoup(html, "lxml")
         items: list[RawArticle] = []
@@ -1154,7 +1205,7 @@ class ExaConnector(AsyncApiConnector):
         """Return the Exa API key."""
         return os.getenv("EXA_API_KEY", "").strip()
 
-    def _api_url(self, query: str, limit: int) -> str:
+    def _api_url(self, query: str, limit: int) -> str:  # noqa: ARG002  # required by base class signature
         """Exa uses POST with JSON body, not a simple GET URL."""
         return self.profile.search_url
 
@@ -1188,9 +1239,8 @@ class ExaConnector(AsyncApiConnector):
                     response.raise_for_status()
                     data = await response.json()
                 if not isinstance(data, dict):
-                    raise ConnectorFetchError(
-                        f"{self.profile.source_key}: invalid JSON payload type",
-                    )
+                    msg = f"{self.profile.source_key}: invalid JSON payload type"
+                    raise ConnectorFetchError(msg)  # noqa: TRY301  # contextual validation raise
                 return self._extract_from_payload(lang_query, data, per_lang), None
             except ConnectorFetchError:
                 break
@@ -1213,11 +1263,12 @@ class ExaConnector(AsyncApiConnector):
         To get 20-30 multilingual results, we translate the query and make one
         API call per language, then merge and deduplicate.
         """
-        from apps.core.translate import expand_query_for_exa
+        from apps.core.translate import expand_query_for_exa  # noqa: PLC0415, I001  # lazy import to avoid circular dependency
 
         api_key = self._api_key()
         if not api_key:
-            raise ConnectorFetchError("exa: EXA_API_KEY is required")
+            msg = "exa: EXA_API_KEY is required"
+            raise ConnectorFetchError(msg)
 
         lang_queries = expand_query_for_exa(query)
         per_lang = max(3, limit // len(lang_queries) + 2)
@@ -1250,7 +1301,7 @@ class ExaConnector(AsyncApiConnector):
         )
         url = self.profile.search_url
 
-        for _lang, lang_query in lang_queries.items():
+        for lang_query in lang_queries.values():
             payload = {
                 "query": lang_query,
                 "type": "auto",
@@ -1290,8 +1341,11 @@ class ExaConnector(AsyncApiConnector):
             await asyncio.sleep(0.3)
 
         if not all_items and last_error:
+            msg = (
+                f"{self.profile.source_key}: request failed after retries: {last_error}"
+            )
             raise ConnectorFetchError(
-                f"{self.profile.source_key}: request failed after retries: {last_error}",
+                msg,
             )
 
         # Enrich articles missing key metadata via outputSchema
@@ -1485,7 +1539,9 @@ class ExaConnector(AsyncApiConnector):
         if valid_authors:
             enrichment["authors"] = tuple(valid_authors)
         year = paper.get("year")
-        if isinstance(year, int) and 1800 <= year <= 2100:
+        if isinstance(year, int) and (
+            MIN_PUBLICATION_YEAR <= year <= MAX_PUBLICATION_YEAR
+        ):
             enrichment["year"] = year
         doi = str(paper.get("doi", "")).strip()
         if doi and doi.startswith("10."):
@@ -1512,16 +1568,19 @@ class ExaConnector(AsyncApiConnector):
         r")\s*[,.]?\s*)+",
         re.IGNORECASE,
     )
-    _SECTION_HEADER_RE = re.compile(
-        r"^(?:###\s*)?(?:Subjects?|Keywords?|References|Bibliography"
+    _SECTION_HEADER_KEYWORDS = (
+        r"Subjects?|Keywords?|References|Bibliography"
         r"|Cited\s+by|Cite\s+(?:this\s+)?article|Related\s+articles"
         r"|Download\s+PDF|Share|Figures?|Tables?|Acknowledgments?"
         r"|Appendix|Supplementary|Copyright|License|Publisher\s+note"
         r"|Funding|Data\s+availability|Code\s+availability"
         r"|Ethics\s+declarations?|Author\s+information"
         r"|Author\s+contributions?|Competing\s+interests?"
-        r"|Additional\s+information|About\s+this\s+article|Comments)"
-        r"\s*:?\s*$",
+        r"|Additional\s+information|About\s+this\s+article|Comments"
+    )
+    _SECTION_HEADER_RE = re.compile(
+        rf"^(?:###\s*)?(?:{_SECTION_HEADER_KEYWORDS})\s*:?\s*$"
+        rf"|(?:###\s*)(?:{_SECTION_HEADER_KEYWORDS})\b\s*:?\s*",
         re.IGNORECASE | re.MULTILINE,
     )
 
@@ -1544,8 +1603,7 @@ class ExaConnector(AsyncApiConnector):
         # Strip section header lines
         text = ExaConnector._SECTION_HEADER_RE.sub("", text)
         # Collapse whitespace
-        text = re.sub(r"\s+", " ", text).strip()
-        return text
+        return re.sub(r"\s+", " ", text).strip()
 
     # --- citation metadata extraction from page text ---
 
@@ -1662,7 +1720,10 @@ class ExaConnector(AsyncApiConnector):
         return ExaConnector._fill_citation_fallbacks(result, text)
 
     def _extract_from_payload(
-        self, query: str, payload: dict, limit: int,
+        self,
+        query: str,  # noqa: ARG002  # required by base class signature
+        payload: dict,
+        limit: int,
     ) -> list[RawArticle]:
         """Extract records from Exa search payload."""
         records = payload.get("results", [])
@@ -1695,9 +1756,9 @@ class ExaConnector(AsyncApiConnector):
                 or "",
             ).strip()
             year = self._extract_year(published_date)
-            doi = self._extract_doi(" ".join([title, text, url_value]))
+            doi = self._extract_doi(f"{title} {text} {url_value}")
             citation = self._extract_citation_from_text(
-                " ".join([title, text, highlights_text]),
+                f"{title} {text} {highlights_text}",
             )
             journal = citation.get("journal") or urlparse(url_value).netloc or "Exa"
             volume = citation.get("volume", "")
@@ -1708,7 +1769,7 @@ class ExaConnector(AsyncApiConnector):
                 continue
             if not self._is_article_like_item(title, url_value, doi, year):
                 continue
-            evidence_source = " ".join([highlights_text, combined])
+            evidence_source = f"{highlights_text} {combined}"
             peer_review_evidence = self._merge_evidence(
                 "",
                 evidence_source.lower(),

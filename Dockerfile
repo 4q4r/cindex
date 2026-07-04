@@ -18,7 +18,7 @@ RUN uv sync --frozen --no-dev
 COPY . .
 RUN /app/.venv/bin/python manage.py collectstatic --noinput
 
-FROM gcr.io/distroless/python3-debian13
+FROM gcr.io/distroless/python3-debian13:nonroot
 
 WORKDIR /app
 
@@ -33,5 +33,7 @@ ENV PATH="/app/.venv/bin:${PATH}" \
     TESSDATA_PREFIX="/usr/share/tesseract-ocr/5/tessdata" \
     PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1
+
+USER nonroot:nonroot
 
 ENTRYPOINT ["/app/.venv/bin/gunicorn", "config.asgi:application", "-c", "/app/config/gunicorn.conf.py"]
