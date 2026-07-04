@@ -477,6 +477,17 @@ class BaseConnector:
                     timeout=self.REQUEST_TIMEOUT_SECONDS,
                 )
                 status = int(response.status_code)
+                # XML/RSS/Atom feeds are UTF-8 by default (per XML spec), but
+                # when the server omits a charset parameter on a ``text/*``
+                # content type, requests falls back to ISO-8859-1 and produces
+                # mojibake (e.g. Persee OAI). Force UTF-8 for XML payloads.
+                content_type = (response.headers.get("Content-Type") or "").lower()
+                if (
+                    "xml" in content_type
+                    or "rss" in content_type
+                    or "atom" in content_type
+                ) and "charset" not in content_type:
+                    response.encoding = "utf-8"
                 body = response.text
                 body, status = self._resolve_cloudflare_challenge(
                     scraper,
