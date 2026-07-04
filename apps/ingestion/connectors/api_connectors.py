@@ -25,7 +25,6 @@ from apps.core.text import normalize_scholarly_text
 from .base import (
     DOI_PATTERN,
     INDEXING_TOKENS,
-    MAX_PUBLICATION_YEAR,
     MIN_PUBLICATION_YEAR,
     PEER_REVIEW_TOKENS,
     PREPRINT_TOKENS,
@@ -33,6 +32,7 @@ from .base import (
     ConnectorFetchError,
     RawArticle,
     SourceProfile,
+    current_max_publication_year,
 )
 
 if TYPE_CHECKING:
@@ -1540,7 +1540,7 @@ class ExaConnector(AsyncApiConnector):
             enrichment["authors"] = tuple(valid_authors)
         year = paper.get("year")
         if isinstance(year, int) and (
-            MIN_PUBLICATION_YEAR <= year <= MAX_PUBLICATION_YEAR
+            MIN_PUBLICATION_YEAR <= year <= current_max_publication_year()
         ):
             enrichment["year"] = year
         doi = str(paper.get("doi", "")).strip()

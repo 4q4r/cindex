@@ -1101,26 +1101,34 @@ class DergiParkConnector(BaseConnector):
     _sets_cache: list[tuple[str, str]] | None = None
 
     def fetch(self, query: str, limit: int = 5) -> list[RawArticle]:
-        # Free OAI-PMH path first; HTML search often challenge-gated.
+        # Free OAI-PMH path first; HTML search is Cloudflare-Turnstile-gated
+        # (requires a paid CapSolver key we do not use). OAI harvests by date
+        # and filters for query relevance here. When OAI is reachable but finds
+        # no relevant records we return an empty list rather than falling back
+        # to the challenge-gated HTML search, which would only raise.
         """Fetch records from the upstream source."""
         try:
-            items = self._fetch_via_oai(query, limit)
-            if items:
-                return items
+            return self._fetch_via_oai(query, limit)
         except ConnectorFetchError:
             return super()._fetch_html(query, limit)
-        return super()._fetch_html(query, limit)
 
     def _fetch_via_oai(self, query: str, limit: int) -> list[RawArticle]:
-        """Fetch via OAI."""
+        """Fetch via OAI.
+
+        Per-set ListRecords requests intermittently hit Cloudflare challenges;
+        one failing set must not abort the whole harvest. Failed sets are
+        skipped and the best-effort result is returned. If every set fails the
+        harvest is treated as unreachable so the caller can fall back to HTML.
+        """
         sets = self._list_sets()
         if not sets:
             msg = "dergipark: no OAI sets available"
             raise ConnectorFetchError(msg)
 
-        max_sets = int(os.getenv("DERGIPARK_OAI_MAX_SETS", "35"))
+        max_sets = int(os.getenv("DERGIPARK_OAI_MAX_SETS", "60"))
         recency_year = datetime.now(UTC).year - 2
         results: list[RawArticle] = []
+        failures = 0
         for set_spec, set_name in sets[:max_sets]:
             if len(results) >= limit:
                 break
@@ -1128,7 +1136,11 @@ class DergiParkConnector(BaseConnector):
                 f"{self.OAI_BASE}?verb=ListRecords&metadataPrefix=oai_dc"
                 f"&set={quote_plus(set_spec)}&from={recency_year}-01-01"
             )
-            xml_text = self._request_text(url)
+            try:
+                xml_text = self._request_text(url)
+            except ConnectorFetchError:
+                failures += 1
+                continue
             parsed = self._parse_oai_records(
                 xml_text,
                 query,
@@ -1136,7 +1148,12 @@ class DergiParkConnector(BaseConnector):
                 limit - len(results),
             )
             results.extend(parsed)
-        return results[:limit]
+        if results:
+            return results[:limit]
+        if failures == min(max_sets, len(sets)):
+            msg = "dergipark: all OAI sets cloudflare-gated"
+            raise ConnectorFetchError(msg)
+        return []
 
     def _list_sets(self) -> list[tuple[str, str]]:
         """List sets."""
@@ -1163,11 +1180,16 @@ class DergiParkConnector(BaseConnector):
     def _parse_oai_records(
         self,
         xml_text: str,
-        query: str,  # noqa: ARG002  # required by base class signature
+        query: str,
         set_name: str,
         remaining: int,
     ) -> list[RawArticle]:
-        """Parse OAI records."""
+        """Parse OAI records, keeping only query-relevant ones.
+
+        OAI-PMH has no keyword search, so DergiPark's sets are harvested by
+        date and filtered here against the query tokens to avoid returning
+        off-topic articles from arbitrary journals.
+        """
         try:
             root = ET.fromstring(xml_text)  # noqa: S314  # trusted API XML response
         except ET.ParseError:
@@ -1187,12 +1209,25 @@ class DergiParkConnector(BaseConnector):
                 default="",
                 namespaces=ns,
             ).strip()
+            subjects = [
+                x.text.strip() for x in metadata.findall(".//dc:subject", ns) if x.text
+            ]
             identifiers = [
                 x.text.strip()
                 for x in metadata.findall(".//dc:identifier", ns)
                 if x.text
             ]
-            text_blob = " ".join([title, description, " ".join(identifiers), set_name])
+            text_blob = " ".join(
+                [
+                    title,
+                    description,
+                    " ".join(subjects),
+                    " ".join(identifiers),
+                    set_name,
+                ],
+            )
+            if not self._matches_query(text_blob, query):
+                continue
             doi = self._extract_doi(text_blob)
             year = self._extract_year(
                 metadata.findtext(".//dc:date", default="", namespaces=ns) or text_blob,
@@ -1237,10 +1272,21 @@ class HrcakConnector(BaseConnector):
     )
 
     def fetch(self, query: str, limit: int = 5) -> list[RawArticle]:
-        """Fetch records from the upstream source."""
-        url = "https://hrcak.srce.hr/oai/?verb=ListRecords&metadataPrefix=oai_dc"
+        """Fetch records from the upstream source.
+
+        Hrčak exposes no keyword search API and its HTML search is
+        Cloudflare-gated, so we harvest recent records via OAI-PMH (using a
+        ``from`` datestamp window to skip the oldest archive pages) and filter
+        them against the query tokens for relevance.
+        """
+        recency_year = datetime.now(UTC).year - 3
+        url = (
+            "https://hrcak.srce.hr/oai/?verb=ListRecords"
+            f"&metadataPrefix=oai_dc&from={recency_year}-01-01"
+        )
         items: list[RawArticle] = []
-        for _ in range(3):
+        max_pages = int(os.getenv("HRCAK_OAI_MAX_PAGES", "8"))
+        for _ in range(max_pages):
             try:
                 xml_text = self._request_text(url)
             except ConnectorFetchError:
@@ -1255,10 +1301,10 @@ class HrcakConnector(BaseConnector):
     def _parse_oai_records(
         self,
         xml_text: str,
-        query: str,  # noqa: ARG002  # required by base class signature
+        query: str,
         remaining: int,
     ) -> tuple[list[RawArticle], str]:
-        """Parse OAI records."""
+        """Parse OAI records, keeping only query-relevant ones."""
         try:
             root = ET.fromstring(xml_text)  # noqa: S314  # trusted API XML response
         except ET.ParseError:
@@ -1278,13 +1324,31 @@ class HrcakConnector(BaseConnector):
                 default="",
                 namespaces=ns,
             ).strip()
+            subjects = [
+                x.text.strip() for x in metadata.findall(".//dc:subject", ns) if x.text
+            ]
             identifiers = [
                 x.text.strip()
                 for x in metadata.findall(".//dc:identifier", ns)
                 if x.text
             ]
             url_value = next((x for x in identifiers if x.startswith("http")), "")
-            combined = " ".join([title, description, " ".join(identifiers)])
+            date_value = metadata.findtext(
+                ".//dc:date",
+                default="",
+                namespaces=ns,
+            ).strip()
+            combined = " ".join(
+                [
+                    title,
+                    description,
+                    " ".join(subjects),
+                    " ".join(identifiers),
+                    date_value,
+                ],
+            )
+            if not self._matches_query(combined, query):
+                continue
             doi = self._extract_doi(combined)
             year = self._extract_year(combined)
             if not title or not url_value:

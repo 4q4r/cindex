@@ -12,6 +12,7 @@ import os
 import re
 import time
 from dataclasses import dataclass, replace
+from datetime import UTC, datetime
 from urllib.parse import quote_plus, urljoin
 
 import aiohttp
@@ -87,6 +88,16 @@ HTTP_FORBIDDEN_STATUS = 403
 MIN_PUBLICATION_YEAR = 1800
 MAX_PUBLICATION_YEAR = 2100
 MIN_ARTICLE_TITLE_LENGTH = 18
+
+
+def current_max_publication_year() -> int:
+    """Plausible upper bound for a publication year: current year + 1.
+
+    Articles cannot be published far in the future, so a 4-digit year that
+    exceeds next year (e.g. ``2048`` pulled from an article identifier) is
+    treated as non-year noise rather than a publication date.
+    """
+    return datetime.now(UTC).year + 1
 
 
 class ConnectorFetchError(Exception):
@@ -863,14 +874,23 @@ class BaseConnector:
 
     @staticmethod
     def _extract_year(text: str) -> int | None:
-        """Extract year from text."""
-        found = YEAR_PATTERN.search(text or "")
-        if not found:
+        """Extract the most plausible publication year from text.
+
+        Scans every ``(19|20)xx`` match and returns the most recent one within
+        ``[MIN_PUBLICATION_YEAR, current_max_publication_year()]``. Returning
+        the maximum avoids mistaking an incidental 4-digit number (article
+        identifiers, citation years) for the publication date while still
+        tolerating older reference years present in the same text.
+        """
+        max_year = current_max_publication_year()
+        plausible = [
+            int(m.group(0))
+            for m in YEAR_PATTERN.finditer(text or "")
+            if MIN_PUBLICATION_YEAR <= int(m.group(0)) <= max_year
+        ]
+        if not plausible:
             return None
-        year = int(found.group(0))
-        if MIN_PUBLICATION_YEAR <= year <= MAX_PUBLICATION_YEAR:
-            return year
-        return None
+        return max(plausible)
 
     def _extract_pdf_url(
         self,
@@ -912,6 +932,22 @@ class BaseConnector:
             for x in re.findall(r"[a-zA-Zа-яА-Я0-9]+", query)  # noqa: RUF001
             if len(x) > 2  # noqa: PLR2004  # min token length
         ]
+
+    @classmethod
+    def _matches_query(cls, text: str, query: str) -> bool:
+        """Return True when every query token appears in ``text``.
+
+        Used to filter OAI-PMH harvests (which cannot keyword-search) down to
+        records plausibly relevant to the query, so that sources without a
+        search API do not return off-topic garbage. All tokens must match to
+        keep precision high; an empty token list (e.g. very short query) is
+        treated as a match so the source still returns results.
+        """
+        tokens = cls._query_tokens(query)
+        if not tokens:
+            return True
+        lowered = (text or "").lower()
+        return all(token in lowered for token in tokens)
 
     @staticmethod
     def _extract_meta_content(soup: BeautifulSoup, keys: list[str]) -> str:
