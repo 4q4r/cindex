@@ -2,7 +2,7 @@ from apps.articles.models import Article, Journal, Source
 from apps.articles.services import ArticleEligibilityService
 
 
-def test_article_eligibility_true(db):
+def test_article_eligibility_true(db) -> None:
     """Test article eligibility true helper."""
     source = Source.objects.create(
         key="test", name="Test", base_url="https://example.org"
@@ -27,7 +27,7 @@ def test_article_eligibility_true(db):
     assert article.eligibility_confidence > 0
 
 
-def test_article_eligibility_preprint_fails(db):
+def test_article_eligibility_preprint_fails(db) -> None:
     """Test article eligibility preprint fails helper."""
     source = Source.objects.create(
         key="test2", name="Test2", base_url="https://example.org"

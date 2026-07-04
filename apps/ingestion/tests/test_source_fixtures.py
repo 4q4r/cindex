@@ -65,7 +65,6 @@ def test_unpaywall_email_falls_back_to_cindex_address(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """Unpaywall must use the local fallback email when env/git are absent."""
-
     monkeypatch.delenv("UNPAYWALL_EMAIL", raising=False)
     monkeypatch.setattr(
         "subprocess.run",
@@ -77,7 +76,6 @@ def test_unpaywall_email_falls_back_to_cindex_address(
 
 def test_scibot_altcha_solver_roundtrip() -> None:
     """SciBot ALTCHA solver should reproduce the expected digest payload."""
-
     challenge = {
         "algorithm": "SHA-256",
         "challenge": "84e2bd15202dafc6d25ae7abe1e18fce8f7ce0e5860f5c0ec14f3ee907ab05dc",
@@ -100,7 +98,6 @@ def test_scibot_altcha_solver_roundtrip() -> None:
 
 def test_scibot_ignores_prose_without_structured_article_cards() -> None:
     """SciBot should not synthesize article records from prose-only streams."""
-
     connector = SciBotConnector()
     messages = [
         {
@@ -118,7 +115,6 @@ def test_scibot_ignores_prose_without_structured_article_cards() -> None:
 
 def test_scibot_keeps_structured_cards_even_for_unrelated_query() -> None:
     """SciBot should accept structured article cards regardless of query tokens."""
-
     connector = SciBotConnector()
     messages = [
         {
@@ -154,7 +150,6 @@ def test_scibot_keeps_structured_cards_even_for_unrelated_query() -> None:
 
 def test_exa_search_payload_parsing() -> None:
     """Exa payload parsing should yield article-like records."""
-
     connector = ExaConnector()
     payload = json.loads((FIXTURES_DIR / "exa.json").read_text(encoding="utf-8"))
     items = connector._extract_from_payload("machine learning", payload, limit=3)

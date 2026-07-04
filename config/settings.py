@@ -1,5 +1,8 @@
+"""Django settings for the CIndex project."""
+
 from __future__ import annotations
 
+import logging
 import os
 import secrets
 import sys
@@ -7,7 +10,8 @@ from pathlib import Path
 from typing import Any
 
 import structlog
-from django.core.exceptions import ImproperlyConfigured
+from django.core.exceptions import AppRegistryNotReady, ImproperlyConfigured
+from django.db import OperationalError, ProgrammingError
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 BASE_DIR = Path(__file__).resolve().parent.parent
@@ -58,22 +62,24 @@ def _load_secret_key() -> str:
     if IS_TESTING:
         return secrets.token_urlsafe(64)
     try:
-        from apps.core.models import StoredSecretKey
+        # lazy import: app registry not ready at settings load time
+        from apps.core.models import StoredSecretKey  # noqa: PLC0415
 
         return StoredSecretKey.get_or_generate()
-    except Exception:
+    except (ImportError, AppRegistryNotReady, OperationalError, ProgrammingError):
         pass
     if os.environ.get("DJANGO_SETTINGS_MODULE") or "manage.py" in sys.argv[0]:
-        import logging
-
         logging.getLogger(__name__).warning(
             "SECRET_KEY: DB unavailable, generating ephemeral key. "
             "Run 'manage.py generate_secret_key' or set DJANGO_SECRET_KEY.",
         )
         return secrets.token_urlsafe(64)
-    raise ImproperlyConfigured(
+    msg = (
         "SECRET_KEY is not set. Provide it via .env, run 'manage.py "
-        "generate_secret_key', or set DJANGO_SECRET_KEY environment variable.",
+        "generate_secret_key', or set DJANGO_SECRET_KEY environment variable."
+    )
+    raise ImproperlyConfigured(
+        msg,
     )
 
 

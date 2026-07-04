@@ -1,8 +1,10 @@
+"""Scholarly source ingestion: fetch, enrich, validate, and index articles."""
+
 from __future__ import annotations
 
 import time
-from collections.abc import Callable, Iterable
 from datetime import timedelta
+from typing import TYPE_CHECKING
 
 import aiohttp
 from cloudscraper.exceptions import CloudflareException
@@ -14,6 +16,10 @@ from apps.articles.services import ArticleEligibilityService, IdentifierService
 from apps.core.translate import translate_query_for_source
 
 from .connectors import CONNECTORS, BaseConnector, ConnectorFetchError, RawArticle
+from .doi_enrichment import DoiEnrichmentService
+
+if TYPE_CHECKING:
+    from collections.abc import Callable, Iterable
 
 
 class IngestionService:
@@ -162,7 +168,9 @@ class IngestionService:
             for order, full_name in enumerate(parsed_authors, start=1):
                 author, _ = Author.objects.get_or_create(full_name=full_name)
                 ArticleAuthor.objects.get_or_create(
-                    article=article, author=author, order=order,
+                    article=article,
+                    author=author,
+                    order=order,
                 )
         elif not article.article_authors.exists():
             author, _ = Author.objects.get_or_create(full_name="Unknown author")
@@ -170,7 +178,7 @@ class IngestionService:
         return ArticleEligibilityService.apply(article)
 
     @staticmethod
-    def _emit_progress(
+    def _emit_progress(  # noqa: PLR0913
         progress_callback: Callable[[dict], None] | None,
         *,
         total: int,
@@ -197,7 +205,7 @@ class IngestionService:
         )
 
     @classmethod
-    def ingest_query(
+    def ingest_query(  # noqa: PLR0913
         cls,
         query: str,
         source_keys: Iterable[str] | None = None,
@@ -283,14 +291,12 @@ class IngestionService:
 
         # Post-ingestion: backfill missing metadata via DOI
         if saved:
-            from apps.ingestion.doi_enrichment import DoiEnrichmentService
-
             DoiEnrichmentService.enrich_sync(saved)
 
         return saved
 
     @classmethod
-    def _process_single_source(
+    def _process_single_source(  # noqa: PLR0913
         cls,
         *,
         source_key: str,

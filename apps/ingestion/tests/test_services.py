@@ -79,7 +79,7 @@ class ProgressConnector:
         return raw
 
 
-def test_ingestion_emits_russian_progress_phases(monkeypatch, db):
+def test_ingestion_emits_russian_progress_phases(monkeypatch, db) -> None:
     """Test ingestion emits russian progress phases helper."""
     events: list[dict] = []
 
@@ -105,9 +105,8 @@ def test_ingestion_emits_russian_progress_phases(monkeypatch, db):
     assert "Источник обработан" in labels
 
 
-def test_ingestion_indexes_eligible_article(monkeypatch, db):
+def test_ingestion_indexes_eligible_article(monkeypatch, db) -> None:
     """Test ingestion persists eligible article records."""
-
     monkeypatch.setattr("apps.ingestion.services.CONNECTORS", {"dummy": DummyConnector})
 
     articles = IngestionService.ingest_query(
@@ -119,7 +118,7 @@ def test_ingestion_indexes_eligible_article(monkeypatch, db):
     assert articles[0].full_text.startswith("journal article doi")
 
 
-def test_ingestion_applies_enrichment_hook(monkeypatch, db):
+def test_ingestion_applies_enrichment_hook(monkeypatch, db) -> None:
     """Test ingestion applies enrichment hook helper."""
     monkeypatch.setattr(
         "apps.ingestion.services.CONNECTORS", {"dummy": EnrichingConnector}
@@ -155,9 +154,8 @@ class NoDoiConnector:
         return raw
 
 
-def test_ingestion_skips_articles_without_doi(monkeypatch, db):
+def test_ingestion_skips_articles_without_doi(monkeypatch, db) -> None:
     """Articles without a valid DOI should not be saved."""
-
     monkeypatch.setattr(
         "apps.ingestion.services.CONNECTORS", {"no-doi": NoDoiConnector}
     )

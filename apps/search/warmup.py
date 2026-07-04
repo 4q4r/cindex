@@ -1,3 +1,5 @@
+"""Search model warmup helpers for the postgres-only search pipeline."""
+
 from __future__ import annotations
 
 import time

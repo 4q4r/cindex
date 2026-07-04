@@ -1,4 +1,5 @@
 from datetime import timedelta
+from typing import Never
 
 from django.utils import timezone
 
@@ -10,8 +11,9 @@ from apps.ingestion.services import IngestionService
 class AlwaysFailConnector:
     """Always Fail source connector."""
 
-    def fetch(self, query: str, limit: int = 5):
-        raise RuntimeError("temporary source failure")
+    def fetch(self, query: str, limit: int = 5) -> Never:
+        msg = "temporary source failure"
+        raise RuntimeError(msg)
 
 
 class CountingConnector:
@@ -46,7 +48,7 @@ class SuccessConnector:
         ]
 
 
-def test_circuit_breaker_opens_after_threshold(monkeypatch, db):
+def test_circuit_breaker_opens_after_threshold(monkeypatch, db) -> None:
     """Test circuit breaker opens after threshold helper."""
     monkeypatch.setattr(
         "apps.ingestion.services.CONNECTORS", {"res_fail": AlwaysFailConnector}
@@ -62,7 +64,7 @@ def test_circuit_breaker_opens_after_threshold(monkeypatch, db):
     assert source.is_circuit_open() is True
 
 
-def test_circuit_open_source_is_skipped(monkeypatch, db):
+def test_circuit_open_source_is_skipped(monkeypatch, db) -> None:
     """Test circuit open source is skipped helper."""
     CountingConnector.calls = 0
     source = Source.objects.create(
@@ -82,7 +84,7 @@ def test_circuit_open_source_is_skipped(monkeypatch, db):
     assert source.total_runs == 0
 
 
-def test_success_resets_consecutive_failures(monkeypatch, db):
+def test_success_resets_consecutive_failures(monkeypatch, db) -> None:
     """Test success resets consecutive failures helper."""
     source = Source.objects.create(
         key="res_success",

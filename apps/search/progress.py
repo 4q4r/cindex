@@ -1,3 +1,5 @@
+"""Source health and search wait-time statistics helpers for the search app."""
+
 from __future__ import annotations
 
 from apps.articles.models import Source

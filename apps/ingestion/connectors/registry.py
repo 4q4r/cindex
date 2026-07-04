@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from typing import TYPE_CHECKING
+
 from .api_connectors import (
     ArXivConnector,
     COREConnector,
@@ -17,7 +19,6 @@ from .api_connectors import (
     PubMedConnector,
     ZenodoConnector,
 )
-from .base import BaseConnector
 from .html_connectors import (
     AJOLConnector,
     CiNiiConnector,
@@ -31,6 +32,9 @@ from .html_connectors import (
     SciELOConnector,
     SciEngineConnector,
 )
+
+if TYPE_CHECKING:
+    from .base import BaseConnector
 
 CONNECTORS: dict[str, type[BaseConnector]] = {
     c.profile.source_key: c

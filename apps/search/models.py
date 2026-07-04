@@ -1,3 +1,5 @@
+"""Database models for tracked search jobs and rolling wait-time statistics."""
+
 from __future__ import annotations
 
 import uuid
@@ -76,7 +78,7 @@ class SearchWaitStat(models.Model):
         return f"{self.kind}:{self.average_seconds:.2f}"
 
     @classmethod
-    def kind_for_job(cls, rescan_triggered: bool) -> str:
+    def kind_for_job(cls, rescan_triggered: bool) -> str:  # noqa: FBT001  # public classmethod API
         """Return the stat kind for a completed search job."""
         return (
             cls.KIND_WITH_ENRICHMENT
@@ -87,15 +89,15 @@ class SearchWaitStat(models.Model):
     @classmethod
     def record_completion(
         cls,
-        rescan_triggered: bool,
+        rescan_triggered: bool,  # noqa: FBT001  # public classmethod API
         duration_seconds: float,
         *,
-        exclude_job_id: str | None = None,
+        exclude_job_id: str | None = None,  # noqa: ARG003  # kept for caller compatibility
     ) -> None:
         """Update the rolling average after a search job completes.
 
-        On each completion, the running average is updated as:
-            new_avg = (old_avg + duration) / 2
+        On each completion, the running average is updated as
+        ``new_avg = (old_avg + duration) / 2``.
         """
         if duration_seconds < 0:
             return

@@ -52,13 +52,12 @@ class _ScriptConnector(BaseConnector):
         )
         return self._build_scraper(), response, html
 
-    def _extract_pdf_url(self, soup, *blobs):  # type: ignore[override]
+    def _extract_pdf_url(self, soup, *blobs) -> str:  # type: ignore[override]
         return ""
 
 
 def test_html_enrichment_ignores_script_boilerplate() -> None:
     """HTML enrichment should not leak script text into article content."""
-
     connector = _ScriptConnector()
     raw = RawArticle(
         source_key="script",

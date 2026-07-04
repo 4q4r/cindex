@@ -1,9 +1,11 @@
+"""Article-level search orchestration backed by PostgreSQL rows."""
+
 from __future__ import annotations
 
 from typing import ClassVar
 
 from django.conf import settings
-from django.db.models import Case, FloatField, Q, Value, When
+from django.db.models import Case, FloatField, Q, QuerySet, Value, When
 
 from apps.articles.models import Article
 from apps.core.text import canonical_text_key, normalize_doi, normalize_scholarly_text
@@ -102,7 +104,7 @@ class SearchService:
         }
 
     @staticmethod
-    def _articles_queryset():
+    def _articles_queryset() -> QuerySet[Article]:
         """Return the searchable article queryset with related rows loaded."""
         return (
             Article.objects.filter(doi__startswith="10.")
@@ -208,15 +210,14 @@ class SearchService:
             score = score + cls._term_score(term)
         for term in cross_lingual or []:
             score = score + cls._crosslang_term_score(term)
-        score = score * cls._source_penalty()
-        return score
+        return score * cls._source_penalty()
 
     @classmethod
     def _search_queryset(
         cls,
         query: str,
         expression: str,
-    ):
+    ) -> tuple[QuerySet[Article], str, list[str]]:
         """Build the article queryset for the current search.
 
         Expands the search with cross-lingual equivalents so that articles
@@ -321,8 +322,8 @@ class SearchService:
         cls,
         query: str,
         expression: str,
-        force_refresh: bool = False,
-        fallback_to_recent: bool = False,
+        force_refresh: bool = False,  # noqa: FBT001, FBT002  # public API positional bool
+        fallback_to_recent: bool = False,  # noqa: FBT001, FBT002  # public API positional bool
     ) -> list[dict]:
         """Run the article search pipeline and return ranked results."""
         if force_refresh:

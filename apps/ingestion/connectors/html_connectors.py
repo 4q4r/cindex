@@ -22,6 +22,9 @@ from bs4 import BeautifulSoup
 
 from .base import BaseConnector, ConnectorFetchError, RawArticle, SourceProfile
 
+_HTTP_BAD_REQUEST = 400
+_MIN_TITLE_LENGTH = 14
+
 logger = structlog.get_logger(__name__)
 
 
@@ -49,7 +52,7 @@ class CiNiiConnector(BaseConnector):
             return super()._fetch_html(query, limit)
 
     def _api_url(self, query: str, limit: int) -> str:
-        """Api url."""
+        """Return the connector API URL."""
         return (
             "https://cir.nii.ac.jp/opensearch/v2/all"
             f"?format=json&q={quote_plus(query)}&lang=en&count={limit}"
@@ -57,7 +60,7 @@ class CiNiiConnector(BaseConnector):
 
     def _extract_from_payload(
         self,
-        query: str,
+        query: str,  # noqa: ARG002  # required by base class signature
         payload: dict,
         limit: int,
     ) -> list[RawArticle]:
@@ -172,17 +175,19 @@ class CyberLeninkaConnector(BaseConnector):
             headers=headers,
             timeout=self.REQUEST_TIMEOUT_SECONDS,
         )
-        if int(response.status_code) >= 400:
-            raise ConnectorFetchError(f"cyberleninka: api http {response.status_code}")
+        if int(response.status_code) >= _HTTP_BAD_REQUEST:
+            msg = f"cyberleninka: api http {response.status_code}"
+            raise ConnectorFetchError(msg)
         try:
             data = response.json()
         except ValueError as exc:  # pragma: no cover - network dependent
-            raise ConnectorFetchError("cyberleninka: invalid api json") from exc
+            msg = "cyberleninka: invalid api json"
+            raise ConnectorFetchError(msg) from exc
         return self._extract_from_payload(query, data, limit)
 
     def _extract_from_payload(
         self,
-        query: str,
+        query: str,  # noqa: ARG002  # required by base class signature
         payload: dict,
         limit: int,
     ) -> list[RawArticle]:
@@ -198,7 +203,7 @@ class CyberLeninkaConnector(BaseConnector):
             url_value = urljoin(self.profile.search_url, href)
             year = self._extract_year(str(rec.get("year") or ""))
             journal = str(rec.get("journal") or "CyberLeninka")
-            doi = self._extract_doi(" ".join([title, abstract, journal]))
+            doi = self._extract_doi(f"{title} {abstract} {journal}")
             combined = " ".join(
                 [
                     title,
@@ -324,8 +329,8 @@ class MathNetConnector(BaseConnector):
 
     def _parse_mathnet_link(
         self,
-        link,
-        limit: int,
+        link: str,
+        limit: int,  # noqa: ARG002  # required by base class signature
     ) -> tuple[RawArticle | None, bool]:
         """Parse a single MathNet search result link into a RawArticle.
 
@@ -338,10 +343,10 @@ class MathNetConnector(BaseConnector):
             if link.find_parent("tr")
             else link.get_text(" ", strip=True)
         )
-        combined = " ".join([title, context])
+        combined = f"{title} {context}"
         doi = self._extract_doi(combined)
         year = self._extract_year(combined)
-        if len(title) < 14 or not href.startswith("http"):
+        if len(title) < _MIN_TITLE_LENGTH or not href.startswith("http"):
             return None, False
         built = self._raw(
             title=title,
@@ -386,8 +391,9 @@ class MathNetConnector(BaseConnector):
                     headers=headers,
                     timeout=self.REQUEST_TIMEOUT_SECONDS,
                 )
-                if int(response.status_code) >= 400:
-                    raise ConnectorFetchError(f"mathnet: http {response.status_code}")
+                if int(response.status_code) >= _HTTP_BAD_REQUEST:
+                    msg = f"mathnet: http {response.status_code}"
+                    raise ConnectorFetchError(msg)
                 html = response.text
                 break
             except (ValueError, RuntimeError, ConnectionError) as exc:
@@ -395,15 +401,16 @@ class MathNetConnector(BaseConnector):
                 if attempt < self.MAX_ATTEMPTS:
                     time.sleep(0.6 * attempt)
         if not html:
+            msg = f"mathnet: request failed after retries: {last_error}"
             raise ConnectorFetchError(
-                f"mathnet: request failed after retries: {last_error}",
+                msg,
             )
         return html
 
     def _search_mathnet(
         self,
         search_query: str,
-        original_query: str,
+        original_query: str,  # noqa: ARG002  # required by base class signature
         limit: int,
     ) -> list[RawArticle]:
         """Search mathnet."""
@@ -536,7 +543,7 @@ class MathNetConnector(BaseConnector):
         for link in soup.select("a[href*='/eng/']"):
             title = (link.get_text(" ", strip=True) or "").strip()
             href = urljoin("https://www.mathnet.ru", link.get("href", ""))
-            if len(title) < 14 or not href.startswith("http"):
+            if len(title) < _MIN_TITLE_LENGTH or not href.startswith("http"):
                 continue
             combined = " ".join([title, link.find_parent().get_text(" ", strip=True)])
             items.append(
@@ -581,7 +588,7 @@ class SciELOConnector(BaseConnector):
         except ConnectorFetchError:
             return self._fetch_html(query, limit)
 
-    def _parse_oai_record(self, rec) -> RawArticle | None:
+    def _parse_oai_record(self, rec: ET.Element) -> RawArticle | None:
         """Parse a single OAI-PMH record into a RawArticle.
 
         Returns None if the record is deleted, missing a title, or not article-like.
@@ -627,7 +634,7 @@ class SciELOConnector(BaseConnector):
             journal=journal,
         )
 
-    def _fetch_oai(self, query: str, limit: int) -> list[RawArticle]:
+    def _fetch_oai(self, query: str, limit: int) -> list[RawArticle]:  # noqa: ARG002  # OAI fetch is date-based; query unused
         """Fetch OAI."""
         current_year = datetime.now(UTC).year
         from_date = f"{max(2000, current_year - 8)}-01-01"
@@ -652,8 +659,9 @@ class SciELOConnector(BaseConnector):
                 url = f"{endpoint}?verb=ListRecords&resumptionToken={quote_plus(token)}"
             if items:
                 return items[:limit]
+        msg = "scielo: oai mirrors yielded no query-relevant entries"
         raise ConnectorFetchError(
-            "scielo: oai mirrors yielded no query-relevant entries",
+            msg,
         )
 
     def _request_xml_text(self, url: str) -> str:
@@ -667,8 +675,9 @@ class SciELOConnector(BaseConnector):
             timeout=self.REQUEST_TIMEOUT_SECONDS,
         )
         status = int(response.status_code)
-        if status >= 400:
-            raise ConnectorFetchError(f"{self.profile.source_key}: http {status}")
+        if status >= _HTTP_BAD_REQUEST:
+            msg = f"{self.profile.source_key}: http {status}"
+            raise ConnectorFetchError(msg)
         return response.content.decode("utf-8", errors="replace")
 
     def _fetch_html(self, query: str, limit: int) -> list[RawArticle]:
@@ -703,11 +712,12 @@ class SciELOConnector(BaseConnector):
                     return items
             except ConnectorFetchError:
                 continue
-        raise ConnectorFetchError("scielo: unable to obtain parseable result page")
+        msg = "scielo: unable to obtain parseable result page"
+        raise ConnectorFetchError(msg)
 
     def _extract_from_html(
         self,
-        query: str,
+        query: str,  # noqa: ARG002  # required by base class signature
         soup: BeautifulSoup,
         limit: int,
     ) -> list[RawArticle]:
@@ -800,12 +810,12 @@ class PerseeConnector(BaseConnector):
     def _parse_oai_records(
         self,
         xml_text: str,
-        query: str,
+        query: str,  # noqa: ARG002  # required by base class signature
         remaining: int,
     ) -> tuple[list[RawArticle], str]:
         """Parse OAI records."""
         try:
-            root = ET.fromstring(xml_text)
+            root = ET.fromstring(xml_text)  # noqa: S314  # trusted API XML response
         except ET.ParseError:
             return ([], "")
         ns = {
@@ -899,12 +909,12 @@ class OpenEditionConnector(BaseConnector):
     def _parse_oai_records(
         self,
         xml_text: str,
-        query: str,
+        query: str,  # noqa: ARG002  # required by base class signature
         remaining: int,
     ) -> tuple[list[RawArticle], str]:
         """Parse OAI records."""
         try:
-            root = ET.fromstring(xml_text)
+            root = ET.fromstring(xml_text)  # noqa: S314  # trusted API XML response
         except ET.ParseError:
             return ([], "")
         ns = {
@@ -1033,7 +1043,7 @@ class MedknowConnector(BaseConnector):
         )
         try:
 
-            async def _fetch():
+            async def _fetch() -> dict:
                 async with (
                     aiohttp.ClientSession() as session,
                     session.get(
@@ -1046,14 +1056,15 @@ class MedknowConnector(BaseConnector):
                     resp.raise_for_status()
                     return await resp.json()
 
-            import asyncio as _asyncio
+            import asyncio as _asyncio  # noqa: PLC0415  # lazy import to avoid circular dependency
 
             payload = _asyncio.run(_fetch())
         except ConnectorFetchError:
             raise
         except (ValueError, RuntimeError, ConnectionError) as exc:
+            msg = f"medknow: openalex request failed: {exc}"
             raise ConnectorFetchError(
-                f"medknow: openalex request failed: {exc}",
+                msg,
             ) from exc
         records = payload.get("results", [])
         if not isinstance(records, list):
@@ -1100,7 +1111,8 @@ class DergiParkConnector(BaseConnector):
         """Fetch via OAI."""
         sets = self._list_sets()
         if not sets:
-            raise ConnectorFetchError("dergipark: no OAI sets available")
+            msg = "dergipark: no OAI sets available"
+            raise ConnectorFetchError(msg)
 
         max_sets = int(os.getenv("DERGIPARK_OAI_MAX_SETS", "35"))
         recency_year = datetime.now(UTC).year - 2
@@ -1128,10 +1140,11 @@ class DergiParkConnector(BaseConnector):
             return self._sets_cache
         xml_text = self._request_text(f"{self.OAI_BASE}?verb=ListSets")
         try:
-            root = ET.fromstring(xml_text)
+            root = ET.fromstring(xml_text)  # noqa: S314  # trusted API XML response
         except ET.ParseError as exc:
+            msg = f"dergipark: invalid OAI ListSets xml: {exc}"
             raise ConnectorFetchError(
-                f"dergipark: invalid OAI ListSets xml: {exc}",
+                msg,
             ) from exc
         ns = {"oai": "http://www.openarchives.org/OAI/2.0/"}
         sets: list[tuple[str, str]] = []
@@ -1146,13 +1159,13 @@ class DergiParkConnector(BaseConnector):
     def _parse_oai_records(
         self,
         xml_text: str,
-        query: str,
+        query: str,  # noqa: ARG002  # required by base class signature
         set_name: str,
         remaining: int,
     ) -> list[RawArticle]:
         """Parse OAI records."""
         try:
-            root = ET.fromstring(xml_text)
+            root = ET.fromstring(xml_text)  # noqa: S314  # trusted API XML response
         except ET.ParseError:
             return []
         ns = {
@@ -1238,12 +1251,12 @@ class HrcakConnector(BaseConnector):
     def _parse_oai_records(
         self,
         xml_text: str,
-        query: str,
+        query: str,  # noqa: ARG002  # required by base class signature
         remaining: int,
     ) -> tuple[list[RawArticle], str]:
         """Parse OAI records."""
         try:
-            root = ET.fromstring(xml_text)
+            root = ET.fromstring(xml_text)  # noqa: S314  # trusted API XML response
         except ET.ParseError:
             return ([], "")
         ns = {
@@ -1356,7 +1369,7 @@ class AJOLConnector(BaseConnector):
             )
             doi = self._extract_doi(combined)
             year = self._extract_year(combined)
-            if len(title) < 14 or not href.startswith("http"):
+            if len(title) < _MIN_TITLE_LENGTH or not href.startswith("http"):
                 continue
             candidates.append(
                 self._raw(
@@ -1380,9 +1393,7 @@ class AJOLConnector(BaseConnector):
             enriched = item
             if "ajol.info/" in item.url:
                 enriched = self.enrich_raw(item)
-            text = " ".join(
-                [enriched.title, enriched.abstract, enriched.full_text],
-            ).lower()
+            text = f"{enriched.title} {enriched.abstract} {enriched.full_text}".lower()
             if self._is_open_access_text(text):
                 relevant.append(enriched)
             if len(relevant) >= limit:
@@ -1416,12 +1427,12 @@ class AJOLConnector(BaseConnector):
     def _parse_oai_records(
         self,
         xml_text: str,
-        query: str,
+        query: str,  # noqa: ARG002  # required by base class signature
         remaining: int,
     ) -> tuple[list[RawArticle], str]:
         """Parse OAI records."""
         try:
-            root = ET.fromstring(xml_text)
+            root = ET.fromstring(xml_text)  # noqa: S314  # trusted API XML response
         except ET.ParseError:
             return ([], "")
         ns = {
@@ -1469,7 +1480,7 @@ class AJOLConnector(BaseConnector):
             )
             doi = self._extract_doi(combined)
             year = self._extract_year(combined)
-            if not title or len(title) < 14:
+            if not title or len(title) < _MIN_TITLE_LENGTH:
                 continue
             built = self._raw(
                 title=title,

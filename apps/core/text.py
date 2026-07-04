@@ -1,3 +1,5 @@
+"""Text-processing helpers shared across apps."""
+
 from __future__ import annotations
 
 import re

@@ -1,15 +1,16 @@
+"""Resolve lawful open-access full text for raw articles."""
+
 from __future__ import annotations
 
 import asyncio
 import os
-from typing import Any
 from urllib.parse import quote_plus
 
 import aiohttp
 from bs4 import BeautifulSoup
 
 from apps.core.text import normalize_scholarly_text
-from apps.ingestion.connectors import BaseConnector
+from apps.ingestion.connectors import BaseConnector, RawArticle
 
 
 class LawfulFullTextResolver:
@@ -17,7 +18,7 @@ class LawfulFullTextResolver:
 
     REQUEST_TIMEOUT_SECONDS = 25
 
-    def __init__(self, connector: Any) -> None:
+    def __init__(self, connector: BaseConnector) -> None:
         """Store the source connector used for transport helpers."""
         self.connector = connector
 
@@ -27,24 +28,25 @@ class LawfulFullTextResolver:
         configured = os.getenv("UNPAYWALL_EMAIL", "").strip()
         return configured or "cindex@app.local"
 
-    def resolve(self, raw: Any, existing_text: str = "") -> str:
+    def resolve(self, raw: RawArticle, existing_text: str = "") -> str:
         """Resolve or augment full text for a raw article."""
         best_text = normalize_scholarly_text(existing_text)
         ocr_language = self._ocr_language(getattr(raw, "language", ""))
         for candidate_url in self._candidate_urls(raw):
             candidate_text = self._fetch_url_text(
-                candidate_url, ocr_language=ocr_language,
+                candidate_url,
+                ocr_language=ocr_language,
             )
             if not candidate_text:
                 continue
             merged_text = normalize_scholarly_text(
-                " ".join([best_text, candidate_text]).strip(),
+                f"{best_text} {candidate_text}".strip(),
             )
             if len(merged_text) > len(best_text):
                 best_text = merged_text
         return best_text
 
-    def _candidate_urls(self, raw: Any) -> list[str]:
+    def _candidate_urls(self, raw: RawArticle) -> list[str]:
         """Build an ordered list of lawful full-text candidate URLs."""
         urls: list[str] = []
         doi = str(getattr(raw, "doi", "") or "").strip()
@@ -181,24 +183,30 @@ class LawfulFullTextResolver:
         if not url.startswith("http"):
             return ""
         try:
-            _, response, body = self.connector._request_response(
+            _, response, body = self.connector._request_response(  # noqa: SLF001
                 url,
                 params=None,
                 accept="text/html,application/xhtml+xml,application/pdf,*/*",
             )
             content_type = str(response.headers.get("Content-Type", ""))
             body_bytes = bytes(response.content or b"")
-            if self.connector._is_pdf_response(url, content_type, body_bytes):
-                pdf_text = self.connector._extract_pdf_text_with_language(
+            if self.connector._is_pdf_response(  # noqa: SLF001
+                url,
+                content_type,
+                body_bytes,
+            ):
+                pdf_text = self.connector._extract_pdf_text_with_language(  # noqa: SLF001
                     body_bytes,
                     ocr_language=ocr_language,
                 )
                 if pdf_text:
                     return normalize_scholarly_text(pdf_text)
             if body:
-                soup = BaseConnector._sanitize_html_soup(BeautifulSoup(body, "lxml"))
-                text = BaseConnector._html_text(soup)
-                pdf_url = self.connector._extract_pdf_url(
+                soup = BaseConnector._sanitize_html_soup(  # noqa: SLF001
+                    BeautifulSoup(body, "lxml"),
+                )
+                text = BaseConnector._html_text(soup)  # noqa: SLF001
+                pdf_url = self.connector._extract_pdf_url(  # noqa: SLF001
                     soup,
                     url,
                     body,
@@ -206,7 +214,7 @@ class LawfulFullTextResolver:
                 )
                 if pdf_url and pdf_url != url:
                     try:
-                        pdf_text = self.connector._request_pdf_text(
+                        pdf_text = self.connector._request_pdf_text(  # noqa: SLF001
                             pdf_url,
                             ocr_language=ocr_language,
                         )

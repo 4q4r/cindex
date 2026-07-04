@@ -1,3 +1,5 @@
+"""App configuration for the search app."""
+
 from __future__ import annotations
 
 import os

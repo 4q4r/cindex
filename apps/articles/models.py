@@ -1,3 +1,5 @@
+"""Database models for scholarly articles."""
+
 from __future__ import annotations
 
 from django.db import models
@@ -48,10 +50,15 @@ class Article(models.Model):
     """A normalized scholarly article record."""
 
     source = models.ForeignKey(
-        Source, on_delete=models.CASCADE, related_name="articles",
+        Source,
+        on_delete=models.CASCADE,
+        related_name="articles",
     )
     journal = models.ForeignKey(
-        Journal, on_delete=models.SET_NULL, null=True, blank=True,
+        Journal,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
     )
     external_id = models.CharField(max_length=255, blank=True)
     title = models.CharField(max_length=1000)
@@ -114,7 +121,9 @@ class ArticleAuthor(models.Model):
     """Join table storing article-author ordering."""
 
     article = models.ForeignKey(
-        Article, on_delete=models.CASCADE, related_name="article_authors",
+        Article,
+        on_delete=models.CASCADE,
+        related_name="article_authors",
     )
     author = models.ForeignKey(Author, on_delete=models.CASCADE)
     order = models.PositiveIntegerField(default=1)
@@ -134,7 +143,9 @@ class Identifier(models.Model):
     """An external identifier associated with an article."""
 
     article = models.ForeignKey(
-        Article, on_delete=models.CASCADE, related_name="identifiers",
+        Article,
+        on_delete=models.CASCADE,
+        related_name="identifiers",
     )
     kind = models.CharField(max_length=64)
     value = models.CharField(max_length=255)
