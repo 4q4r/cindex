@@ -37,7 +37,7 @@ export function SearchBar({
                 onKeyDown={handleKeyDown}
                 placeholder="Тема, ключевики, DOI, автор..."
                 aria-label="Тема, ключевики, DOI, автор"
-                className="w-full bg-bg-input border border-border-default rounded-lg pl-12 pr-10 py-3.5 text-text-primary placeholder:text-text-tertiary focus:outline-none focus:border-accent/50 focus:ring-1 focus:ring-accent/20 transition-colors text-[15px]"
+                className="w-full bg-bg-input border border-border-default rounded-lg pl-12 pr-10 py-3.5 text-text-primary placeholder:text-text-tertiary focus:border-accent/50 transition-colors text-[15px]"
                 disabled={isLoading}
               />
               {query && (

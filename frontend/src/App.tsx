@@ -247,7 +247,9 @@ export default function App() {
     const timer = setTimeout(() => {
       void handleSearch(lastQueryRef.current);
     }, FILTER_CHANGE_DEBOUNCE_MS);
-    return () => { clearTimeout(timer); };
+    return () => {
+      clearTimeout(timer);
+    };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [filters]);
 
@@ -316,6 +318,12 @@ export default function App() {
 
   return (
     <div className="min-h-screen bg-bg-primary">
+      <a
+        href="#main-content"
+        className="sr-only focus:not-sr-only focus:fixed focus:top-3 focus:left-3 focus:z-[100] focus:px-4 focus:py-2.5 focus:rounded-lg focus:bg-bg-card focus:text-text-primary focus:border focus:border-accent focus:shadow-xl"
+      >
+        Перейти к содержимому
+      </a>
       <Header
         resultCount={totalResults}
         lastSearchTime={lastSearchTime}
@@ -335,7 +343,10 @@ export default function App() {
             }}
           />
 
-          <div className="flex-1 min-w-0 h-[calc(100vh-92px)] overflow-y-auto pr-1">
+          <main
+            id="main-content"
+            className="flex-1 min-w-0 h-[calc(100vh-92px)] overflow-y-auto pr-1"
+          >
             <SearchBar
               query={query}
               onQueryChange={setQuery}
@@ -346,6 +357,7 @@ export default function App() {
             />
 
             <div className="py-5">
+              <h2 className="sr-only">Результаты поиска</h2>
               {showResults && (
                 <div className="mb-5">
                   <InfoBar
@@ -399,7 +411,9 @@ export default function App() {
                     <div className="flex items-center justify-center gap-2 pt-6 pb-2">
                       <button
                         type="button"
-                        onClick={() => { handlePageChange(currentPage - 1); }}
+                        onClick={() => {
+                          handlePageChange(currentPage - 1);
+                        }}
                         disabled={currentPage === 1}
                         className="flex items-center gap-1 px-3 py-2 text-xs text-text-secondary hover:text-text-primary bg-bg-elevated border border-border-default rounded-lg disabled:opacity-30 disabled:cursor-not-allowed transition-colors"
                       >
@@ -421,7 +435,9 @@ export default function App() {
                               )}
                               <button
                                 type="button"
-                                onClick={() => { handlePageChange(page); }}
+                                onClick={() => {
+                                  handlePageChange(page);
+                                }}
                                 className={`w-9 h-9 rounded-lg text-xs font-medium transition-colors ${
                                   page === currentPage
                                     ? "bg-accent text-white"
@@ -436,7 +452,9 @@ export default function App() {
                       </div>
                       <button
                         type="button"
-                        onClick={() => { handlePageChange(currentPage + 1); }}
+                        onClick={() => {
+                          handlePageChange(currentPage + 1);
+                        }}
                         disabled={currentPage === totalPages}
                         className="flex items-center gap-1 px-3 py-2 text-xs text-text-secondary hover:text-text-primary bg-bg-elevated border border-border-default rounded-lg disabled:opacity-30 disabled:cursor-not-allowed transition-colors"
                       >
@@ -462,7 +480,7 @@ export default function App() {
                 />
               )}
             </div>
-          </div>
+          </main>
         </div>
       </div>
 

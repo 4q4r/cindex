@@ -196,7 +196,7 @@ export function FilterPanel({
               updateFilter("dateFrom", e.target.value);
             }}
             aria-label="Дата с"
-            className="w-full bg-bg-input border border-border-default rounded-lg px-3 py-2 text-sm text-text-primary placeholder:text-text-tertiary focus:outline-none focus:border-accent/50 transition-colors"
+            className="w-full bg-bg-input border border-border-default rounded-lg px-3 py-2 text-sm text-text-primary placeholder:text-text-tertiary focus:border-accent/50 transition-colors"
             min="1900"
             max="2026"
           />
@@ -211,7 +211,7 @@ export function FilterPanel({
               updateFilter("dateTo", e.target.value);
             }}
             aria-label="Дата до"
-            className="w-full bg-bg-input border border-border-default rounded-lg px-3 py-2 text-sm text-text-primary placeholder:text-text-tertiary focus:outline-none focus:border-accent/50 transition-colors"
+            className="w-full bg-bg-input border border-border-default rounded-lg px-3 py-2 text-sm text-text-primary placeholder:text-text-tertiary focus:border-accent/50 transition-colors"
             min="1900"
             max="2026"
           />
