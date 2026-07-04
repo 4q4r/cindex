@@ -6,7 +6,6 @@ from apps.ingestion.connectors import (
     BaseConnector,
     DOAJConnector,
     EuropePMCConnector,
-    JSTAGEConnector,
     MathNetConnector,
     OpenEditionConnector,
     PerseeConnector,
@@ -75,26 +74,6 @@ def test_html_enrichment_ignores_script_boilerplate() -> None:
 
     assert "Real article text about neurobiology and AI." in enriched.full_text
     assert "ym(70895752" not in enriched.full_text
-
-
-def test_jstage_html_extraction_detects_doi_and_year() -> None:
-    """Test jstage html extraction detects doi and year helper."""
-    html = """
-    <html><body>
-      <article class='search-result-item'>
-        <h3><a href='/article/123'>Deep Study 2024 DOI 10.1234/abcd.5678</a></h3>
-        <p class='abstract'>Peer reviewed publication in major index.</p>
-        <span class='journal'>Journal of Evidence</span>
-      </article>
-    </body></html>
-    """
-    soup = BeautifulSoup(html, "lxml")
-    items = JSTAGEConnector()._extract_from_html("deep study", soup, limit=5)
-
-    assert len(items) == 1
-    assert items[0].doi == "10.1234/abcd.5678"
-    assert items[0].year == 2024
-    assert items[0].journal == "Journal of Evidence"
 
 
 def test_europe_pmc_payload_extraction() -> None:

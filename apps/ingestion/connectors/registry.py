@@ -53,7 +53,7 @@ CONNECTORS: dict[str, type[BaseConnector]] = {
         ZenodoConnector,
         IACRConnector,
         ExaConnector,
-        # HTML/WebSocket-mode connectors (cloudscraper)
+        # HTML-mode connectors (cloudscraper)
         CiNiiConnector,
         SciEngineConnector,
         CyberLeninkaConnector,
