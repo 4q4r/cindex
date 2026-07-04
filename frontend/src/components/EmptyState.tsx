@@ -57,7 +57,7 @@ export const EmptyState = memo(function EmptyState({
             preview статьи, проверку критериев и готовое цитирование по ГОСТ.
           </p>
           <div className="text-left">
-            <h3 className="text-[11px] uppercase tracking-wider text-text-tertiary text-center mb-3">
+            <h3 className="text-xs uppercase tracking-wider text-text-tertiary text-center mb-3">
               Примеры запросов
             </h3>
             <div className="grid grid-cols-1 lg:grid-cols-2 gap-2.5">
@@ -75,7 +75,7 @@ export const EmptyState = memo(function EmptyState({
                     <div className="text-sm text-text-primary font-medium">
                       {ex.query}
                     </div>
-                    <div className="text-[11px] text-text-tertiary">
+                    <div className="text-xs text-text-tertiary">
                       {ex.description}
                     </div>
                   </div>
@@ -158,7 +158,7 @@ export const EmptyState = memo(function EmptyState({
             площадок.
           </p>
           <div className="bg-bg-card border border-border-default rounded-lg p-4 mb-5">
-            <h3 className="text-[11px] uppercase tracking-wider text-text-tertiary mb-2">
+            <h3 className="text-xs uppercase tracking-wider text-text-tertiary mb-2">
               Недоступные источники
             </h3>
             {sourcesFailed.map((s) => (

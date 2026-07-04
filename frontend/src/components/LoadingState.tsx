@@ -164,7 +164,7 @@ export const LoadingState = memo(function LoadingState({
                   {stage.title}
                 </span>
                 {currentStep > 0 && (
-                  <span className="rounded-full border border-border-default px-2 py-0.5 text-[11px] text-text-tertiary">
+                  <span className="rounded-full border border-border-default px-2 py-0.5 text-xs text-text-tertiary">
                     этап {currentStep}/3
                   </span>
                 )}
@@ -173,7 +173,7 @@ export const LoadingState = memo(function LoadingState({
                 {stage.description}
               </p>
               {substageLabel && (
-                <div className="mt-2 inline-flex rounded-full border border-border-default bg-bg-elevated px-2.5 py-1 text-[11px] font-medium text-text-secondary">
+                <div className="mt-2 inline-flex rounded-full border border-border-default bg-bg-elevated px-2.5 py-1 text-xs font-medium text-text-secondary">
                   Подстадия: {substageLabel}
                 </div>
               )}
@@ -238,7 +238,7 @@ export const LoadingState = memo(function LoadingState({
                     <h3 className="text-sm font-medium text-text-primary">
                       {step.title}
                     </h3>
-                    <span className="text-[11px] text-text-tertiary">
+                    <span className="text-xs text-text-tertiary">
                       {step.range}
                     </span>
                   </div>

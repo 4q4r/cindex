@@ -63,7 +63,7 @@ export function SearchBar({
             </button>
           </div>
 
-          <div className="flex items-center gap-4 mt-2 text-[11px] text-text-tertiary">
+          <div className="flex items-center gap-4 mt-2 text-xs text-text-tertiary">
             <span>&quot;точная фраза&quot; для точного совпадения</span>
             <span className="text-border-default">|</span>
             <span>AND / OR для булевой логики</span>

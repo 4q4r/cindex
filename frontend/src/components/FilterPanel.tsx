@@ -166,7 +166,7 @@ function SelectDropdown({
     <div ref={containerRef} className="relative">
       <div
         id={labelId}
-        className="block text-[11px] uppercase tracking-wider text-text-tertiary mb-1.5"
+        className="block text-xs uppercase tracking-wider text-text-tertiary mb-1.5"
       >
         {label}
       </div>
@@ -340,7 +340,7 @@ export function FilterPanel({
       />
 
       <div>
-        <div className="block text-[11px] uppercase tracking-wider text-text-tertiary mb-2.5">
+        <div className="block text-xs uppercase tracking-wider text-text-tertiary mb-2.5">
           Строгие фильтры
         </div>
         <div className="space-y-0.5">
@@ -369,7 +369,7 @@ export function FilterPanel({
       </div>
 
       <fieldset className="border-0 p-0 m-0">
-        <legend className="block text-[11px] uppercase tracking-wider text-text-tertiary mb-1.5">
+        <legend className="block text-xs uppercase tracking-wider text-text-tertiary mb-1.5">
           Диапазон лет
         </legend>
         <p id="year-range-help" className="text-xs text-text-tertiary mb-2">
@@ -380,7 +380,7 @@ export function FilterPanel({
           <div className="flex-1">
             <label
               htmlFor="filter-date-from"
-              className="block text-[11px] uppercase tracking-wider text-text-tertiary mb-1.5"
+              className="block text-xs uppercase tracking-wider text-text-tertiary mb-1.5"
             >
               От
             </label>
@@ -411,7 +411,7 @@ export function FilterPanel({
           <div className="flex-1">
             <label
               htmlFor="filter-date-to"
-              className="block text-[11px] uppercase tracking-wider text-text-tertiary mb-1.5"
+              className="block text-xs uppercase tracking-wider text-text-tertiary mb-1.5"
             >
               До
             </label>
