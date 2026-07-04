@@ -1,4 +1,4 @@
-import { useState, useRef, useEffect } from "react";
+import { useState, useRef, useEffect, useMemo } from "react";
 import { ChevronDown, X, Filter, Check } from "lucide-react";
 import { Filters } from "../types";
 
@@ -16,6 +16,32 @@ const SORT_OPTIONS = [
   { value: "newest", label: "Сначала новые" },
   { value: "metadata", label: "По полноте метаданных" },
 ] as const;
+
+const MIN_YEAR = 1900;
+const MAX_YEAR = 2026;
+
+function validateYearRange(dateFrom: string, dateTo: string): string | null {
+  const from = dateFrom === "" ? null : parseInt(dateFrom, 10);
+  const to = dateTo === "" ? null : parseInt(dateTo, 10);
+  const range = `от ${String(MIN_YEAR)} до ${String(MAX_YEAR)}`;
+
+  if (dateFrom !== "" && (from === null || Number.isNaN(from))) {
+    return `«От» — введите год ${range}`;
+  }
+  if (dateTo !== "" && (to === null || Number.isNaN(to))) {
+    return `«До» — введите год ${range}`;
+  }
+  if (from !== null && (from < MIN_YEAR || from > MAX_YEAR)) {
+    return `«От» — год ${range}`;
+  }
+  if (to !== null && (to < MIN_YEAR || to > MAX_YEAR)) {
+    return `«До» — год ${range}`;
+  }
+  if (from !== null && to !== null && from > to) {
+    return "«От» не может быть больше «До»";
+  }
+  return null;
+}
 
 interface FilterPanelProps {
   filters: Filters;
@@ -138,6 +164,11 @@ export function FilterPanel({
     onFiltersChange({ ...filters, [key]: value });
   };
 
+  const yearError = useMemo(
+    () => validateYearRange(filters.dateFrom, filters.dateTo),
+    [filters.dateFrom, filters.dateTo],
+  );
+
   const content = (
     <div className="space-y-6">
       <SelectDropdown
@@ -181,42 +212,88 @@ export function FilterPanel({
         </div>
       </div>
 
-      <div>
-        <div className="block text-[11px] uppercase tracking-wider text-text-tertiary mb-1.5">
+      <fieldset className="border-0 p-0 m-0">
+        <legend className="block text-[11px] uppercase tracking-wider text-text-tertiary mb-1.5">
           Диапазон лет
+        </legend>
+        <p id="year-range-help" className="text-xs text-text-tertiary mb-2">
+          Год публикации, {MIN_YEAR}–{MAX_YEAR}. Оставьте пустым, чтобы не
+          ограничивать.
+        </p>
+        <div className="flex items-end gap-2">
+          <div className="flex-1">
+            <label
+              htmlFor="filter-date-from"
+              className="block text-[11px] uppercase tracking-wider text-text-tertiary mb-1.5"
+            >
+              От
+            </label>
+            <input
+              id="filter-date-from"
+              name="dateFrom"
+              type="number"
+              placeholder={String(MIN_YEAR)}
+              value={filters.dateFrom}
+              onChange={(e) => {
+                updateFilter("dateFrom", e.target.value);
+              }}
+              aria-describedby={
+                yearError
+                  ? "year-range-help year-range-error"
+                  : "year-range-help"
+              }
+              aria-invalid={yearError ? true : undefined}
+              className={`w-full bg-bg-input border rounded-lg px-3 py-2 text-sm text-text-primary placeholder:text-text-tertiary focus:border-accent/50 transition-colors ${
+                yearError ? "border-danger/60" : "border-border-default"
+              }`}
+              min={String(MIN_YEAR)}
+              max={String(MAX_YEAR)}
+              inputMode="numeric"
+            />
+          </div>
+          <span className="text-text-tertiary text-sm shrink-0 pb-2.5">—</span>
+          <div className="flex-1">
+            <label
+              htmlFor="filter-date-to"
+              className="block text-[11px] uppercase tracking-wider text-text-tertiary mb-1.5"
+            >
+              До
+            </label>
+            <input
+              id="filter-date-to"
+              name="dateTo"
+              type="number"
+              placeholder={String(MAX_YEAR)}
+              value={filters.dateTo}
+              onChange={(e) => {
+                updateFilter("dateTo", e.target.value);
+              }}
+              aria-describedby={
+                yearError
+                  ? "year-range-help year-range-error"
+                  : "year-range-help"
+              }
+              aria-invalid={yearError ? true : undefined}
+              className={`w-full bg-bg-input border rounded-lg px-3 py-2 text-sm text-text-primary placeholder:text-text-tertiary focus:border-accent/50 transition-colors ${
+                yearError ? "border-danger/60" : "border-border-default"
+              }`}
+              min={String(MIN_YEAR)}
+              max={String(MAX_YEAR)}
+              inputMode="numeric"
+            />
+          </div>
         </div>
-        <div className="flex items-center gap-2">
-          <input
-            id="filter-date-from"
-            name="dateFrom"
-            type="number"
-            placeholder="От"
-            value={filters.dateFrom}
-            onChange={(e) => {
-              updateFilter("dateFrom", e.target.value);
-            }}
-            aria-label="Дата с"
-            className="w-full bg-bg-input border border-border-default rounded-lg px-3 py-2 text-sm text-text-primary placeholder:text-text-tertiary focus:border-accent/50 transition-colors"
-            min="1900"
-            max="2026"
-          />
-          <span className="text-text-tertiary text-sm shrink-0">—</span>
-          <input
-            id="filter-date-to"
-            name="dateTo"
-            type="number"
-            placeholder="До"
-            value={filters.dateTo}
-            onChange={(e) => {
-              updateFilter("dateTo", e.target.value);
-            }}
-            aria-label="Дата до"
-            className="w-full bg-bg-input border border-border-default rounded-lg px-3 py-2 text-sm text-text-primary placeholder:text-text-tertiary focus:border-accent/50 transition-colors"
-            min="1900"
-            max="2026"
-          />
-        </div>
-      </div>
+        {yearError && (
+          <p
+            id="year-range-error"
+            role="alert"
+            aria-live="polite"
+            className="mt-2 text-xs text-danger"
+          >
+            {yearError}
+          </p>
+        )}
+      </fieldset>
 
       <SelectDropdown
         label="Сортировка"
