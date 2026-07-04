@@ -1,4 +1,4 @@
-import { useState, useRef, useEffect, useMemo } from "react";
+import { useState, useRef, useEffect, useMemo, useId } from "react";
 import { ChevronDown, X, Filter, Check } from "lucide-react";
 import { Filters } from "../types";
 
@@ -62,33 +62,125 @@ function SelectDropdown({
   onChange: (v: string) => void;
 }) {
   const [open, setOpen] = useState(false);
-  const ref = useRef<HTMLDivElement>(null);
+  const containerRef = useRef<HTMLDivElement>(null);
+  const triggerRef = useRef<HTMLButtonElement>(null);
+  const optionRefs = useRef<(HTMLButtonElement | null)[]>([]);
+  const labelId = useId();
+  const listboxId = useId();
 
   useEffect(() => {
+    if (!open) return;
     const handler = (e: MouseEvent) => {
-      if (ref.current && !ref.current.contains(e.target as Node))
+      if (
+        containerRef.current &&
+        !containerRef.current.contains(e.target as Node)
+      ) {
         setOpen(false);
+      }
     };
     document.addEventListener("mousedown", handler);
     return () => {
       document.removeEventListener("mousedown", handler);
     };
-  }, []);
+  }, [open]);
+
+  useEffect(() => {
+    if (!open) return;
+    const idx = Math.max(
+      0,
+      options.findIndex((o) => o.value === value),
+    );
+    const timer = window.setTimeout(() => {
+      optionRefs.current[idx]?.focus();
+    }, 0);
+    return () => {
+      window.clearTimeout(timer);
+    };
+  }, [open, options, value]);
 
   const current = options.find((o) => o.value === value);
 
+  const focusOption = (idx: number) => {
+    const n = options.length;
+    if (n === 0) return;
+    const wrapped = ((idx % n) + n) % n;
+    optionRefs.current[wrapped]?.focus();
+  };
+
+  const selectAndClose = (idx: number) => {
+    onChange(options[idx].value);
+    setOpen(false);
+    triggerRef.current?.focus();
+  };
+
+  const handleTriggerKeyDown = (e: React.KeyboardEvent<HTMLButtonElement>) => {
+    switch (e.key) {
+      case "ArrowDown":
+      case "ArrowUp":
+      case "Enter":
+      case " ":
+        e.preventDefault();
+        setOpen(true);
+        break;
+    }
+  };
+
+  const handleOptionKeyDown = (
+    e: React.KeyboardEvent<HTMLButtonElement>,
+    idx: number,
+  ) => {
+    switch (e.key) {
+      case "ArrowDown":
+        e.preventDefault();
+        focusOption(idx + 1);
+        break;
+      case "ArrowUp":
+        e.preventDefault();
+        focusOption(idx - 1);
+        break;
+      case "Home":
+        e.preventDefault();
+        focusOption(0);
+        break;
+      case "End":
+        e.preventDefault();
+        focusOption(options.length - 1);
+        break;
+      case "Enter":
+      case " ":
+        e.preventDefault();
+        selectAndClose(idx);
+        break;
+      case "Escape":
+        e.preventDefault();
+        setOpen(false);
+        triggerRef.current?.focus();
+        break;
+      case "Tab":
+        setOpen(false);
+        break;
+    }
+  };
+
   return (
-    <div ref={ref} className="relative">
-      <div className="block text-[11px] uppercase tracking-wider text-text-tertiary mb-1.5">
+    <div ref={containerRef} className="relative">
+      <div
+        id={labelId}
+        className="block text-[11px] uppercase tracking-wider text-text-tertiary mb-1.5"
+      >
         {label}
       </div>
       <button
+        ref={triggerRef}
         type="button"
         onClick={() => {
           setOpen(!open);
         }}
-        aria-label={label}
+        onKeyDown={handleTriggerKeyDown}
         aria-haspopup="listbox"
+        aria-expanded={open}
+        aria-labelledby={labelId}
+        aria-controls={open ? listboxId : undefined}
         className="w-full min-h-[44px] flex items-center justify-between bg-bg-input border border-border-default rounded-lg px-3 py-2 text-sm text-text-primary hover:border-accent/30 transition-colors"
       >
         <span>{current?.label}</span>
@@ -97,24 +189,40 @@ function SelectDropdown({
         />
       </button>
       {open && (
-        <div className="absolute top-full left-0 right-0 mt-1 bg-bg-elevated border border-border-default rounded-lg shadow-xl z-50 overflow-hidden">
-          {options.map((opt) => (
-            <button
-              type="button"
-              key={opt.value}
-              onClick={() => {
-                onChange(opt.value);
-                setOpen(false);
-              }}
-              className={`w-full min-h-[44px] text-left px-3 py-2 text-sm hover:bg-bg-hover transition-colors ${
-                opt.value === value
-                  ? "text-accent-text bg-accent-subtle/30"
-                  : "text-text-secondary"
-              }`}
-            >
-              {opt.label}
-            </button>
-          ))}
+        <div
+          id={listboxId}
+          role="listbox"
+          aria-labelledby={labelId}
+          className="absolute top-full left-0 right-0 mt-1 bg-bg-elevated border border-border-default rounded-lg shadow-xl z-50 overflow-hidden"
+        >
+          {options.map((opt, i) => {
+            const selected = opt.value === value;
+            return (
+              <button
+                ref={(el) => {
+                  optionRefs.current[i] = el;
+                }}
+                type="button"
+                key={opt.value}
+                role="option"
+                aria-selected={selected}
+                tabIndex={-1}
+                onClick={() => {
+                  selectAndClose(i);
+                }}
+                onKeyDown={(e) => {
+                  handleOptionKeyDown(e, i);
+                }}
+                className={`w-full min-h-[44px] text-left px-3 py-2 text-sm hover:bg-bg-hover transition-colors ${
+                  selected
+                    ? "text-accent-text bg-accent-subtle/30"
+                    : "text-text-secondary"
+                }`}
+              >
+                {opt.label}
+              </button>
+            );
+          })}
         </div>
       )}
     </div>
@@ -168,6 +276,54 @@ export function FilterPanel({
     () => validateYearRange(filters.dateFrom, filters.dateTo),
     [filters.dateFrom, filters.dateTo],
   );
+
+  const mobilePanelRef = useRef<HTMLDivElement>(null);
+  const closeBtnRef = useRef<HTMLButtonElement>(null);
+  const previousFocusRef = useRef<HTMLElement | null>(null);
+
+  useEffect(() => {
+    if (!isMobileOpen) {
+      previousFocusRef.current?.focus();
+      return;
+    }
+    previousFocusRef.current =
+      (document.activeElement as HTMLElement | null) ?? null;
+    document.body.style.overflow = "hidden";
+    const focusTimer = window.setTimeout(() => {
+      closeBtnRef.current?.focus();
+    }, 0);
+
+    const handler = (e: KeyboardEvent) => {
+      if (e.key === "Escape") {
+        onMobileClose();
+        return;
+      }
+      if (e.key !== "Tab") return;
+      const panel = mobilePanelRef.current;
+      if (!panel) return;
+      const focusable = Array.from(
+        panel.querySelectorAll<HTMLElement>(
+          'button:not([disabled]), [href], input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])',
+        ),
+      ).filter((el) => el.offsetParent !== null);
+      if (focusable.length === 0) return;
+      const first = focusable[0];
+      const last = focusable[focusable.length - 1];
+      if (e.shiftKey && document.activeElement === first) {
+        e.preventDefault();
+        last.focus();
+      } else if (!e.shiftKey && document.activeElement === last) {
+        e.preventDefault();
+        first.focus();
+      }
+    };
+    document.addEventListener("keydown", handler);
+    return () => {
+      window.clearTimeout(focusTimer);
+      document.removeEventListener("keydown", handler);
+      document.body.style.overflow = "";
+    };
+  }, [isMobileOpen, onMobileClose]);
 
   const content = (
     <div className="space-y-6">
@@ -320,17 +476,19 @@ export function FilterPanel({
 
       {isMobileOpen && (
         <div className="fixed inset-0 z-[60] lg:hidden">
-          <div
-            className="absolute inset-0 bg-black/60"
+          <button
+            type="button"
             onClick={onMobileClose}
-            onKeyDown={(e) => {
-              if (e.key === "Escape") onMobileClose();
-            }}
-            role="button"
-            tabIndex={0}
+            className="absolute inset-0 bg-black/60 cursor-default"
             aria-label="Закрыть фильтры"
           />
-          <div className="absolute left-0 top-0 bottom-0 w-[320px] max-w-[85vw] bg-bg-primary border-r border-border-default overflow-y-auto animate-slide-in-left">
+          <div
+            ref={mobilePanelRef}
+            role="dialog"
+            aria-modal="true"
+            aria-label="Параметры поиска"
+            className="absolute left-0 top-0 bottom-0 w-[320px] max-w-[85vw] bg-bg-primary border-r border-border-default overflow-y-auto animate-slide-in-left"
+          >
             <div className="p-5">
               <div className="flex items-center justify-between mb-6">
                 <div className="flex items-center gap-2">
@@ -340,9 +498,11 @@ export function FilterPanel({
                   </h2>
                 </div>
                 <button
+                  ref={closeBtnRef}
                   type="button"
                   onClick={onMobileClose}
                   className="min-w-[44px] min-h-[44px] flex items-center justify-center -mr-2 text-text-tertiary hover:text-text-primary transition-colors"
+                  aria-label="Закрыть фильтры"
                 >
                   <X className="w-5 h-5" />
                 </button>
