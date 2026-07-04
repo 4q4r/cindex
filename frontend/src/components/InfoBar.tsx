@@ -49,7 +49,7 @@ export const InfoBar = memo(function InfoBar({
           <button
             type="button"
             onClick={onClearFilters}
-            className="flex min-h-[44px] items-center gap-1 px-1 text-xs text-accent hover:text-accent-muted transition-colors"
+            className="flex min-h-[44px] items-center gap-1 px-1 text-xs text-accent-text hover:underline transition-colors"
           >
             <X className="w-3 h-3" />
             Сбросить фильтры
@@ -78,7 +78,7 @@ export const InfoBar = memo(function InfoBar({
             }}
             className={`min-h-[44px] px-3 py-2 text-xs transition-colors ${
               viewMode === "comfortable"
-                ? "bg-accent/15 text-accent"
+                ? "bg-accent/15 text-accent-text"
                 : "text-text-tertiary hover:text-text-secondary"
             }`}
           >
@@ -91,7 +91,7 @@ export const InfoBar = memo(function InfoBar({
             }}
             className={`min-h-[44px] px-3 py-2 text-xs transition-colors ${
               viewMode === "compact"
-                ? "bg-accent/15 text-accent"
+                ? "bg-accent/15 text-accent-text"
                 : "text-text-tertiary hover:text-text-secondary"
             }`}
           >
