@@ -13,8 +13,6 @@ from celery.signals import setup_logging, worker_ready
 from django.conf import settings
 from django_structlog.celery.steps import DjangoStructLogInitStep
 
-from apps.search.warmup import start_background_warmup
-
 os.environ.setdefault("DJANGO_SETTINGS_MODULE", "config.settings")
 
 app = Celery("cindex")
@@ -29,19 +27,6 @@ app.autodiscover_tasks()
 def _build_beat_schedule() -> dict[str, dict[str, object]]:
     """Build the Celery beat schedule from application settings."""
     schedule: dict[str, dict[str, object]] = {}
-
-    nightly_interval_seconds = int(
-        getattr(
-            getattr(settings, "APP", None),
-            "nightly_ingestion_interval_seconds",
-            0,
-        ),
-    )
-    if nightly_interval_seconds > 0:
-        schedule["nightly-refresh"] = {
-            "task": "apps.ingestion.tasks.nightly_ingestion",
-            "schedule": nightly_interval_seconds,
-        }
 
     local_import_interval_seconds = int(
         getattr(
@@ -107,8 +92,6 @@ def _configure_structlog_for_celery(
 @worker_ready.connect
 def resume_interrupted_search_jobs(**_: object) -> None:
     """Requeue interrupted search jobs when a Celery worker becomes ready."""
-    if os.getenv("CINDEX_WARMUP_SEARCH_MODELS", "").lower() in {"1", "true", "yes"}:
-        start_background_warmup()
     if os.getenv("CINDEX_RESUME_SEARCH_JOBS", "").lower() not in {"1", "true", "yes"}:
         return
     # lazy import: avoid circular import / app registry not ready
