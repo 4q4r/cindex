@@ -8,8 +8,41 @@ from rest_framework import serializers
 
 from apps.core.text import normalize_scholarly_text
 
+from .filters import SORT_CHOICES, SORT_RELEVANCE
 
-class SearchRequestSerializer(serializers.Serializer):
+
+class SearchFiltersSerializerMixin(serializers.Serializer):
+    """Shared server-side filter and sort fields for search endpoints.
+
+    These mirror :class:`apps.search.filters.SearchFilters` so the immediate
+    and asynchronous search paths accept the same parameters. Filters are
+    applied inside ``SearchService`` before the top-K truncation.
+    """
+
+    peer_reviewed_only = serializers.BooleanField(default=False)
+    indexed_only = serializers.BooleanField(default=False)
+    exclude_preprints = serializers.BooleanField(default=False)
+    year_from = serializers.IntegerField(
+        required=False,
+        allow_null=True,
+        min_value=0,
+        max_value=9999,
+        default=None,
+    )
+    year_to = serializers.IntegerField(
+        required=False,
+        allow_null=True,
+        min_value=0,
+        max_value=9999,
+        default=None,
+    )
+    sort_by = serializers.ChoiceField(
+        choices=SORT_CHOICES,
+        default=SORT_RELEVANCE,
+    )
+
+
+class SearchRequestSerializer(SearchFiltersSerializerMixin):
     """Validate immediate search requests from the client."""
 
     query = serializers.CharField(max_length=512)
@@ -20,9 +53,11 @@ class SearchRequestSerializer(serializers.Serializer):
         default="",
     )
     force_refresh = serializers.BooleanField(default=False)
+    page = serializers.IntegerField(min_value=1, default=1)
+    per_page = serializers.IntegerField(min_value=1, max_value=50, default=5)
 
 
-class SearchJobCreateSerializer(serializers.Serializer):
+class SearchJobCreateSerializer(SearchFiltersSerializerMixin):
     """Validate asynchronous search-job creation payloads."""
 
     query = serializers.CharField(max_length=512)
@@ -33,6 +68,13 @@ class SearchJobCreateSerializer(serializers.Serializer):
         default="",
     )
     force_refresh = serializers.BooleanField(default=False)
+
+
+class SearchJobDetailQuerySerializer(serializers.Serializer):
+    """Validate pagination query params for the search-job detail endpoint."""
+
+    page = serializers.IntegerField(min_value=1, default=1)
+    per_page = serializers.IntegerField(min_value=1, max_value=50, default=5)
 
 
 class SearchResultSerializer(serializers.Serializer):
@@ -104,6 +146,16 @@ class SearchJobSerializer(serializers.Serializer):
     rescan_triggered = serializers.BooleanField()
     rescan_reason = serializers.CharField()
     freshness_days_used = serializers.IntegerField()
+    peer_reviewed_only = serializers.BooleanField()
+    indexed_only = serializers.BooleanField()
+    exclude_preprints = serializers.BooleanField()
+    year_from = serializers.IntegerField(allow_null=True)
+    year_to = serializers.IntegerField(allow_null=True)
+    sort_by = serializers.CharField()
+    page = serializers.IntegerField(required=False)
+    per_page = serializers.IntegerField(required=False)
+    total_pages = serializers.IntegerField(required=False)
+    total_results = serializers.IntegerField(required=False)
     created_at = serializers.DateTimeField()
     updated_at = serializers.DateTimeField()
     finished_at = serializers.DateTimeField(allow_null=True)

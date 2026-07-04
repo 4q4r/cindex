@@ -88,7 +88,8 @@ def test_ingestion_emits_russian_progress_phases(monkeypatch, db) -> None:
     events: list[dict] = []
 
     monkeypatch.setattr(
-        "apps.ingestion.services.CONNECTORS", {"dummy": ProgressConnector},
+        "apps.ingestion.services.CONNECTORS",
+        {"dummy": ProgressConnector},
     )
 
     articles = IngestionService.ingest_query(
@@ -114,7 +115,9 @@ def test_ingestion_indexes_eligible_article(monkeypatch, db) -> None:
     monkeypatch.setattr("apps.ingestion.services.CONNECTORS", {"dummy": DummyConnector})
 
     articles = IngestionService.ingest_query(
-        "test", source_keys=["dummy"], per_source_limit=2,
+        "test",
+        source_keys=["dummy"],
+        per_source_limit=2,
     )
 
     assert len(articles) == 1
@@ -125,11 +128,14 @@ def test_ingestion_indexes_eligible_article(monkeypatch, db) -> None:
 def test_ingestion_applies_enrichment_hook(monkeypatch, db) -> None:
     """Test ingestion applies enrichment hook helper."""
     monkeypatch.setattr(
-        "apps.ingestion.services.CONNECTORS", {"dummy": EnrichingConnector},
+        "apps.ingestion.services.CONNECTORS",
+        {"dummy": EnrichingConnector},
     )
 
     articles = IngestionService.ingest_query(
-        "test", source_keys=["dummy"], per_source_limit=1,
+        "test",
+        source_keys=["dummy"],
+        per_source_limit=1,
     )
 
     assert len(articles) == 1
@@ -161,11 +167,14 @@ class NoDoiConnector:
 def test_ingestion_skips_articles_without_doi(monkeypatch, db) -> None:
     """Articles without a valid DOI should not be saved."""
     monkeypatch.setattr(
-        "apps.ingestion.services.CONNECTORS", {"no-doi": NoDoiConnector},
+        "apps.ingestion.services.CONNECTORS",
+        {"no-doi": NoDoiConnector},
     )
 
     articles = IngestionService.ingest_query(
-        "test", source_keys=["no-doi"], per_source_limit=1,
+        "test",
+        source_keys=["no-doi"],
+        per_source_limit=1,
     )
 
     assert len(articles) == 0

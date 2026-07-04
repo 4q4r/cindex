@@ -1,13 +1,14 @@
 import {
   ApiSearchJobResponse,
   ApiSearchResponse,
+  SearchJobParams,
   SearchProgress,
   SearchResult,
 } from "../types";
 
 const API_PREFIX = "/api/v1";
 
-export interface SearchApiRequest {
+export interface SearchApiRequest extends SearchJobParams {
   query: string;
   expression?: string;
   force_refresh?: boolean;
@@ -20,6 +21,10 @@ export interface SearchApiPayload {
     live: number;
     failed: string[];
   };
+  totalResults?: number;
+  totalPages?: number;
+  page?: number;
+  perPage?: number;
 }
 
 export async function getSourceStats(
@@ -94,6 +99,36 @@ export function mapApiResult(
   };
 }
 
+export async function searchArticles(
+  payload: SearchApiRequest,
+): Promise<SearchApiPayload> {
+  const response = await fetch(`${API_PREFIX}/search`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify(payload),
+  });
+
+  if (!response.ok) {
+    throw new Error(`Search API failed: ${response.status}`);
+  }
+
+  const data = (await response.json()) as ApiSearchResponse;
+  return {
+    results: data.results.map(mapApiResult),
+    sourceStats: {
+      total: data.source_stats?.total ?? 0,
+      live: data.source_stats?.live ?? 0,
+      failed: data.source_stats?.failed ?? [],
+    },
+    totalResults: data.count,
+    totalPages: data.total_pages,
+    page: data.page,
+    perPage: data.per_page,
+  };
+}
+
 export async function createSearchJob(
   payload: SearchApiRequest,
   signal?: AbortSignal,
@@ -142,9 +177,16 @@ export interface SearchJobResultPayload extends SearchApiPayload {
 
 export async function getSearchJob(
   jobId: string,
+  page?: number,
+  perPage?: number,
   signal?: AbortSignal,
 ): Promise<SearchJobResultPayload> {
-  const response = await fetch(`${API_PREFIX}/search/jobs/${jobId}`, {
+  const params = new URLSearchParams();
+  if (page) params.set("page", String(page));
+  if (perPage) params.set("per_page", String(perPage));
+  const qs = params.toString();
+  const url = `${API_PREFIX}/search/jobs/${jobId}${qs ? `?${qs}` : ""}`;
+  const response = await fetch(url, {
     method: "GET",
     signal,
   });
@@ -161,6 +203,10 @@ export async function getSearchJob(
       live: data.source_stats?.live ?? 0,
       failed: data.source_stats?.failed ?? [],
     },
+    totalResults: data.total_results ?? undefined,
+    totalPages: data.total_pages ?? undefined,
+    page: data.page ?? undefined,
+    perPage: data.per_page ?? undefined,
     progress: {
       jobId: data.id,
       status: data.status,

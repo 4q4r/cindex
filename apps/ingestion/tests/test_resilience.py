@@ -55,7 +55,8 @@ class SuccessConnector:
 def test_circuit_breaker_opens_after_threshold(monkeypatch, db) -> None:
     """Test circuit breaker opens after threshold helper."""
     monkeypatch.setattr(
-        "apps.ingestion.services.CONNECTORS", {"res_fail": AlwaysFailConnector},
+        "apps.ingestion.services.CONNECTORS",
+        {"res_fail": AlwaysFailConnector},
     )
 
     IngestionService.ingest_query("topic", source_keys=["res_fail"])
@@ -78,7 +79,8 @@ def test_circuit_open_source_is_skipped(monkeypatch, db) -> None:
         circuit_open_until=timezone.now() + timedelta(minutes=5),
     )
     monkeypatch.setattr(
-        "apps.ingestion.services.CONNECTORS", {"res_skip": CountingConnector},
+        "apps.ingestion.services.CONNECTORS",
+        {"res_skip": CountingConnector},
     )
 
     IngestionService.ingest_query("topic", source_keys=["res_skip"])
@@ -99,7 +101,8 @@ def test_success_resets_consecutive_failures(monkeypatch, db) -> None:
         total_failures=2,
     )
     monkeypatch.setattr(
-        "apps.ingestion.services.CONNECTORS", {"res_success": SuccessConnector},
+        "apps.ingestion.services.CONNECTORS",
+        {"res_success": SuccessConnector},
     )
 
     IngestionService.ingest_query("topic", source_keys=["res_success"])
