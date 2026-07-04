@@ -160,5 +160,9 @@ class Identifier(models.Model):
         return f"{self.kind}:{self.value}"
 
 
-# SearchVectorField will be added via migration after enabling pg search.
-# This requires django.contrib.postgres to be in INSTALLED_APPS.
+# Full-text search uses an ad-hoc SearchVector expression (title, abstract,
+# full_text) in the search service rather than a stored tsvector column. A GIN
+# expression index is created on PostgreSQL only (see migration 0010) so the
+# ``vector @@ query`` filter is index-accelerated in production. The
+# ``search_vector`` TextField above is retained as an unused placeholder for
+# compatibility with existing migrations and is not part of the FTS path.

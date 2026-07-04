@@ -5,7 +5,10 @@ from __future__ import annotations
 from typing import ClassVar
 
 from django.conf import settings
+from django.contrib.postgres.search import SearchQuery, SearchVectorField
+from django.db import connections
 from django.db.models import Case, FloatField, Q, QuerySet, Value, When
+from django.db.models.expressions import RawSQL
 
 from apps.articles.models import Article
 from apps.core.text import canonical_text_key, normalize_doi, normalize_scholarly_text
@@ -212,22 +215,69 @@ class SearchService:
             score = score + cls._crosslang_term_score(term)
         return score * cls._source_penalty()
 
-    @classmethod
-    def _search_queryset(
-        cls,
-        query: str,
-        expression: str,
-    ) -> tuple[QuerySet[Article], str, list[str]]:
-        """Build the article queryset for the current search.
+    @staticmethod
+    def _is_postgres() -> bool:
+        """Return True when the default database connection is PostgreSQL."""
+        return connections["default"].vendor == "postgresql"
 
-        Expands the search with cross-lingual equivalents so that articles
-        saved in a different language than the query are still matched.
+    @staticmethod
+    def _pg_fts_vector() -> RawSQL:
+        """Return a raw tsvector expression matching the GIN index in 0009.
+
+        The expression is intentionally written as raw SQL so it stays
+        byte-identical to the index definition in migration
+        ``articles/0009_pg_fulltext_gin_index`` -- PostgreSQL only uses a GIN
+        expression index for ``vector @@ query`` when the indexed expression
+        matches the query expression exactly.
         """
-        search_text = cls._search_text(query, expression)
-        terms = cls._search_terms(query, expression)
-        if not search_text:
-            return cls._articles_queryset().none(), search_text, terms
+        return RawSQL(
+            "to_tsvector('simple', coalesce(title, '') || ' ' || "
+            "coalesce(abstract, '') || ' ' || coalesce(full_text, ''))",
+            (),
+            output_field=SearchVectorField(),
+        )
 
+    @classmethod
+    def _pg_search_query(
+        cls,
+        search_text: str,
+        cross_lingual: list[str],
+    ) -> SearchQuery:
+        """Build a tsquery combining the main text and cross-lingual terms.
+
+        Cross-lingual translations are OR-ed into the query so an article
+        written in a different language than the query still matches.
+        """
+        query = SearchQuery(search_text, search_type="websearch", config="simple")
+        for translated in cross_lingual:
+            cleaned = translated.strip()
+            if not cleaned:
+                continue
+            query = query | SearchQuery(
+                cleaned,
+                search_type="websearch",
+                config="simple",
+            )
+        return query
+
+    @classmethod
+    def _cross_lingual_terms(cls, query: str) -> tuple[list[str], list[str]]:
+        """Return cross-lingual phrases and their individual tokens."""
+        cross_lingual = expand_search_terms(query)
+        tokens: list[str] = []
+        for translated in cross_lingual:
+            tokens.extend(t for t in translated.split() if len(t) > 1)
+        return list(cross_lingual), tokens
+
+    @classmethod
+    def _build_sqlite_queryset(
+        cls,
+        search_text: str,
+        terms: list[str],
+        cross_lingual: list[str],
+        cross_lingual_tokens: list[str],
+    ) -> QuerySet[Article]:
+        """Build the icontains OR-tree queryset for non-PostgreSQL backends."""
         filters = Q(title__icontains=search_text)
         filters |= Q(abstract__icontains=search_text)
         filters |= Q(full_text__icontains=search_text)
@@ -239,13 +289,8 @@ class SearchService:
             filters |= Q(full_text__icontains=term)
             filters |= Q(journal__name__icontains=term)
             filters |= Q(doi__icontains=term)
-
-        cross_lingual = expand_search_terms(query)
-        cross_lingual_tokens: list[str] = []
         for translated in cross_lingual:
-            # Split translated phrases into individual tokens for broader matching.
             tokens = [t for t in translated.split() if len(t) > 1]
-            cross_lingual_tokens.extend(tokens)
             filters |= Q(title__icontains=translated)
             filters |= Q(abstract__icontains=translated)
             filters |= Q(full_text__icontains=translated)
@@ -253,8 +298,7 @@ class SearchService:
                 filters |= Q(title__icontains=token)
                 filters |= Q(abstract__icontains=token)
                 filters |= Q(full_text__icontains=token)
-
-        queryset = (
+        return (
             cls._articles_queryset()
             .filter(filters)
             .annotate(
@@ -266,6 +310,68 @@ class SearchService:
             )
             .order_by("-search_score", "-publication_year", "-updated_at", "id")
         )
+
+    @classmethod
+    def _build_pg_queryset(
+        cls,
+        search_text: str,
+        terms: list[str],
+        cross_lingual: list[str],
+        cross_lingual_tokens: list[str],
+    ) -> QuerySet[Article]:
+        """Build the PostgreSQL full-text queryset using a GIN-indexed tsvector.
+
+        The primary filter is ``vector @@ tsquery`` (index-accelerated); the
+        existing Case/When scoring expression is applied on top so DOI exact
+        boosts, source penalties, and cross-lingual token weights are preserved.
+        """
+        return (
+            cls._articles_queryset()
+            .annotate(_fts_vector=cls._pg_fts_vector())
+            .filter(_fts_vector=cls._pg_search_query(search_text, cross_lingual))
+            .annotate(
+                search_score=cls._score_expression(
+                    search_text,
+                    terms,
+                    cross_lingual=cross_lingual_tokens,
+                ),
+            )
+            .order_by("-search_score", "-publication_year", "-updated_at", "id")
+        )
+
+    @classmethod
+    def _search_queryset(
+        cls,
+        query: str,
+        expression: str,
+    ) -> tuple[QuerySet[Article], str, list[str]]:
+        """Build the article queryset for the current search.
+
+        On PostgreSQL the primary filter is a GIN-indexed full-text search over
+        title, abstract, and full_text; on other backends (used for the SQLite
+        test database) it falls back to an icontains OR-tree. Both paths expand
+        the search with cross-lingual equivalents so articles saved in a
+        different language than the query are still matched.
+        """
+        search_text = cls._search_text(query, expression)
+        terms = cls._search_terms(query, expression)
+        if not search_text:
+            return cls._articles_queryset().none(), search_text, terms
+        cross_lingual, cross_lingual_tokens = cls._cross_lingual_terms(query)
+        if cls._is_postgres():
+            queryset = cls._build_pg_queryset(
+                search_text,
+                terms,
+                cross_lingual,
+                cross_lingual_tokens,
+            )
+        else:
+            queryset = cls._build_sqlite_queryset(
+                search_text,
+                terms,
+                cross_lingual,
+                cross_lingual_tokens,
+            )
         return queryset, search_text, terms
 
     @classmethod
