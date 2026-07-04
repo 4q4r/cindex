@@ -295,7 +295,7 @@ class BaseConnector:
     def _build_scraper() -> cloudscraper.CloudScraper:
         """Build scraper."""
         kwargs: dict = {
-            "interpreter": "js2py",
+            "interpreter": "native",
             "browser": {"browser": "chrome", "platform": "linux", "mobile": False},
             "delay": 8,
         }
