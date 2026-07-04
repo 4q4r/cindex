@@ -161,36 +161,164 @@ class CiNiiConnector(BaseConnector):
 
 
 class SciEngineConnector(BaseConnector):
-    """Sci Engine source connector."""
+    """Sci Engine source connector.
+
+    The public ``/search/search`` page is a JavaScript SPA shell that returns
+    only navigation chrome (``Journals`` / ``Books`` / ``Collections`` ...),
+    so results come from the POST ``/SciSearch/searchNew`` endpoint, which
+    returns a ``relateList`` JSON array capped at 10 items per page regardless
+    of the requested page size.
+    """
 
     profile = SourceProfile(
         source_key="sciengine",
-        search_url="https://www.sciengine.com/search/search",
-        query_param="searchText",
-        result_selector=".search-item, article, li",
-        title_selector=".title a, h2 a, h3 a, a[href]",
-        abstract_selector=".abstract, .summary, p",
-        journal_selector=".journal, .meta, .source",
+        search_url="https://www.sciengine.com/SciSearch/searchNew",
+        mode="api",
+        query_param="queryField_a",
         indexing_evidence="scopus web of science",
         language="zh-CN",
     )
 
-    def fetch(self, query: str, limit: int = 5) -> list[RawArticle]:
-        """Fetch records from the upstream source.
+    _PAGE_SIZE = 10  # server caps results at 10 per page
+    _MAX_PAGES = 20  # safety bound for pagination
 
-        Let ``ConnectorFetchError`` propagate so the ingestion service
-        marks this source as failed instead of silently reporting zero
+    def fetch(self, query: str, limit: int = 5) -> list[RawArticle]:
+        """Fetch records from the upstream SciEngine search API.
+
+        Pages are concatenated until ``limit`` is satisfied or an empty/short
+        page is returned. ``ConnectorFetchError`` propagates so the ingestion
+        service marks this source as failed instead of silently reporting zero
         articles as a success.
         """
-        html = self._request_text(
-            self.profile.search_url,
-            params={"searchType": "all", "searchText": query},
-        )
-        soup = BeautifulSoup(html, "lxml")
-        items = self._extract_from_html(query, soup, limit)
-        if items:
-            return items
+        records: list[dict] = []
+        page = 1
+        while len(records) < limit and page <= self._MAX_PAGES:
+            payload = self._request_search_page(query, page)
+            relate = payload.get("relateList") or []
+            if not isinstance(relate, list) or not relate:
+                break
+            records.extend(relate)
+            if len(relate) < self._PAGE_SIZE:
+                break
+            page += 1
+        return self._extract_from_payload(query, {"relateList": records}, limit)
+
+    def _request_search_page(self, query: str, page: int) -> dict:
+        """Request one SciEngine search page and return the parsed JSON."""
+        scraper = self._build_scraper()
+        headers = self._generate_headers()
+        headers["Accept"] = "application/json, text/plain, */*"
+        form = {
+            self.profile.query_param: query,
+            "searchType": "all",
+            "curpage": str(page),
+            "dept": str(self._PAGE_SIZE),
+        }
+        last_error: Exception | None = None
+        for attempt in range(1, self.MAX_ATTEMPTS + 1):
+            try:
+                response = scraper.post(
+                    self.profile.search_url,
+                    data=form,
+                    headers=headers,
+                    timeout=self.REQUEST_TIMEOUT_SECONDS,
+                )
+            except (RuntimeError, ConnectionError, TimeoutError) as exc:
+                # pragma: no cover - network dependent
+                last_error = exc
+                if attempt < self.MAX_ATTEMPTS:
+                    time.sleep(0.6 * attempt)
+                    continue
+                msg = f"sciengine: request failed after {attempt} attempts: {exc}"
+                raise ConnectorFetchError(msg) from exc
+            status = int(response.status_code)
+            if status >= _HTTP_BAD_REQUEST:
+                msg = f"sciengine: api http {status}"
+                raise ConnectorFetchError(msg)  # contextual validation raise
+            try:
+                return response.json()
+            except ValueError as exc:
+                # pragma: no cover - network dependent
+                last_error = exc
+                if attempt < self.MAX_ATTEMPTS:
+                    time.sleep(0.6 * attempt)
+                    continue
+                msg = "sciengine: invalid api json"
+                raise ConnectorFetchError(msg) from exc
+        msg = f"sciengine: request failed after retries: {last_error}"
+        raise ConnectorFetchError(msg)
+
+    def _extract_from_payload(
+        self,
+        query: str,  # noqa: ARG002  # required by base class signature
+        payload: dict,
+        limit: int,
+    ) -> list[RawArticle]:
+        """Extract from payload.
+
+        Each ``relateList`` item carries ``doi`` (always present), ``pubYear``,
+        ``title_en``/``title_cn``, ``fullname_en``/``fullname_cn`` (author
+        lists) and ``intro_en``/``intro_cn`` (HTML abstract). There is no
+        journal or article URL field, so the URL is rebuilt from the DOI and
+        the journal is reported as ``SciEngine``.
+        """
+        records = payload.get("relateList") or []
+        items: list[RawArticle] = []
+        for rec in records[: limit * 3]:
+            if not isinstance(rec, dict):
+                continue
+            title = str(rec.get("title_en") or rec.get("title_cn") or "").strip()
+            doi = str(rec.get("doi") or "").strip()
+            if not title or not doi:
+                continue
+            url_value = f"https://doi.org/{doi}"
+            abstract = self._strip_html(
+                str(rec.get("intro_en") or rec.get("intro_cn") or ""),
+            )
+            year = self._extract_year(
+                str(rec.get("pubYear") or rec.get("pubDateStr") or ""),
+            )
+            authors_list = self._extract_sciengine_authors(rec)
+            authors = " ".join(authors_list).strip()
+            combined = f"{title} {abstract} {authors} SciEngine"
+            if not self._is_article_like_item(title, url_value, doi, year):
+                continue
+            items.append(
+                self._raw(
+                    title=title,
+                    url=url_value,
+                    abstract=abstract,
+                    full_text=combined,
+                    doi=doi,
+                    year=year,
+                    journal="SciEngine",
+                    authors=authors_list or None,
+                ),
+            )
+            if len(items) >= limit:
+                break
+        return items
+
+    @staticmethod
+    def _extract_sciengine_authors(rec: dict) -> list[str]:
+        """Return the ``fullname_en``/``fullname_cn`` authors as a list."""
+        for key in ("fullname_en", "fullname_cn"):
+            value = rec.get(key)
+            if isinstance(value, str) and value.strip():
+                return [value.strip()]
+            if isinstance(value, list):
+                names = [str(a).strip() for a in value if str(a).strip()]
+                if names:
+                    return names
         return []
+
+    @staticmethod
+    def _strip_html(fragment: str) -> str:
+        """Strip HTML tags and collapse whitespace from an abstract fragment."""
+        if not fragment:
+            return ""
+        text = BeautifulSoup(fragment, "lxml").get_text(" ")
+        return re.sub(r"\s+", " ", text).strip()
 
 
 class CyberLeninkaConnector(BaseConnector):
