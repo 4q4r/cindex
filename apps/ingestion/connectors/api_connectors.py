@@ -722,11 +722,13 @@ class PMCConnector(AsyncApiConnector):
         records = payload.get("resultList", {}).get("result", [])
         items: list[RawArticle] = []
         for rec in records[:limit]:
-            title = rec.get("title", "").strip()
+            title = self._clean_pmc_title(rec)
             abstract = rec.get("abstractText", "")
             journal = rec.get("journalTitle", "PMC")
             doi = rec.get("doi", "") or self._extract_doi(f"{title} {abstract}")
-            year = rec.get("pubYear")
+            year = self._extract_pmc_year(rec) or self._extract_year(
+                f"{title} {abstract} {journal}",
+            )
             pmcid = rec.get("pmcid", "")
             url = ""
             if pmcid:
@@ -759,12 +761,49 @@ class PMCConnector(AsyncApiConnector):
                     abstract=abstract,
                     full_text=f"{title} {abstract}",
                     doi=doi,
-                    year=int(year) if str(year).isdigit() else None,
+                    year=year,
                     journal=journal,
                     authors=authors,
                 ),
             )
         return items
+
+    @staticmethod
+    def _clean_pmc_title(rec: dict) -> str:
+        """Return the article title with conference-abstract numbers stripped.
+
+        Europe PMC concatenates the poster/abstract number into the ``title``
+        field for conference-supplement records (``pubType`` containing
+        ``Abstract``), producing garbage like ``"122 Statistically valid
+        machine learning fairness evaluation"``. The leading number is not
+        part of the real title and is stripped only for conference-abstract
+        records so legitimate titles that start with a number (``"5G ..."``)
+        are untouched.
+        """
+        title = str(rec.get("title", "")).strip()
+        pub_types = (rec.get("pubTypeList") or {}).get("pubType") or []
+        is_conference_abstract = any(
+            "abstract" in str(t).lower() or "congress" in str(t).lower()
+            for t in pub_types
+        )
+        if is_conference_abstract:
+            title = re.sub(r"^\d{1,4}\s+(?=[A-Z])", "", title).strip()
+        return title
+
+    @staticmethod
+    def _extract_pmc_year(rec: dict) -> int | None:
+        """Return the publication year from ``pubYear`` or ``firstPublicationDate``.
+
+        Conference-supplement and accepted-manuscript records often omit
+        ``pubYear`` while carrying ``firstPublicationDate`` (``YYYY-MM-DD``),
+        so fall back to that date before giving up.
+        """
+        year = rec.get("pubYear")
+        if str(year).isdigit():
+            return int(year)
+        pub_date = str(rec.get("firstPublicationDate") or "")
+        match = re.match(r"(19|20)\d{2}", pub_date)
+        return int(match.group(0)) if match else None
 
 
 class ArXivConnector(AsyncApiConnector):

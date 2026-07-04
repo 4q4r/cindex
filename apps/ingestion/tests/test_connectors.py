@@ -10,6 +10,7 @@ from apps.ingestion.connectors import (
     MathNetConnector,
     OpenEditionConnector,
     PerseeConnector,
+    PMCConnector,
     RawArticle,
     SciEngineConnector,
     SourceProfile,
@@ -428,3 +429,54 @@ def test_sciengine_payload_extraction_rebuilds_doi_url_and_strips_html() -> None
     assert first.authors == ("Chang LI", "Cui HUANG", "Hongye YANG")
     assert "<p" not in first.abstract
     assert "big data" in first.abstract.lower()
+
+
+def test_pmc_strips_conference_abstract_number_and_falls_back_to_pub_date() -> None:
+    """Test pmc strips conference abstract number helper.
+
+    Europe PMC concatenates the poster/abstract number into ``title`` for
+    conference-supplement records (``pubType`` ``['Abstract']``), producing
+    ``"122 Statistically valid ..."``. The parser must strip the leading
+    number for those records only. The same records omit ``pubYear`` while
+    carrying ``firstPublicationDate`` (``YYYY-MM-DD``), so the year must
+    fall back to that date instead of leaking ``None``.
+    """
+    payload = {
+        "resultList": {
+            "result": [
+                {
+                    "title": "122 Statistically valid fairness evaluation",
+                    "abstractText": "",
+                    "pmcid": "PMC13173230",
+                    "pubTypeList": {"pubType": ["Abstract"]},
+                    "firstPublicationDate": "2026-05-20",
+                    "authorString": "Malik M, Watson D, Beenken M",
+                    "journalInfo": {
+                        "journal": {
+                            "title": "Journal of clinical and translational science",
+                        },
+                    },
+                },
+                {
+                    "title": "5G networks for biomedical telemetry",
+                    "abstractText": "A regular article that starts with a number.",
+                    "doi": "10.1111/pmc.regular.2024",
+                    "pubYear": "2024",
+                    "pmcid": "PMC9999999",
+                    "pubTypeList": {"pubType": ["Journal Article"]},
+                },
+            ],
+        },
+    }
+    items = PMCConnector()._extract_from_payload("machine learning", payload, limit=5)
+
+    assert len(items) == 2
+    conf = items[0]
+    assert conf.title == "Statistically valid fairness evaluation"
+    assert conf.year == 2026
+    assert conf.url == "https://www.ncbi.nlm.nih.gov/pmc/articles/PMC13173230/"
+    assert conf.authors == ("Malik M", "Watson D", "Beenken M")
+    regular = items[1]
+    assert regular.title == "5G networks for biomedical telemetry"
+    assert regular.year == 2024
+    assert regular.doi == "10.1111/pmc.regular.2024"
