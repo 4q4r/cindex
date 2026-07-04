@@ -95,7 +95,9 @@ def test_europe_pmc_payload_extraction() -> None:
         },
     }
     items = EuropePMCConnector()._extract_from_payload(
-        "systems biology", payload, limit=5,
+        "systems biology",
+        payload,
+        limit=5,
     )
 
     assert len(items) == 1
@@ -225,7 +227,9 @@ def test_openedition_filters_hypotheses_blog_posts() -> None:
     </oai:OAI-PMH>
     """
     items, token = OpenEditionConnector()._parse_oai_records(
-        xml, "history france", remaining=5,
+        xml,
+        "history france",
+        remaining=5,
     )
 
     assert token == ""
@@ -247,25 +251,55 @@ def test_base_html_extraction_does_not_emit_stub_links() -> None:
     assert items == []
 
 
-def test_persee_oai_parser_keeps_real_articles() -> None:
-    """Test persee oai parser keeps real articles."""
-    xml = """
-    <oai:OAI-PMH xmlns:oai="http://www.openarchives.org/OAI/2.0/" xmlns:dc="http://purl.org/dc/elements/1.1/">
-      <oai:ListRecords>
-        <oai:record>
-          <oai:metadata>
-            <dc:title>Sociologie et neurosciences</dc:title>
-            <dc:description>Peer reviewed sociology article</dc:description>
-            <dc:identifier>https://www.persee.fr/doc/example_2026_1</dc:identifier>
-            <dc:identifier>https://doi.org/10.4000/example.2026.1</dc:identifier>
-            <dc:source>Revue de sociologie</dc:source>
-          </oai:metadata>
-        </oai:record>
-      </oai:ListRecords>
-    </oai:OAI-PMH>
-    """
-    items, token = PerseeConnector()._parse_oai_records(xml, "sociologie", 5)
+def test_persee_html_parser_keeps_real_articles() -> None:
+    """Test persee html parser keeps real articles helper.
 
-    assert token == ""
-    assert len(items) == 1
-    assert items[0].doi == "10.4000/example.2026.1"
+    The Persee keyword HTML search wraps each hit in a ``.doc-result``
+    card with ``a.title`` (carrying a ``?q=`` suffix to strip), per-author
+    ``.contributors .name`` spans, the journal in
+    ``.documentBibRef .collection a``, the year in ``.documentYear`` and a
+    relevance-highlighted abstract in ``.searchContext``.
+    """
+    html = """
+    <html><body>
+      <article class='doc-result'>
+        <a class='title' href='https://www.persee.fr/doc/aso_2018_1?q=sociologie'>
+          Econometrics and Machine Learning
+        </a>
+        <div class='contributors'>
+          <span class='name'>Arthur Charpentier</span>
+          <span class='name'>Emmanuel Flachaire</span>
+        </div>
+        <div class='documentBibRef'><span class='collection'>
+          <a href='/journal/aso'>Economie et Statistique</a>
+        </span></div>
+        <div class='documentYear'>Année 2018</div>
+        <div class='searchContext'>Advances in <em>machine learning</em>.</div>
+      </article>
+      <article class='doc-result'>
+        <a class='title' href='https://www.persee.fr/doc/example_2026_1?q=sociologie'>
+          Sociologie et neurosciences DOI 10.4000/example.2026.1
+        </a>
+        <div class='contributors'><span class='name'>Jean Dupont</span></div>
+        <div class='documentBibRef'><span class='collection'>
+          <a href='/journal/rs'>Revue de sociologie</a>
+        </span></div>
+        <div class='documentYear'>Année 2026</div>
+        <div class='searchContext'>Peer reviewed sociology article.</div>
+      </article>
+    </body></html>
+    """
+    soup = BeautifulSoup(html, "lxml")
+    items = PerseeConnector()._extract_from_html("sociologie", soup, limit=5)
+
+    assert len(items) == 2
+    first = items[0]
+    assert first.title == "Econometrics and Machine Learning"
+    assert first.url == "https://www.persee.fr/doc/aso_2018_1"
+    assert "?q=" not in first.url
+    assert first.journal == "Economie et Statistique"
+    assert first.year == 2018
+    assert first.authors == ("Arthur Charpentier", "Emmanuel Flachaire")
+    assert "machine learning" in first.abstract.lower()
+    assert items[1].doi == "10.4000/example.2026.1"
+    assert items[1].year == 2026

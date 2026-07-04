@@ -890,108 +890,79 @@ class PerseeConnector(BaseConnector):
     profile = SourceProfile(
         source_key="persee",
         search_url="https://www.persee.fr/search",
-        result_selector=".result-item, article, li",
-        title_selector="h2 a, h3 a, .title a, a[href]",
-        abstract_selector=".resume, .abstract, p",
-        journal_selector=".revue, .journal, .source",
+        result_selector=".doc-result",
+        title_selector="a.title",
+        abstract_selector=".searchContext",
+        journal_selector=".documentBibRef .collection a",
         indexing_evidence="scopus web of science",
         language="fr",
     )
 
     def fetch(self, query: str, limit: int = 5) -> list[RawArticle]:
-        """Fetch records from the upstream source."""
-        try:
-            items = self._fetch_oai(query, limit)
-            if items:
-                return items
-        except ConnectorFetchError:
-            pass
+        """Fetch records from the upstream source.
+
+        Persee exposes a real keyword HTML search at ``/search?q=`` which
+        returns article-level results with relevance ranking. The legacy OAI
+        endpoint only offers ``set=persee:serie`` (journal-series records, not
+        articles) and has no keyword search, so it is intentionally not used.
+        """
         return self._fetch_html(query, limit)
 
-    def _fetch_oai(self, query: str, limit: int) -> list[RawArticle]:
-        """Fetch OAI."""
-        base = "http://oai.persee.fr/oai"
-        url = f"{base}?verb=ListRecords&metadataPrefix=oai_dc&set=persee:serie"
-        items: list[RawArticle] = []
-        for _ in range(3):
-            xml_text = self._request_text(url)
-            parsed, token = self._parse_oai_records(xml_text, query, limit - len(items))
-            items.extend(parsed)
-            if len(items) >= limit or not token:
-                break
-            url = (
-                f"{base}?verb=ListRecords&metadataPrefix=oai_dc&resumptionToken="
-                f"{quote_plus(token)}"
-            )
-        return items[:limit]
-
-    def _parse_oai_records(
+    def _extract_from_html(
         self,
-        xml_text: str,
         query: str,  # noqa: ARG002  # required by base class signature
-        remaining: int,
-    ) -> tuple[list[RawArticle], str]:
-        """Parse OAI records."""
-        try:
-            root = ET.fromstring(xml_text)  # noqa: S314  # trusted API XML response
-        except ET.ParseError:
-            return ([], "")
-        ns = {
-            "oai": "http://www.openarchives.org/OAI/2.0/",
-            "dc": "http://purl.org/dc/elements/1.1/",
-        }
-        candidates: list[RawArticle] = []
-        relevant: list[RawArticle] = []
-        for rec in root.findall(".//oai:record", ns):
-            header = rec.find("oai:header", ns)
-            if header is not None and header.get("status") == "deleted":
+        soup: BeautifulSoup,
+        limit: int,
+    ) -> list[RawArticle]:
+        """Parse Persee ``.doc-result`` containers into article records.
+
+        Each result card exposes the article title as ``a.title`` (whose
+        ``href`` carries a ``?q=`` search suffix that must be stripped),
+        per-author spans under ``.contributors .name``, the journal as
+        ``.documentBibRef .collection a``, the publication year inside
+        ``.documentYear``, and a relevance-highlighted abstract in
+        ``.searchContext``.
+        """
+        items: list[RawArticle] = []
+        for node in soup.select(".doc-result"):
+            title_node = node.select_one("a.title")
+            if not title_node:
                 continue
-            metadata = rec.find("oai:metadata", ns)
-            if metadata is None:
-                continue
-            title = metadata.findtext(".//dc:title", default="", namespaces=ns).strip()
-            description = metadata.findtext(
-                ".//dc:description",
-                default="",
-                namespaces=ns,
-            ).strip()
-            identifiers = [
-                x.text.strip()
-                for x in metadata.findall(".//dc:identifier", ns)
-                if x.text
-            ]
-            sources = [
-                x.text.strip() for x in metadata.findall(".//dc:source", ns) if x.text
-            ]
-            journal = sources[0] if sources else "Persee"
-            combined = " ".join([title, description, " ".join(identifiers), journal])
-            doi = self._extract_doi(combined)
-            year = self._extract_year(combined)
-            url_value = next((x for x in identifiers if x.startswith("http")), "")
+            title = title_node.get_text(" ", strip=True)
+            url_value = title_node.get("href", "").split("?")[0]
             if not title or not url_value:
                 continue
+            authors_list = [
+                n.get_text(" ", strip=True) for n in node.select(".contributors .name")
+            ]
+            authors = " ".join(authors_list).strip()
+            journal_node = node.select_one(".documentBibRef .collection a")
+            journal = (
+                journal_node.get_text(" ", strip=True) if journal_node else "Persee"
+            )
+            node_text = node.get_text(" ", strip=True)
+            year = self._extract_year(node_text) or self._extract_year(url_value)
+            abstract_node = node.select_one(".searchContext")
+            abstract = abstract_node.get_text(" ", strip=True) if abstract_node else ""
+            doi = self._extract_doi(node_text)
+            combined = f"{title} {abstract} {authors} {journal} {url_value}"
             if not self._is_article_like_item(title, url_value, doi, year):
                 continue
-            built = self._raw(
-                title=title,
-                url=url_value,
-                abstract=description,
-                full_text=combined,
-                doi=doi,
-                year=year,
-                journal=journal,
+            items.append(
+                self._raw(
+                    title=title,
+                    url=url_value,
+                    abstract=abstract,
+                    full_text=combined,
+                    doi=doi,
+                    year=year,
+                    journal=journal,
+                    authors=authors_list or None,
+                ),
             )
-            candidates.append(built)
-            relevant.append(built)
-        token_node = root.find(".//oai:resumptionToken", ns)
-        token = (
-            token_node.text.strip()
-            if token_node is not None and token_node.text
-            else ""
-        )
-        if relevant:
-            return (relevant[:remaining], token)
-        return (candidates[:remaining], token)
+            if len(items) >= limit:
+                break
+        return items
 
 
 class OpenEditionConnector(BaseConnector):
