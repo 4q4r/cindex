@@ -1,3 +1,5 @@
+"""Database models for ingestion sources and jobs."""
+
 from django.db import models
 
 from apps.articles.models import Article
@@ -27,7 +29,10 @@ class LocalImportFile(models.Model):
     sha256 = models.CharField(max_length=64, blank=True)
     status = models.CharField(max_length=32, default="pending")
     article = models.ForeignKey(
-        Article, null=True, blank=True, on_delete=models.SET_NULL,
+        Article,
+        null=True,
+        blank=True,
+        on_delete=models.SET_NULL,
     )
     metadata = models.JSONField(default=dict, blank=True)
     error = models.TextField(blank=True)
@@ -46,7 +51,10 @@ class ExaApiKeyQuota(models.Model):
     api_key_name = models.CharField(max_length=128, blank=True)
     rate_limit_per_minute = models.IntegerField(null=True, blank=True)
     usage_total_cost_usd = models.DecimalField(
-        max_digits=12, decimal_places=4, null=True, blank=True,
+        max_digits=12,
+        decimal_places=4,
+        null=True,
+        blank=True,
     )
     usage_breakdown = models.JSONField(default=list, blank=True)
     usage_window_start = models.DateTimeField(null=True, blank=True)

@@ -1,3 +1,5 @@
+"""Celery tasks and helpers that drive asynchronous search job execution."""
+
 from __future__ import annotations
 
 from datetime import timedelta
@@ -43,9 +45,13 @@ STAGE_SUBSTAGE: dict[str, tuple[str, str]] = {
     "failed": ("failed", "Поиск остановлен"),
 }
 
+# Threshold separating Russian "few" plural form ("источника недоступно")
+# from the "many" form ("источников недоступно") in the partial-result message.
+FAILED_SOURCES_MANY_THRESHOLD = 5
 
-def _update_job(job: SearchJob, **fields: Any) -> None:
-    """Internal helper for update job."""
+
+def _update_job(job: SearchJob, **fields: Any) -> None:  # noqa: ANN401  # dynamic model field update
+    """Update the search job with the given fields and persist them."""
     for key, value in fields.items():
         setattr(job, key, value)
     if "stage" in fields:
@@ -62,7 +68,7 @@ def _stage_snapshot(stage: str) -> tuple[str, str]:
 
 
 def _is_fresh_recent_scan(query: str, freshness_days: int, exclude_job_id: str) -> bool:
-    """Internal helper for is fresh recent scan."""
+    """Return whether a recent completed scan for the query is still fresh."""
     recent = (
         SearchJob.objects.filter(
             query=query,
@@ -107,7 +113,7 @@ def _determine_rescan(
     return False, ""
 
 
-def _build_progress_callback(job: SearchJob) -> Any:
+def _build_progress_callback(job: SearchJob) -> Any:  # noqa: ANN401  # callback type is dynamic
     """Build the progress callback for live scan ingestion."""
 
     def _progress(event: dict) -> None:
@@ -158,7 +164,7 @@ def _build_progress_callback(job: SearchJob) -> Any:
     return _progress
 
 
-def _build_profile_callback(job: SearchJob) -> Any:
+def _build_profile_callback(job: SearchJob) -> Any:  # noqa: ANN401  # callback type is dynamic
     """Build the profile callback for live scan ingestion."""
     source_timings: dict[str, dict[str, Any]] = dict(job.source_timings or {})
 
@@ -261,7 +267,7 @@ def _record_source_health(job: SearchJob) -> None:
     source_health = IngestionService.get_source_health_map()
     total = len(source_health)
     failed_names = [
-        IngestionService._upsert_source(k).name or k.upper()
+        IngestionService._upsert_source(k).name or k.upper()  # noqa: SLF001  # internal API
         for k, health_status in source_health.items()
         if health_status != "healthy"
     ]
@@ -291,7 +297,8 @@ def run_search_job(job_id: str) -> None:
         )
         hits_before = SearchService.index_hit_count(job.query, job.expression)
         freshness_days = max(
-            1, int(getattr(settings.APP, "search_query_freshness_days", 14)),
+            1,
+            int(getattr(settings.APP, "search_query_freshness_days", 14)),
         )
 
         rescan_triggered, rescan_reason = _determine_rescan(
@@ -366,7 +373,7 @@ def run_search_job(job_id: str) -> None:
             final_status = "partial"
             if len(current_failed) == 1:
                 unavailable_text = "источник недоступен"
-            elif len(current_failed) < 5:
+            elif len(current_failed) < FAILED_SOURCES_MANY_THRESHOLD:
                 unavailable_text = "источника недоступно"
             else:
                 unavailable_text = "источников недоступно"

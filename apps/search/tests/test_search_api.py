@@ -1,7 +1,7 @@
 from rest_framework.test import APIClient
 
 
-def test_search_endpoint_returns_payload(db):
+def test_search_endpoint_returns_payload(db) -> None:
     """Test search endpoint returns payload helper."""
     client = APIClient()
     response = client.post("/api/v1/search", {"query": "deep learning"}, format="json")
@@ -10,7 +10,7 @@ def test_search_endpoint_returns_payload(db):
     assert "source_stats" in response.data
 
 
-def test_search_endpoint_passes_expression(monkeypatch, db):
+def test_search_endpoint_passes_expression(monkeypatch, db) -> None:
     """Test search endpoint passes expression helper."""
     captured: dict = {}
 
@@ -35,7 +35,7 @@ def test_search_endpoint_passes_expression(monkeypatch, db):
     assert captured["expression"] == '"machine learning" AND diagnosis -survey'
 
 
-def test_source_stats_endpoint_returns_totals(db):
+def test_source_stats_endpoint_returns_totals(db) -> None:
     """Test source stats endpoint returns totals helper."""
     client = APIClient()
     response = client.get("/api/v1/source-stats")

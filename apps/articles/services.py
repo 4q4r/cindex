@@ -1,10 +1,17 @@
+"""Article eligibility, citation rendering, and identifier services."""
+
 from __future__ import annotations
 
 import re
-from collections.abc import Iterable
 from dataclasses import dataclass
+from typing import TYPE_CHECKING
 
 from .models import Article, Identifier
+
+if TYPE_CHECKING:
+    from collections.abc import Iterable
+
+_MAX_SHORT_AUTHORS = 3
 
 INDEXING_KEYWORDS = [
     "scopus",
@@ -102,7 +109,9 @@ class ArticleEligibilityService:
         peer_reviewed = any(token in text for token in PEER_REVIEW_KEYWORDS)
         indexed = any(token in text for token in INDEXING_KEYWORDS)
         peer_review_confidence = cls._token_confidence(
-            text, PEER_REVIEW_KEYWORDS, cap=1,
+            text,
+            PEER_REVIEW_KEYWORDS,
+            cap=1,
         )
         indexing_confidence = cls._token_confidence(text, INDEXING_KEYWORDS, cap=2)
         has_doi = bool(article.doi and DOI_PATTERN.search(article.doi)) or bool(
@@ -172,8 +181,8 @@ class CitationService:
         ]
         if not names:
             return "Unknown author"
-        if len(names) > 3:
-            return ", ".join(names[:3]) + " [et al.]"
+        if len(names) > _MAX_SHORT_AUTHORS:
+            return ", ".join(names[:_MAX_SHORT_AUTHORS]) + " [et al.]"
         return ", ".join(names)
 
     @classmethod

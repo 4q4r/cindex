@@ -10,7 +10,7 @@ from urllib.request import Request, urlopen
 
 
 def _request_json(url: str, token: str) -> dict:
-    req = Request(
+    req = Request(  # noqa: S310  # trusted GitHub API URL
         url,
         headers={
             "Authorization": f"Bearer {token}",
@@ -18,24 +18,26 @@ def _request_json(url: str, token: str) -> dict:
             "X-GitHub-Api-Version": "2022-11-28",
         },
     )
-    with urlopen(req) as response:
+    with urlopen(req) as response:  # noqa: S310  # trusted GitHub API URL
         return json.loads(response.read().decode("utf-8"))
 
 
 def _download(url: str, token: str) -> bytes:
-    req = Request(
+    req = Request(  # noqa: S310  # trusted GitHub API URL
         url,
         headers={
             "Authorization": f"Bearer {token}",
             "Accept": "application/vnd.github+json",
         },
     )
-    with urlopen(req) as response:
+    with urlopen(req) as response:  # noqa: S310  # trusted GitHub API URL
         return response.read()
 
 
 def _find_artifact(
-    artifacts: list[dict], artifact_name: str, current_run_id: str,
+    artifacts: list[dict],
+    artifact_name: str,
+    current_run_id: str,
 ) -> dict | None:
     """Find the most recent non-expired artifact matching the name."""
     for artifact in artifacts:

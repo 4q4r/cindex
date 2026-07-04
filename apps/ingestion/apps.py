@@ -1,3 +1,5 @@
+"""App configuration for the ingestion app."""
+
 from django.apps import AppConfig
 
 

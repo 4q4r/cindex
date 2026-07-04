@@ -1,8 +1,13 @@
+"""Query selectors for the articles app."""
+
 from __future__ import annotations
 
-from django.db.models import QuerySet
+from typing import TYPE_CHECKING
 
 from .models import Article
+
+if TYPE_CHECKING:
+    from django.db.models import QuerySet
 
 
 def eligible_articles() -> QuerySet[Article]:

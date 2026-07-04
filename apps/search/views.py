@@ -1,3 +1,5 @@
+"""DRF views exposing the search, source-stats, and reindex HTTP endpoints."""
+
 from __future__ import annotations
 
 import hashlib
@@ -8,6 +10,7 @@ from django.db import transaction
 from django.shortcuts import get_object_or_404
 from django.utils import timezone
 from rest_framework.permissions import AllowAny, IsAdminUser
+from rest_framework.request import Request  # noqa: TC002  # used only in annotations
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
@@ -37,7 +40,8 @@ def _job_progress_percent(job: SearchJob) -> int:
         span = STAGE_PROGRESS["live_scan"] - STAGE_PROGRESS["checking_index"]
         phase_ratio = LIVE_SCAN_PHASE_RATIO.get(job.substage, 0.0)
         return min(
-            80, base + int(((job.source_done + phase_ratio) / job.source_total) * span),
+            80,
+            base + int(((job.source_done + phase_ratio) / job.source_total) * span),
         )
     return STAGE_PROGRESS.get(job.stage, 10)
 
@@ -88,7 +92,7 @@ def _normalize_job_text(value: str) -> str:
     return " ".join(value.split()).casefold()
 
 
-def _search_job_lock_key(query: str, expression: str, force_refresh: bool) -> str:
+def _search_job_lock_key(query: str, expression: str, force_refresh: bool) -> str:  # noqa: FBT001  # internal helper
     """Build a stable cache key for search-job creation locking."""
     digest = hashlib.sha256(
         _search_job_key_material(query, expression, force_refresh).encode("utf-8"),
@@ -99,7 +103,7 @@ def _search_job_lock_key(query: str, expression: str, force_refresh: bool) -> st
 def _search_job_pending_key(
     query: str,
     expression: str,
-    force_refresh: bool,
+    force_refresh: bool,  # noqa: FBT001  # internal helper
 ) -> str:
     """Build a cache key that temporarily reserves a job id during creation."""
     digest = hashlib.sha256(
@@ -111,7 +115,7 @@ def _search_job_pending_key(
 def _search_job_key_material(
     query: str,
     expression: str,
-    force_refresh: bool,
+    force_refresh: bool,  # noqa: FBT001  # internal helper
 ) -> str:
     """Build the normalized search-job key material."""
     return "|".join(
@@ -126,7 +130,7 @@ def _search_job_key_material(
 def _find_active_search_job(
     query: str,
     expression: str,
-    force_refresh: bool,
+    force_refresh: bool,  # noqa: FBT001  # internal helper
 ) -> SearchJob | None:
     """Return the latest matching active search job if one exists."""
     normalized_query = _normalize_job_text(query)
@@ -150,7 +154,7 @@ def _find_active_search_job(
 def _build_pending_search_job(
     query: str,
     expression: str,
-    force_refresh: bool,
+    force_refresh: bool,  # noqa: FBT001  # internal helper
     job_id: uuid.UUID,
 ) -> SearchJob:
     """Build an in-memory search job placeholder for a creation race."""
@@ -189,7 +193,7 @@ class SourceStatsView(APIView):
     permission_classes = (AllowAny,)
     authentication_classes = ()
 
-    def get(self, request):
+    def get(self, request: Request) -> Response:  # noqa: ARG002  # DRF view method signature
         """Handle the GET request."""
         return Response(get_source_stats())
 
@@ -205,7 +209,7 @@ class SearchView(APIView):
         """Source stats."""
         return get_source_stats()
 
-    def post(self, request):
+    def post(self, request: Request) -> Response:
         """Handle the POST request."""
         serializer = SearchRequestSerializer(data=request.data)
         serializer.is_valid(raise_exception=True)
@@ -239,7 +243,7 @@ class SearchJobCreateView(APIView):
     permission_classes = (AllowAny,)
     authentication_classes = ()
 
-    def post(self, request):
+    def post(self, request: Request) -> Response:
         """Handle the POST request."""
         serializer = SearchJobCreateSerializer(data=request.data)
         serializer.is_valid(raise_exception=True)
@@ -249,13 +253,17 @@ class SearchJobCreateView(APIView):
         pending_key = _search_job_pending_key(query, expression, force_refresh)
 
         job: SearchJob | None = _find_active_search_job(
-            query, expression, force_refresh,
+            query,
+            expression,
+            force_refresh,
         )
         attached_to_existing = job is not None
         lock_key = _search_job_lock_key(query, expression, force_refresh)
 
         if job is None and cache.add(
-            lock_key, "1", timeout=ACTIVE_JOB_LOCK_TIMEOUT_SECONDS,
+            lock_key,
+            "1",
+            timeout=ACTIVE_JOB_LOCK_TIMEOUT_SECONDS,
         ):
             job_id = uuid.uuid4()
             cache.set(
@@ -316,7 +324,8 @@ class SearchJobCreateView(APIView):
                 run_search_job.delay(str(job.id))
 
         if job is None:
-            raise RuntimeError("Failed to create or locate search job")
+            msg = "Failed to create or locate search job"
+            raise RuntimeError(msg)
         payload = _serialize_job(job)
         payload["attached_to_existing"] = attached_to_existing
         payload["source_stats"] = get_source_stats()
@@ -329,7 +338,7 @@ class SearchJobDetailView(APIView):
     permission_classes = (AllowAny,)
     authentication_classes = ()
 
-    def get(self, request, job_id):
+    def get(self, request: Request, job_id: uuid.UUID) -> Response:  # noqa: ARG002  # DRF view method signature
         """Handle the GET request."""
         job = get_object_or_404(SearchJob, id=job_id)
         payload = _serialize_job(job)
@@ -343,7 +352,7 @@ class ReindexView(APIView):
 
     permission_classes = (IsAdminUser,)
 
-    def post(self, request):
+    def post(self, request: Request) -> Response:
         """Handle the POST request."""
         query = request.data.get("query", "scientific research")
         task = ingest_search_query.delay(query)

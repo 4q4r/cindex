@@ -1,3 +1,5 @@
+"""Exa API usage tracking and snapshot persistence."""
+
 from __future__ import annotations
 
 import asyncio
@@ -26,7 +28,7 @@ def _parse_datetime(value: object) -> datetime | None:
     if not raw:
         return None
     try:
-        parsed = datetime.fromisoformat(raw.replace("Z", "+00:00"))
+        parsed = datetime.fromisoformat(raw)
     except ValueError:
         return None
     if parsed.tzinfo is None:
@@ -113,7 +115,8 @@ async def _get_exa_api_key_usage_async(
     """Fetch usage analytics for a specific Exa API key."""
     active_key = api_key or _api_key()
     if not active_key:
-        raise ValueError("EXA_API_KEY is required")
+        msg = "EXA_API_KEY is required"
+        raise ValueError(msg)
     now = timezone.now()
     period_end = end_date or now
     period_start = start_date or (period_end - timedelta(days=30))
@@ -154,7 +157,9 @@ def get_exa_api_key_usage(
 
 
 def sync_exa_usage_snapshots(
-    *, api_key: str | None = None, lookback_days: int = 30,
+    *,
+    api_key: str | None = None,
+    lookback_days: int = 30,
 ) -> tuple[int, int]:
     """Sync Exa API key usage snapshots into the local admin dashboard."""
     active_key = api_key or _api_key()

@@ -5,7 +5,6 @@ from apps.search import warmup
 
 def test_warmup_search_models_logs_once(monkeypatch) -> None:
     """Warmup should run once per process and only log once."""
-
     messages: list[str] = []
     monkeypatch.setattr(
         warmup.LOGGER, "info", lambda message, *args: messages.append(message % args)

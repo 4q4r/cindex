@@ -43,7 +43,41 @@ target-version = "py313"
 exclude = [".venv", "node_modules", "*/migrations/*", "frontend/.next"]
 
 [tool.ruff.lint]
-select = ["E", "F", "I", "B", "UP", "DJ", "SIM", "RUF", "BLE", "C90"]
+# Maximally strict: match the PostToolUse hook (`ruff check --fix --select ALL`).
+# Only the formatter-conflict rules are ignored — ruff itself recommends
+# disabling COM812/ISC001 when running `ruff format`. The mutually-exclusive
+# docstring pairs (D203/D211, D212/D213) are left for ruff to auto-resolve
+# exactly as the hook does under `--select ALL` (D211 + D212 active, D203 +
+# D213 suppressed), so the hook never reverts our docstrings.
+select = ["ALL"]
+ignore = ["COM812", "ISC001"]
+
+[tool.ruff.lint.per-file-ignores]
+# Tests and operational scripts: conventional relaxations for `select = ["ALL"]`
+# (asserts, missing annotations/docstrings, unused fixture args, private-member
+# access, magic values, local imports, exception style). Production code is NOT
+# relaxed.
+"apps/**/tests/**" = [
+  "S101", "ANN", "D", "ARG", "PLC0415", "SLF001", "PLR2004", "TRY003", "EM101",
+  "EM102", "FBT001", "FBT002", "FBT003", "S314", "S310", "PT018", "INP001",
+  "N999", "A002", "ANN401", "PLR0913", "TRY300", "TRY301", "PERF401", "RET504",
+  "S108", "PLR0915", "PLR0904",
+]
+"config/**/tests/**" = [
+  "S101", "ANN", "D", "ARG", "PLC0415", "SLF001", "PLR2004", "TRY003", "EM101",
+  "EM102", "FBT001", "FBT002", "FBT003", "S314", "S310", "PT018", "INP001",
+  "N999", "A002", "ANN401", "PLR0913", "TRY300", "TRY301", "PERF401", "RET504",
+  "S108", "PLR0915", "PLR0904",
+]
+"tests/**" = [
+  "S101", "ANN", "D", "ARG", "PLC0415", "SLF001", "PLR2004", "TRY003", "EM101",
+  "EM102", "FBT001", "FBT002", "FBT003", "S314", "S310", "PT018", "INP001",
+  "N999", "A002", "ANN401", "PLR0913", "TRY300", "TRY301", "PERF401", "RET504",
+  "S108", "PLR0915", "PLR0904",
+]
+"scripts/**" = [
+  "S101", "ANN", "D", "ARG", "PLC0415", "INP001", "PLR2004",
+]
 
 [tool.pytest.ini_options]
 DJANGO_SETTINGS_MODULE = "config.settings"

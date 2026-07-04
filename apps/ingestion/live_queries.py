@@ -1,3 +1,5 @@
+"""Live query execution and result aggregation."""
+
 from __future__ import annotations
 
 import os

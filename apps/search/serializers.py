@@ -1,4 +1,8 @@
+"""Serializers for search requests, results, and asynchronous search-job state."""
+
 from __future__ import annotations
+
+from typing import Any
 
 from rest_framework import serializers
 
@@ -52,15 +56,20 @@ class SearchResultSerializer(serializers.Serializer):
     url = serializers.CharField()
     rerank_score = serializers.FloatField(required=False)
 
-    def to_representation(self, instance):
-        """To representation."""
+    def to_representation(
+        self,
+        instance: Any,  # noqa: ANN401  # DRF serializer instance is dynamic
+    ) -> dict[str, Any]:
+        """Convert the instance into a normalized serializable dict."""
         data = super().to_representation(instance)
         data["title"] = normalize_scholarly_text(data.get("title", ""), max_length=900)
         data["preview"] = normalize_scholarly_text(
-            data.get("preview", ""), max_length=500,
+            data.get("preview", ""),
+            max_length=500,
         )
         data["journal"] = normalize_scholarly_text(
-            data.get("journal", ""), max_length=300,
+            data.get("journal", ""),
+            max_length=300,
         )
         return data
 
@@ -83,10 +92,12 @@ class SearchJobSerializer(serializers.Serializer):
     source_failed = serializers.ListField(child=serializers.CharField())
     source_timings = serializers.JSONField(required=False)
     average_wait_without_enrichment_seconds = serializers.IntegerField(
-        allow_null=True, required=False,
+        allow_null=True,
+        required=False,
     )
     average_wait_with_enrichment_seconds = serializers.IntegerField(
-        allow_null=True, required=False,
+        allow_null=True,
+        required=False,
     )
     index_hits_before = serializers.IntegerField()
     index_hits_after = serializers.IntegerField()
