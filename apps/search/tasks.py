@@ -376,7 +376,6 @@ def run_search_job(job_id: str) -> None:
             query=job.query,
             expression=job.expression,
             force_refresh=False,
-            fallback_to_recent=False,
             filters=_filters_from_job(job),
         )
         hits_after = SearchService.index_hit_count(job.query, job.expression)
