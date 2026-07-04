@@ -121,18 +121,20 @@ class SciEngineConnector(BaseConnector):
     )
 
     def fetch(self, query: str, limit: int = 5) -> list[RawArticle]:
-        """Fetch records from the upstream source."""
-        try:
-            html = self._request_text(
-                self.profile.search_url,
-                params={"searchType": "all", "searchText": query},
-            )
-            soup = BeautifulSoup(html, "lxml")
-            items = self._extract_from_html(query, soup, limit)
-            if items:
-                return items
-        except ConnectorFetchError:
-            return []
+        """Fetch records from the upstream source.
+
+        Let ``ConnectorFetchError`` propagate so the ingestion service
+        marks this source as failed instead of silently reporting zero
+        articles as a success.
+        """
+        html = self._request_text(
+            self.profile.search_url,
+            params={"searchType": "all", "searchText": query},
+        )
+        soup = BeautifulSoup(html, "lxml")
+        items = self._extract_from_html(query, soup, limit)
+        if items:
+            return items
         return []
 
 
@@ -1028,11 +1030,13 @@ class MedknowConnector(BaseConnector):
     )
 
     def fetch(self, query: str, limit: int = 5) -> list[RawArticle]:
-        """Fetch records from the upstream source."""
-        try:
-            return self._fetch_openalex(query, limit)
-        except ConnectorFetchError:
-            return []
+        """Fetch records from the upstream source.
+
+        Let ``ConnectorFetchError`` propagate so the ingestion service
+        marks this source as failed instead of silently reporting zero
+        articles as a success.
+        """
+        return self._fetch_openalex(query, limit)
 
     def _fetch_openalex(self, query: str, limit: int) -> list[RawArticle]:
         """Fetch openalex."""
