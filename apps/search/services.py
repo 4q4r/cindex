@@ -323,7 +323,6 @@ class SearchService:
         query: str,
         expression: str,
         force_refresh: bool = False,  # noqa: FBT001, FBT002  # public API positional bool
-        fallback_to_recent: bool = False,  # noqa: FBT001, FBT002  # public API positional bool
     ) -> list[dict]:
         """Run the article search pipeline and return ranked results."""
         if force_refresh:
@@ -337,21 +336,5 @@ class SearchService:
             if results:
                 return results
         except (ValueError, RuntimeError):
-            if not fallback_to_recent:
-                return []
-
-        if not fallback_to_recent:
             return []
-
-        results: list[dict] = []
-        for article in cls._articles_queryset().order_by("-updated_at")[
-            : settings.APP.search_final_top_k
-        ]:
-            results.append(
-                cls._payload(
-                    article,
-                    cls._preview_from_article(article),
-                    rerank_score=0.0,
-                ),
-            )
-        return results
+        return []

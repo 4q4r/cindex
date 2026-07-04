@@ -7,6 +7,7 @@ from datetime import timedelta
 from typing import TYPE_CHECKING
 
 import aiohttp
+import structlog
 from cloudscraper.exceptions import CloudflareException
 from django.utils import timezone
 from requests.exceptions import RequestException
@@ -20,6 +21,8 @@ from .doi_enrichment import DoiEnrichmentService
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Iterable
+
+logger = structlog.get_logger(__name__)
 
 
 class IngestionService:
@@ -397,6 +400,12 @@ class IngestionService:
         articles: list[Article] = []
         for raw in enriched_raws:
             if not raw.doi or not raw.doi.startswith("10."):
+                logger.warning(
+                    "ingestion: dropping article without valid DOI",
+                    source_key=source_key,
+                    url=raw.url,
+                    title=raw.title[:120],
+                )
                 continue
             article = cls._save_article(raw)
             articles.append(article)
@@ -412,7 +421,7 @@ class IngestionService:
                     "enrich_seconds": enrich_seconds,
                     "save_seconds": save_seconds,
                     "total_seconds": total_seconds,
-                    "articles_count": len(enriched_raws),
+                    "articles_count": len(articles),
                 },
             )
         cls._emit_progress(
