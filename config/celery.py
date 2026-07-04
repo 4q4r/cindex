@@ -30,19 +30,6 @@ def _build_beat_schedule() -> dict[str, dict[str, object]]:
     """Build the Celery beat schedule from application settings."""
     schedule: dict[str, dict[str, object]] = {}
 
-    nightly_interval_seconds = int(
-        getattr(
-            getattr(settings, "APP", None),
-            "nightly_ingestion_interval_seconds",
-            0,
-        ),
-    )
-    if nightly_interval_seconds > 0:
-        schedule["nightly-refresh"] = {
-            "task": "apps.ingestion.tasks.nightly_ingestion",
-            "schedule": nightly_interval_seconds,
-        }
-
     local_import_interval_seconds = int(
         getattr(
             getattr(settings, "APP", None),

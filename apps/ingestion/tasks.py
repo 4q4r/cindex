@@ -49,19 +49,6 @@ def ingest_search_query(
 
 
 @shared_task
-def nightly_ingestion() -> None:
-    """Nightly ingestion helper."""
-    default_queries = [
-        "machine learning",
-        "biomedical signal processing",
-        "scientometrics",
-        "applied mathematics",
-    ]
-    for query in default_queries:
-        ingest_search_query.delay(query)
-
-
-@shared_task
 def scan_local_imports() -> dict[str, int]:
     """Scan the configured local import folder for new scholarly files."""
     drop_dir = Path(getattr(settings.APP, "local_import_directory", "local_imports"))
