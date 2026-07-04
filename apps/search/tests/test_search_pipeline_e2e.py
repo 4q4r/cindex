@@ -89,7 +89,7 @@ def test_search_pipeline_deduplicates_same_doi_articles(db) -> None:
         language="en",
         publication_year=2024,
         url="https://example.org/a",
-        doi="10.1234/shared.doi",
+        doi="10.1234/Shared.DOI",
         is_eligible=True,
     )
     Article.objects.create(
@@ -112,7 +112,7 @@ def test_search_pipeline_deduplicates_same_doi_articles(db) -> None:
     )
 
     assert len(results) == 1
-    assert results[0]["doi"] == "10.1234/shared.doi"
+    assert results[0]["doi"].lower() == "10.1234/shared.doi"
     assert "<em>" not in results[0]["preview"]
 
 

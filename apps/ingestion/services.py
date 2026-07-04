@@ -145,15 +145,15 @@ class IngestionService:
         source = cls._upsert_source(raw.source_key)
         journal, _ = Journal.objects.get_or_create(name=raw.journal or raw.source_key)
         article, _ = Article.objects.update_or_create(
-            source=source,
-            url=raw.url,
+            doi=raw.doi,
             defaults={
+                "source": source,
+                "url": raw.url,
                 "title": raw.title,
                 "abstract": raw.abstract,
                 "full_text": raw.full_text,
                 "language": raw.language,
                 "publication_year": raw.year,
-                "doi": raw.doi,
                 "journal": journal,
                 "volume": raw.volume,
                 "issue": raw.issue,

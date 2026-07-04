@@ -68,7 +68,7 @@ class Article(models.Model):
     publication_year = models.IntegerField(null=True, blank=True)
     publication_date = models.DateField(null=True, blank=True)
     url = models.URLField(max_length=1000, db_index=True)
-    doi = models.CharField(max_length=256)
+    doi = models.CharField(max_length=256, unique=True)
     volume = models.CharField(max_length=32, blank=True)
     issue = models.CharField(max_length=32, blank=True)
     pages = models.CharField(max_length=32, blank=True)
