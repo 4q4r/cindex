@@ -792,6 +792,7 @@ class SciELOConnector(BaseConnector):
             desc = desc_node.get_text(" ", strip=True) if desc_node else ""
             author_node = node.find("author")
             author = author_node.get_text(" ", strip=True) if author_node else ""
+            authors = self._split_rss_authors(author)
             abstract = self._clean_rss_abstract(desc)
             year = self._extract_year(url_value) or self._extract_year(desc)
             doi = self._extract_doi(desc) or self._extract_doi(url_value)
@@ -808,11 +809,29 @@ class SciELOConnector(BaseConnector):
                     doi=doi,
                     year=year,
                     journal=journal,
+                    authors=authors,
                 ),
             )
             if len(items) >= limit:
                 break
         return items
+
+    @staticmethod
+    def _split_rss_authors(author_blob: str) -> tuple[str, ...]:
+        """Split a SciELO RSS ``<author>`` blob into individual authors.
+
+        SciELO RSS author lists are semicolon-separated, each entry a
+        ``Last, First`` pair (e.g. ``Cervantes-Guerrero, Mario Daniel;
+        Galván-Tejada, Carlos E.``). Splitting on ``;`` preserves the
+        ``Last, First`` comma inside each name; a single name with no
+        semicolon yields a one-element tuple. Empty entries and exact
+        duplicates are dropped, order preserved.
+        """
+        cleaned = re.sub(r"\s+", " ", author_blob or "").strip().strip(";")
+        if not cleaned:
+            return ()
+        parts = [part.strip(" ,;") for part in cleaned.split(";") if part.strip(" ,;")]
+        return tuple(dict.fromkeys(parts))
 
     @staticmethod
     def _clean_rss_abstract(desc: str) -> str:
