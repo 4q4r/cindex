@@ -1018,6 +1018,8 @@ class HALConnector(AsyncApiConnector):
             f"?q={quote_plus(query)}&fl={fields}&rows={limit}&wt=json&sort=score desc"
         )
 
+    _MIN_JOURNAL_LEN = 3
+
     def _extract_from_payload(
         self,
         query: str,  # noqa: ARG002  # required by base class signature
@@ -1045,8 +1047,18 @@ class HALConnector(AsyncApiConnector):
                     year = None
             authors_data = doc.get("authFullName_s", [])
             authors = tuple(authors_data) if isinstance(authors_data, list) else ()
-            journal_titles = doc.get("journalTitle_s", [])
-            journal = journal_titles[0] if journal_titles else "HAL"
+            journal_titles = doc.get("journalTitle_s")
+            if isinstance(journal_titles, list):
+                journal = journal_titles[0].strip() if journal_titles else ""
+            elif isinstance(journal_titles, str):
+                journal = journal_titles.strip()
+            else:
+                journal = ""
+            # HAL returns the full journal title as a string; single-char or
+            # empty values are SOLR index noise, so fall back to the platform
+            # marker (consistent with arXiv/PMC preprint connectors).
+            if len(journal) < HALConnector._MIN_JOURNAL_LEN:
+                journal = "HAL"
             items.append(
                 self._raw(
                     title=title,
