@@ -43,6 +43,23 @@ if TYPE_CHECKING:
 logger = structlog.get_logger(__name__)
 
 
+def _extract_epmc_journal(rec: dict) -> str:
+    """Return the journal title from a EuropePMC core record.
+
+    EuropePMC's ``resultType=core`` response carries no top-level
+    ``journalTitle`` field; the journal title lives at
+    ``journalInfo.journal.title``. Records without journal metadata
+    return an empty string so the caller can apply a venue fallback.
+    """
+    journal_info = rec.get("journalInfo")
+    if not isinstance(journal_info, dict):
+        return ""
+    journal = journal_info.get("journal")
+    if not isinstance(journal, dict):
+        return ""
+    return (journal.get("title") or "").strip()
+
+
 class EuropePMCConnector(AsyncApiConnector):
     """Europe PMC source connector via public REST API."""
 
@@ -72,7 +89,7 @@ class EuropePMCConnector(AsyncApiConnector):
         for rec in records[:limit]:
             title = rec.get("title", "").strip()
             abstract = rec.get("abstractText", "")
-            journal = rec.get("journalTitle", "Europe PMC")
+            journal = _extract_epmc_journal(rec) or "Europe PMC"
             doi = rec.get("doi", "") or self._extract_doi(f"{title} {abstract}")
             year = rec.get("pubYear")
             url = rec.get("fullTextUrlList", {}).get("fullTextUrl", [{}])
@@ -746,7 +763,7 @@ class PMCConnector(AsyncApiConnector):
         for rec in records[:limit]:
             title = self._clean_pmc_title(rec)
             abstract = rec.get("abstractText", "")
-            journal = rec.get("journalTitle", "PMC")
+            journal = _extract_epmc_journal(rec) or "PMC"
             doi = rec.get("doi", "") or self._extract_doi(f"{title} {abstract}")
             year = self._extract_pmc_year(rec) or self._extract_year(
                 f"{title} {abstract} {journal}",

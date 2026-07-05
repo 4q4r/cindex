@@ -1,1 +1,23 @@
-{"resultList":{"result":[{"title":"PMC Open Access Article 2024","abstractText":"Open access study on machine learning in medicine.","journalTitle":"PMC Test Journal","doi":"10.1111/pmc.test.2024","pubYear":"2024","pmcid":"PMC1234567","fullTextUrlList":{"fullTextUrl":[{"url":"https://www.ncbi.nlm.nih.gov/pmc/articles/PMC1234567/"}]}}]}}
+{
+  "resultList": {
+    "result": [
+      {
+        "title": "PMC Open Access Article 2024",
+        "abstractText": "Open access study on machine learning in medicine.",
+        "journalInfo": {
+          "journal": {
+            "title": "PMC Test Journal"
+          }
+        },
+        "doi": "10.1111/pmc.test.2024",
+        "pubYear": "2024",
+        "pmcid": "PMC1234567",
+        "fullTextUrlList": {
+          "fullTextUrl": [
+            { "url": "https://www.ncbi.nlm.nih.gov/pmc/articles/PMC1234567/" }
+          ]
+        }
+      }
+    ]
+  }
+}

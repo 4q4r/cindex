@@ -4,7 +4,11 @@
       {
         "title": "Europe PMC Fixture Article",
         "abstractText": "Peer reviewed fixture abstract",
-        "journalTitle": "EPMC Journal",
+        "journalInfo": {
+          "journal": {
+            "title": "EPMC Journal"
+          }
+        },
         "doi": "10.1234/epmc.fixture",
         "pubYear": "2026",
         "fullTextUrlList": {

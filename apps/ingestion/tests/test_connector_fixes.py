@@ -117,6 +117,143 @@ class TestPCMAuthors:
         assert items[0].authors == ("Carol White", "Dave Brown")
 
 
+class TestEuropePMCJournal:
+    """EuropePMCConnector should read journal from journalInfo.journal.title.
+
+    EuropePMC's ``resultType=core`` response has no top-level ``journalTitle``
+    field; the journal title lives at ``journalInfo.journal.title``. Reading
+    the non-existent top-level field always fell back to ``"Europe PMC"``,
+    masking the real venue for every record.
+    """
+
+    def test_journal_from_journal_info(self) -> None:
+        payload = {
+            "resultList": {
+                "result": [
+                    {
+                        "title": "EPMC article",
+                        "abstractText": "Abstract",
+                        "doi": "10.1234/epmc",
+                        "pubYear": "2024",
+                        "fullTextUrlList": {
+                            "fullTextUrl": [{"url": "https://example.org/a"}],
+                        },
+                        "journalInfo": {
+                            "journal": {
+                                "title": "Genetics in medicine",
+                            },
+                        },
+                    },
+                ],
+            },
+        }
+        conn = EuropePMCConnector()
+        items = conn._extract_from_payload("test", payload, 5)
+        assert len(items) == 1
+        assert items[0].journal == "Genetics in medicine"
+
+    def test_falls_back_when_journal_info_missing(self) -> None:
+        payload = {
+            "resultList": {
+                "result": [
+                    {
+                        "title": "EPMC no journal",
+                        "abstractText": "Abstract",
+                        "doi": "10.1234/epmc2",
+                        "pubYear": "2024",
+                        "fullTextUrlList": {
+                            "fullTextUrl": [{"url": "https://example.org/b"}],
+                        },
+                    },
+                ],
+            },
+        }
+        conn = EuropePMCConnector()
+        items = conn._extract_from_payload("test", payload, 5)
+        assert len(items) == 1
+        assert items[0].journal == "Europe PMC"
+
+    def test_ignores_top_level_journal_title(self) -> None:
+        """A stray top-level ``journalTitle`` must not be trusted.
+
+        The real EuropePMC API never emits this field; if a payload carries
+        it (e.g. a stale fixture), the connector must still read from
+        ``journalInfo.journal.title`` and not regress to the old behaviour.
+        """
+        payload = {
+            "resultList": {
+                "result": [
+                    {
+                        "title": "EPMC stray field",
+                        "abstractText": "Abstract",
+                        "doi": "10.1234/epmc3",
+                        "pubYear": "2024",
+                        "fullTextUrlList": {
+                            "fullTextUrl": [{"url": "https://example.org/c"}],
+                        },
+                        "journalTitle": "Stale Top-Level Value",
+                        "journalInfo": {
+                            "journal": {"title": "The Lancet"},
+                        },
+                    },
+                ],
+            },
+        }
+        conn = EuropePMCConnector()
+        items = conn._extract_from_payload("test", payload, 5)
+        assert len(items) == 1
+        assert items[0].journal == "The Lancet"
+
+
+class TestPMCJournal:
+    """PMCConnector shares the EuropePMC API and the same journal bug."""
+
+    def test_journal_from_journal_info(self) -> None:
+        payload = {
+            "resultList": {
+                "result": [
+                    {
+                        "title": "PMC article",
+                        "abstractText": "Abstract",
+                        "doi": "10.1234/pmcj",
+                        "pubYear": "2024",
+                        "pmcid": "PMC2222222",
+                        "journalInfo": {
+                            "journal": {
+                                "title": (
+                                    "Journal of clinical and translational science"
+                                ),
+                            },
+                        },
+                    },
+                ],
+            },
+        }
+        conn = PMCConnector()
+        items = conn._extract_from_payload("test", payload, 5)
+        assert len(items) == 1
+        assert items[0].journal == "Journal of clinical and translational science"
+
+    def test_falls_back_when_journal_info_missing(self) -> None:
+        payload = {
+            "resultList": {
+                "result": [
+                    {
+                        "title": "PMC no journal",
+                        "abstractText": "Abstract",
+                        "doi": "10.1234/pmcj2",
+                        "pubYear": "2024",
+                        "pmcid": "PMC3333333",
+                    },
+                ],
+            },
+        }
+        conn = PMCConnector()
+        items = conn._extract_from_payload("test", payload, 5)
+        assert len(items) == 1
+        assert items[0].journal == "PMC"
+
+
 class TestCrossrefVolumeIssuePages:
     """CrossrefConnector should extract volume/issue/pages."""
 
