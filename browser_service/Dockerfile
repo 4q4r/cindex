@@ -14,7 +14,7 @@
 # Builder: install deps + Chromium runtime libs + pre-download the cloakbrowser
 # Chromium binary (≈200MB) into a cache dir we copy to the runtime image.
 # ----------------------------------------------------------------------------
-FROM ghcr.io/astral-sh/uv:python313 AS builder
+FROM ghcr.io/astral-sh/uv:python3.13-bookworm-slim AS builder
 
 ENV UV_LINK_MODE=copy \
     UV_COMPILE_BYTECODE=1 \
@@ -30,7 +30,7 @@ RUN apt-get update \
         libnss3 libnspr4 libatk1.0-0 libatk-bridge2.0-0 libcups2 \
         libdrm2 libxkbcommon0 libxcomposite1 libxdamage1 libxfixes3 \
         libxrandr2 libxext6 libxshmfence1 libgbm1 \
-        libpango-1.0-0 libcairo2 libasound2t64 \
+        libpango-1.0-0 libcairo2 libasound2 \
         fonts-liberation ca-certificates \
     && rm -rf /var/lib/apt/lists/*
 
@@ -67,7 +67,7 @@ RUN apt-get update \
         libnss3 libnspr4 libatk1.0-0 libatk-bridge2.0-0 libcups2 \
         libdrm2 libxkbcommon0 libxcomposite1 libxdamage1 libxfixes3 \
         libxrandr2 libxext6 libxshmfence1 libgbm1 \
-        libpango-1.0-0 libcairo2 libasound2t64 \
+        libpango-1.0-0 libcairo2 libasound2 \
         fonts-liberation ca-certificates tini \
     && rm -rf /var/lib/apt/lists/*
 
