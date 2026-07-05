@@ -621,3 +621,151 @@ class TestChallengeRetryHTTPError:
             conn._challenge_retry_cookie_string(scraper, "https://example.org", None)
             == "<html>ok</html>"
         )
+
+
+class TestSciELOOaiJournal:
+    """_clean_oai_journal strips the volume/issue/year tail from dc:source.
+
+    SciELO OAI records encode the venue as ``<journal> v.24 n.4 2017``;
+    the volume, issue and year must not leak into the ``journal`` field.
+    """
+
+    def test_strips_v_n_year_tokens(self) -> None:
+        assert (
+            SciELOConnector._clean_oai_journal(
+                "Revista de la Sociedad Española del Dolor v.24 n.4 2017",
+            )
+            == "Revista de la Sociedad Española del Dolor"
+        )
+
+    def test_strips_vol_no_tokens(self) -> None:
+        assert (
+            SciELOConnector._clean_oai_journal("Some Journal vol.10 no.2 2020")
+            == "Some Journal"
+        )
+
+    def test_preserves_plain_journal(self) -> None:
+        assert SciELOConnector._clean_oai_journal("Plain Journal") == "Plain Journal"
+
+    def test_empty_returns_empty(self) -> None:
+        assert SciELOConnector._clean_oai_journal("") == ""
+
+
+class TestSciELOQueryTerms:
+    """_query_terms normalizes a query into matchable tokens."""
+
+    def test_lowercases_and_splits(self) -> None:
+        assert SciELOConnector._query_terms("Machine Learning 2024") == [
+            "machine",
+            "learning",
+            "2024",
+        ]
+
+    def test_drops_short_tokens(self) -> None:
+        assert SciELOConnector._query_terms("a of ml") == []
+
+    def test_empty_query_returns_empty(self) -> None:
+        assert SciELOConnector._query_terms("") == []
+
+
+class TestSciELOArticleMatchesTerms:
+    """_article_matches_terms checks query terms against article fields."""
+
+    def test_matches_title(self) -> None:
+        from apps.ingestion.connectors.base import RawArticle
+
+        art = RawArticle(
+            source_key="scielo",
+            title="Machine learning approaches to imaging",
+            url="https://x",
+            abstract="",
+            full_text="",
+            language="en",
+            year=None,
+            doi="",
+            journal="",
+        )
+        assert SciELOConnector._article_matches_terms(art, ["machine", "learning"])
+
+    def test_no_match_for_irrelevant(self) -> None:
+        from apps.ingestion.connectors.base import RawArticle
+
+        art = RawArticle(
+            source_key="scielo",
+            title="Acupuntura para el dolor de rodilla",
+            url="https://x",
+            abstract="",
+            full_text="",
+            language="es",
+            year=None,
+            doi="",
+            journal="",
+        )
+        assert not SciELOConnector._article_matches_terms(
+            art,
+            ["machine", "learning"],
+        )
+
+
+class TestSciELOOaiFetch:
+    """_fetch_oai post-filters records by query terms and cleans journal.
+
+    OAI-PMH ``ListRecords`` is date-based; before the fix the SciELO
+    fallback returned the first N records by date regardless of the
+    query, emitting query-irrelevant articles (e.g. acupuncture papers
+    for a ``machine learning`` search) with the volume/issue/year tail
+    fused into ``journal``. The fallback must keep only records whose
+    text fields contain a query term and strip the venue tail.
+    """
+
+    _OAI_XML = (
+        '<?xml version="1.0" encoding="UTF-8"?>'
+        '<OAI-PMH xmlns="http://www.openarchives.org/OAI/2.0/" '
+        'xmlns:oai_dc="http://www.openarchives.org/OAI/2.0/oai_dc/" '
+        'xmlns:dc="http://purl.org/dc/elements/1.1/">'
+        "<ListRecords>"
+        "<record><metadata><oai_dc:dc>"
+        "<dc:title>Acupuntura para el dolor de rodilla</dc:title>"
+        "<dc:identifier>https://www.scielo.br/a/acupuntura</dc:identifier>"
+        "<dc:source>Revista Dolor v.24 n.4 2017</dc:source>"
+        "<dc:date>2017-01-01</dc:date>"
+        "</oai_dc:dc></metadata></record>"
+        "<record><metadata><oai_dc:dc>"
+        "<dc:title>Machine learning approaches to medical imaging</dc:title>"
+        "<dc:identifier>https://www.scielo.br/a/ml-imaging</dc:identifier>"
+        "<dc:source>Computer Methods v.1 n.2 2024</dc:source>"
+        "<dc:date>2024-01-01</dc:date>"
+        "</oai_dc:dc></metadata></record>"
+        "</ListRecords></OAI-PMH>"
+    )
+
+    def test_filters_irrelevant_and_cleans_journal(self, monkeypatch) -> None:
+        conn = SciELOConnector()
+
+        monkeypatch.setattr(conn, "_request_xml_text", lambda _url: self._OAI_XML)
+
+        items = conn._fetch_oai("machine learning", 3)
+        assert len(items) == 1
+        assert "Machine learning" in items[0].title
+        assert items[0].journal == "Computer Methods"
+        assert items[0].year == 2024
+
+    def test_empty_query_keeps_all(self, monkeypatch) -> None:
+        conn = SciELOConnector()
+
+        monkeypatch.setattr(conn, "_request_xml_text", lambda _url: self._OAI_XML)
+
+        items = conn._fetch_oai("", 3)
+        assert len(items) == 2
+
+    def test_no_relevant_raises(self, monkeypatch) -> None:
+        import pytest
+
+        from apps.ingestion.connectors.base import ConnectorFetchError
+
+        conn = SciELOConnector()
+
+        monkeypatch.setattr(conn, "_request_xml_text", lambda _url: self._OAI_XML)
+
+        with pytest.raises(ConnectorFetchError):
+            conn._fetch_oai("quantum computing", 3)

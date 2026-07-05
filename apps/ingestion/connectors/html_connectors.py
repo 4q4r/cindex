@@ -889,6 +889,57 @@ class SciELOConnector(BaseConnector):
         # No abstract block: the description is only the author list.
         return ""
 
+    _OAI_MAX_RESUMPTION_PAGES = 8
+    _MIN_QUERY_TERM_LENGTH = 3
+
+    @staticmethod
+    def _query_terms(query: str) -> list[str]:
+        """Return normalized query terms for OAI post-filtering.
+
+        OAI-PMH ``ListRecords`` has no text-search parameter, so relevance
+        is enforced client-side by matching query terms against each
+        record's text fields. Terms are lowercased and stripped of
+        punctuation; tokens shorter than three characters are dropped as
+        noise. An empty result means the query carried no usable terms,
+        in which case the caller skips filtering.
+        """
+        return [
+            raw
+            for raw in re.split(r"[^\w]+", (query or "").lower())
+            if len(raw) >= SciELOConnector._MIN_QUERY_TERM_LENGTH
+        ]
+
+    @staticmethod
+    def _clean_oai_journal(raw: str) -> str:
+        """Strip the volume/issue/year tail from a SciELO OAI ``dc:source``.
+
+        SciELO OAI records encode the venue as ``<journal title> v.24
+        n.4 2017`` — the volume, issue and year belong on the article,
+        not the journal field. Truncate at the first volume/issue
+        marker so ``journal`` carries only the publication name.
+        """
+        if not raw:
+            return ""
+        return re.sub(
+            r"\s+(?:v|vol|n|no|nº|num)\.?\s*\d.*$",
+            "",
+            raw,
+            flags=re.IGNORECASE,
+        ).strip()
+
+    @staticmethod
+    def _article_matches_terms(article: RawArticle, terms: list[str]) -> bool:
+        """Return True if any query term appears in the article's text fields."""
+        haystack = " ".join(
+            [
+                article.title or "",
+                article.abstract or "",
+                article.full_text or "",
+                article.journal or "",
+            ],
+        ).lower()
+        return any(term in haystack for term in terms)
+
     def _parse_oai_record(self, rec: ET.Element) -> RawArticle | None:
         """Parse a single OAI-PMH record into a RawArticle.
 
@@ -907,7 +958,8 @@ class SciELOConnector(BaseConnector):
         ]
         abstract = descriptions[0].strip() if descriptions else ""
         sources = [x.get_text(" ", strip=True) for x in rec.find_all("dc:source")]
-        journal = sources[0].strip() if sources else "SciELO"
+        journal = self._clean_oai_journal(sources[0]) if sources else ""
+        journal = journal or "SciELO"
         dates = [x.get_text(" ", strip=True) for x in rec.find_all("dc:date")]
         subjects = [x.get_text(" ", strip=True) for x in rec.find_all("dc:subject")]
         combined = " ".join(
@@ -935,22 +987,37 @@ class SciELOConnector(BaseConnector):
             journal=journal,
         )
 
-    def _fetch_oai(self, query: str, limit: int) -> list[RawArticle]:  # noqa: ARG002  # OAI fetch is date-based; query unused
-        """Fetch OAI."""
+    def _fetch_oai(self, query: str, limit: int) -> list[RawArticle]:
+        """Fetch OAI.
+
+        OAI-PMH ``ListRecords`` is date-based and carries no text-search
+        parameter, so records are post-filtered against the query terms:
+        only articles whose title/abstract/subjects/journal contain at
+        least one query term are kept. The harvest iterates resumption
+        tokens until ``limit`` relevant articles are collected or
+        ``_OAI_MAX_RESUMPTION_PAGES`` pages are exhausted, after which
+        the fallback raises so the caller moves on rather than returning
+        query-irrelevant records. When the query yields no usable terms
+        (e.g. empty or stop-word-only), filtering is skipped.
+        """
+        terms = self._query_terms(query)
         current_year = datetime.now(UTC).year
         from_date = f"{max(2000, current_year - 8)}-01-01"
         for endpoint in self.OA_MIRRORS:
             url = f"{endpoint}?verb=ListRecords&metadataPrefix=oai_dc&from={from_date}"
             items: list[RawArticle] = []
             token: str | None = None
-            for _ in range(3):
+            for _ in range(self._OAI_MAX_RESUMPTION_PAGES):
                 response_xml = self._request_xml_text(url)
                 soup = BeautifulSoup(response_xml, "xml")
                 records = soup.find_all("record")
                 for rec in records:
                     article = self._parse_oai_record(rec)
-                    if article is not None:
-                        items.append(article)
+                    if article is None:
+                        continue
+                    if terms and not self._article_matches_terms(article, terms):
+                        continue
+                    items.append(article)
                     if len(items) >= limit:
                         return items
                 token_node = soup.find("resumptionToken")
