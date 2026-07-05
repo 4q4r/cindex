@@ -23,17 +23,17 @@ class TestEuropePCMAuthors:
                         "doi": "10.1234/test",
                         "pubYear": "2024",
                         "fullTextUrlList": {
-                            "fullTextUrl": [{"url": "https://example.com/article"}]
+                            "fullTextUrl": [{"url": "https://example.com/article"}],
                         },
                         "authorList": {
                             "author": [
                                 {"fullName": "Alice Smith"},
                                 {"firstName": "Bob", "lastName": "Jones"},
-                            ]
+                            ],
                         },
-                    }
-                ]
-            }
+                    },
+                ],
+            },
         }
         conn = EuropePMCConnector()
         items = conn._extract_from_payload("test", payload, 5)
@@ -51,12 +51,12 @@ class TestEuropePCMAuthors:
                         "doi": "10.1234/test",
                         "pubYear": "2024",
                         "fullTextUrlList": {
-                            "fullTextUrl": [{"url": "https://example.com/article"}]
+                            "fullTextUrl": [{"url": "https://example.com/article"}],
                         },
                         "authorString": "Smith A, Jones B, Lee C",
-                    }
-                ]
-            }
+                    },
+                ],
+            },
         }
         conn = EuropePMCConnector()
         items = conn._extract_from_payload("test", payload, 5)
@@ -74,11 +74,11 @@ class TestEuropePCMAuthors:
                         "doi": "10.1234/test",
                         "pubYear": "2024",
                         "fullTextUrlList": {
-                            "fullTextUrl": [{"url": "https://example.com/article"}]
+                            "fullTextUrl": [{"url": "https://example.com/article"}],
                         },
-                    }
-                ]
-            }
+                    },
+                ],
+            },
         }
         conn = EuropePMCConnector()
         items = conn._extract_from_payload("test", payload, 5)
@@ -104,11 +104,11 @@ class TestPCMAuthors:
                             "author": [
                                 {"fullName": "Carol White"},
                                 {"firstName": "Dave", "lastName": "Brown"},
-                            ]
+                            ],
                         },
-                    }
-                ]
-            }
+                    },
+                ],
+            },
         }
         conn = PMCConnector()
         items = conn._extract_from_payload("test", payload, 5)
@@ -132,9 +132,9 @@ class TestCrossrefVolumeIssuePages:
                         "issue": "3",
                         "page": "101-115",
                         "published-print": {"date-parts": [[2024]]},
-                    }
-                ]
-            }
+                    },
+                ],
+            },
         }
         conn = CrossrefConnector()
         items = conn._extract_from_payload("test", payload, 5)
@@ -150,9 +150,9 @@ class TestCrossrefVolumeIssuePages:
                     {
                         "title": ["No biblio"],
                         "DOI": "10.1234/nobiblio",
-                    }
-                ]
-            }
+                    },
+                ],
+            },
         }
         conn = CrossrefConnector()
         items = conn._extract_from_payload("test", payload, 5)
@@ -175,8 +175,8 @@ class TestCyberLeninkaAuthors:
                     "year": "2023",
                     "journal": "CL Journal",
                     "authors": ["Alice Smith", "Bob Jones"],
-                }
-            ]
+                },
+            ],
         }
         conn = CyberLeninkaConnector()
         items = conn._extract_from_payload("test", payload, 5)
@@ -192,8 +192,8 @@ class TestCyberLeninkaAuthors:
                     "link": "/article/456",
                     "year": "2023",
                     "journal": "CL Journal",
-                }
-            ]
+                },
+            ],
         }
         conn = CyberLeninkaConnector()
         items = conn._extract_from_payload("test", payload, 5)
@@ -217,14 +217,41 @@ class TestHALJournal:
                         "uri_s": "https://hal.archives-ouvertes.fr/hal-123",
                         "authFullName_s": ["Alice Smith"],
                         "journalTitle_s": ["Journal du HAL"],
-                    }
-                ]
-            }
+                    },
+                ],
+            },
         }
         conn = HALConnector()
         items = conn._extract_from_payload("test", payload, 5)
         assert len(items) == 1
         assert items[0].journal == "Journal du HAL"
+
+    def test_journal_from_string_field(self) -> None:
+        """HAL Solr returns journalTitle_s as a string, not a list.
+
+        Indexing the string as a list would yield its first character ('J'),
+        so the connector must accept either shape.
+        """
+        payload = {
+            "response": {
+                "docs": [
+                    {
+                        "halId_s": "hal-789",
+                        "title_s": ["HAL Article"],
+                        "abstract_s": ["Abstract"],
+                        "doiId_s": "10.1234/hal2",
+                        "publicationDateY_i": 2024,
+                        "uri_s": "https://hal.archives-ouvertes.fr/hal-789",
+                        "authFullName_s": ["Alice Smith"],
+                        "journalTitle_s": "Journal of Bioanalysis & Biomedicine",
+                    },
+                ],
+            },
+        }
+        conn = HALConnector()
+        items = conn._extract_from_payload("test", payload, 5)
+        assert len(items) == 1
+        assert items[0].journal == "Journal of Bioanalysis & Biomedicine"
 
     def test_fallback_to_hal(self) -> None:
         payload = {
@@ -238,9 +265,9 @@ class TestHALJournal:
                         "publicationDateY_i": 2024,
                         "uri_s": "https://hal.archives-ouvertes.fr/hal-456",
                         "authFullName_s": ["Bob Jones"],
-                    }
-                ]
-            }
+                    },
+                ],
+            },
         }
         conn = HALConnector()
         items = conn._extract_from_payload("test", payload, 5)
