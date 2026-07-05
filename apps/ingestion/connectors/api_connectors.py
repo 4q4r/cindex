@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import json
 import os
 import re
 from datetime import datetime
@@ -24,6 +25,7 @@ from apps.core.text import normalize_scholarly_text
 
 from .base import (
     DOI_PATTERN,
+    HTTP_ERROR_THRESHOLD,
     INDEXING_TOKENS,
     MIN_PUBLICATION_YEAR,
     PEER_REVIEW_TOKENS,
@@ -1253,7 +1255,12 @@ class IACRConnector(AsyncApiConnector):
 
 
 class ExaConnector(AsyncApiConnector):
-    """Exa source connector via REST API (aiohttp, no Cloudflare needed)."""
+    """Exa source connector via REST API (cloudscraper transport).
+
+    ``api.exa.ai`` is behind Cloudflare, which 403-blocks aiohttp's TLS
+    fingerprint with a challenge page, so POSTs go through cloudscraper
+    (browser TLS impersonation) in a worker thread.
+    """
 
     profile = SourceProfile(
         source_key="exa",
@@ -1272,6 +1279,43 @@ class ExaConnector(AsyncApiConnector):
         """Exa uses POST with JSON body, not a simple GET URL."""
         return self.profile.search_url
 
+    async def _cs_post_json(
+        self,
+        url: str,
+        headers: dict[str, str],
+        payload: dict,
+        timeout: float,  # noqa: ASYNC109  # forwarded to sync cloudscraper, not async wait
+    ) -> dict:
+        """POST JSON to Exa via cloudscraper in a worker thread.
+
+        ``api.exa.ai`` sits behind Cloudflare, which 403-blocks aiohttp's
+        TLS fingerprint with an HTML challenge page (``server: cloudflare``,
+        ``cf-ray`` set) even with a valid API key and browser-like headers.
+        cloudscraper impersonates a real browser TLS stack and is allowed
+        through. It is sync (requests-based), so it runs in
+        ``asyncio.to_thread`` to stay non-blocking. Returns the parsed JSON
+        body; raises ``ConnectorFetchError`` on non-200 or invalid JSON.
+        """
+
+        def _do_post() -> tuple[int, str]:
+            scraper = self._build_scraper()
+            resp = scraper.post(url, headers=headers, json=payload, timeout=timeout)
+            return int(resp.status_code), resp.text
+
+        status, text = await asyncio.to_thread(_do_post)
+        if status >= HTTP_ERROR_THRESHOLD:
+            msg = f"{self.profile.source_key}: HTTP {status} for {url}"
+            raise ConnectorFetchError(msg)
+        try:
+            data = json.loads(text)
+        except ValueError as exc:
+            msg = f"{self.profile.source_key}: invalid JSON response: {exc}"
+            raise ConnectorFetchError(msg) from exc
+        if not isinstance(data, dict):
+            msg = f"{self.profile.source_key}: invalid JSON payload type"
+            raise ConnectorFetchError(msg)
+        return data
+
     async def _fetch_single_lang(
         self,
         lang_query: str,
@@ -1288,31 +1332,16 @@ class ExaConnector(AsyncApiConnector):
         """
         for attempt in range(1, self.MAX_ATTEMPTS + 1):
             try:
-                async with (
-                    aiohttp.ClientSession() as session,
-                    session.post(
-                        url,
-                        headers=headers,
-                        json=payload,
-                        timeout=aiohttp.ClientTimeout(
-                            total=self.REQUEST_TIMEOUT_SECONDS,
-                        ),
-                    ) as response,
-                ):
-                    response.raise_for_status()
-                    data = await response.json()
-                if not isinstance(data, dict):
-                    msg = f"{self.profile.source_key}: invalid JSON payload type"
-                    raise ConnectorFetchError(msg)  # noqa: TRY301  # contextual validation raise
+                data = await self._cs_post_json(
+                    url,
+                    headers,
+                    payload,
+                    self.REQUEST_TIMEOUT_SECONDS,
+                )
                 return self._extract_from_payload(lang_query, data, per_lang), None
             except ConnectorFetchError:
                 break
-            except (
-                aiohttp.ClientError,
-                ValueError,
-                RuntimeError,
-                ConnectionError,
-            ) as exc:
+            except (ValueError, RuntimeError, OSError) as exc:
                 if attempt < self.MAX_ATTEMPTS:
                     await asyncio.sleep(0.6 * attempt)
                 else:
@@ -1428,7 +1457,7 @@ class ExaConnector(AsyncApiConnector):
         enrichment_urls = [item.url for item in enrichment_needed]
         try:
             enrichment = await self._enrich_with_output_schema(enrichment_urls, query)
-        except (TimeoutError, aiohttp.ClientError, ValueError, KeyError) as e:
+        except (TimeoutError, OSError, ValueError, KeyError) as e:
             logger.warning("exa: outputSchema enrichment failed: %s", e)
             return
         if not enrichment:
@@ -1512,18 +1541,13 @@ class ExaConnector(AsyncApiConnector):
         }
         payload = self._build_enrichment_payload(urls, query)
         try:
-            async with (
-                aiohttp.ClientSession() as session,
-                session.post(
-                    self.profile.search_url,
-                    headers=headers,
-                    json=payload,
-                    timeout=aiohttp.ClientTimeout(total=60),
-                ) as response,
-            ):
-                response.raise_for_status()
-                data = await response.json()
-        except (TimeoutError, aiohttp.ClientError, ValueError, KeyError) as e:
+            data = await self._cs_post_json(
+                self.profile.search_url,
+                headers,
+                payload,
+                60.0,
+            )
+        except (ConnectorFetchError, OSError, ValueError, KeyError) as e:
             logger.warning("exa: outputSchema enrichment failed: %s", e)
             return {}
         return self._parse_enrichment_response(data)
@@ -1609,8 +1633,8 @@ class ExaConnector(AsyncApiConnector):
         doi = str(paper.get("doi", "")).strip()
         if doi and doi.startswith("10."):
             enrichment["doi"] = doi
-        journal = str(paper.get("journal", "")).strip()
-        if journal:
+        journal = str(paper.get("journal", "")).strip().rstrip(".,;:")
+        if journal and ExaConnector._validate_journal(journal):
             enrichment["journal"] = journal
         is_pr = paper.get("is_peer_reviewed")
         if isinstance(is_pr, bool):
@@ -1672,14 +1696,30 @@ class ExaConnector(AsyncApiConnector):
 
     _JOURNAL_PATTERN = re.compile(
         r"(?:"
-        r"published\s+in[:\s]+([^\n,;]{3,120}?)\s*(?:,|;|\n|\.\s)"
-        r"|journal[:\s]+([^\n,;]{3,120}?)\s*(?:,|;|\n|\.\s)"
+        r"published\s+in[:\s]+([A-Z][^\n,;]{3,120}?)\s*(?:,|;|\n|\.\s)"
+        r"|journal\s*[:=]\s*([^\n,;]{3,120}?)\s*(?:,|;|\n|\.\s)"
         r"|([A-Z][a-zA-Z\s&]+(?:Journal|Review|Letters|Annals|Archive|"
         r"Proceedings|Transactions|Bulletin|Reports?|Communications|"
         r"Research|Studies|Science|Medicine|Physics|Chemistry|Biology|"
         r"Engineering|Computing|Informatics))\b"
         r")",
     )
+
+    _JOURNAL_DENY = re.compile(
+        r"\b(?:further\s+reading|related\s+articles?|see\s+also|references?|"
+        r"pubmed|medline|abstract|introduction|background|methods?|results?|"
+        r"discussion|conclusions?|acknowledg|funding|author\s+contrib|"
+        r"competing\s+interest|data\s+availab|ethics\s+declar|supplement|"
+        r"appendix|keywords?|subjects?|cite\s+this|cited\s+by|full\s+text|"
+        r"open\s+access|download|sign\s+in|register|this\s+article|"
+        r"the\s+author|articles?\s+for\s+further|scientific\s+journal\s+articles|"
+        r"licensing\s+statements?|publication\s+(?:history|identifier|syntax)|"
+        r"editorial\s+review|technical\s+series|nist\s+technical|approved\s+by|"
+        r"issn|isbn|doi\s+is|available\s+at|accessed)\b",
+        re.IGNORECASE,
+    )
+
+    _JOURNAL_MAX_LEN = 60
 
     _VOLUME_PATTERN = re.compile(
         r"\b(?:vol(?:ume)?\.?\s*(\d+)|v\.(\d+))\b",
@@ -1698,7 +1738,7 @@ class ExaConnector(AsyncApiConnector):
 
     _CITATION_PATTERN = re.compile(
         r"(?:"
-        r"(?P<journal>[A-Z][^\n,]{3,80}?)\s*"
+        r"(?P<journal>[A-Z][a-zA-Z\s.&]{2,80}?)\s*"
         r"(?:,\s*)?"
         r"(?P<year>(?:19|20)\d{2})\s*"
         r"[;:]\s*"
@@ -1710,12 +1750,33 @@ class ExaConnector(AsyncApiConnector):
     )
 
     @staticmethod
+    def _validate_journal(journal: str) -> bool:
+        """Return True if a candidate journal name looks credible.
+
+        Free-text page dumps from Exa routinely contain section headers,
+        citation fragments and publisher boilerplate that regexes mistake
+        for a journal. Reject empty, bracket-bearing, oversized or
+        boilerplate-marked candidates so the field is left empty and
+        structured ``outputSchema`` enrichment can fill the real journal.
+        """
+        if not journal:
+            return False
+        if "[" in journal or "]" in journal:
+            return False
+        if len(journal) > ExaConnector._JOURNAL_MAX_LEN:
+            return False
+        return not ExaConnector._JOURNAL_DENY.search(journal)
+
+    @staticmethod
     def _extract_journal_from_text(text: str) -> str:
-        """Extract journal name from page text."""
+        """Extract journal name from page text, rejecting boilerplate."""
         match = ExaConnector._JOURNAL_PATTERN.search(text)
         if not match:
             return ""
-        return (match.group(1) or match.group(2) or match.group(3) or "").strip()
+        journal = (match.group(1) or match.group(2) or match.group(3) or "").strip()
+        if not ExaConnector._validate_journal(journal):
+            return ""
+        return journal.rstrip(".,;:")
 
     @staticmethod
     def _extract_volume_from_text(text: str) -> str:
@@ -1753,6 +1814,13 @@ class ExaConnector(AsyncApiConnector):
             value = cite_match.group(field)
             if value:
                 result[field] = value.strip().replace("–", "-")
+        journal = result.get("journal", "")
+        if journal:
+            journal = journal.rstrip(".,;:")
+        if journal and not ExaConnector._validate_journal(journal):
+            result.pop("journal", None)
+        else:
+            result["journal"] = journal
         return result
 
     @staticmethod
@@ -1823,7 +1891,7 @@ class ExaConnector(AsyncApiConnector):
             citation = self._extract_citation_from_text(
                 f"{title} {text} {highlights_text}",
             )
-            journal = citation.get("journal") or urlparse(url_value).netloc or "Exa"
+            journal = citation.get("journal", "")
             volume = citation.get("volume", "")
             issue = citation.get("issue", "")
             pages = citation.get("pages", "")
