@@ -8,6 +8,8 @@ always closed in the ``finally`` block.
 
 from __future__ import annotations
 
+import asyncio
+
 import pytest
 
 from cindex_browser_sidecar import browser_pool
@@ -15,22 +17,52 @@ from cindex_browser_sidecar.models import FetchRequest
 
 
 class FakePage:
-    """Records navigation/evaluate calls and scripts an evaluate result."""
+    """Records navigation/evaluate calls and scripts an evaluate result.
 
-    def __init__(self, evaluate_result=None, goto_exc=None):
+    ``goto_raise_on`` models two real failure modes:
+
+    * PDF download (navigation refused before commit): set
+      ``commit_on_raise=False`` so ``url`` stays ``about:blank`` — the pool's
+      origin fallback must then land the page on the origin.
+    * networkidle timeout (navigation committed, idle never fired): set
+      ``commit_on_raise=True`` so ``url`` becomes the target — same-origin, the
+      fallback is skipped.
+    """
+
+    def __init__(
+        self,
+        evaluate_result=None,
+        goto_exc=None,
+        *,
+        goto_raise_on=None,
+        commit_on_raise=True,
+        evaluate_delay=0.0,
+    ):
         self.evaluate_result = evaluate_result
         self.goto_exc = goto_exc
+        self.goto_raise_on = goto_raise_on
+        self.commit_on_raise = commit_on_raise
+        self.evaluate_delay = evaluate_delay
+        self.url = "about:blank"
         self.goto_calls = []
         self.evaluate_calls = []
         self.closed = False
 
     async def goto(self, url, **kwargs):
         self.goto_calls.append((url, kwargs))
-        if self.goto_exc is not None:
+        should_raise = self.goto_exc is not None and (
+            self.goto_raise_on is None or url in self.goto_raise_on
+        )
+        if should_raise:
+            if self.commit_on_raise:
+                self.url = url
             raise self.goto_exc
+        self.url = url
 
     async def evaluate(self, script, arg=None):
         self.evaluate_calls.append((script, arg))
+        if self.evaluate_delay:
+            await asyncio.sleep(self.evaluate_delay)
         return self.evaluate_result
 
     async def close(self):
@@ -158,12 +190,68 @@ async def test_post_without_body_raises(monkeypatch):
     assert page.closed is True
 
 
-async def test_navigation_failure_raises_and_closes_page(monkeypatch):
-    page = FakePage(goto_exc=OSError("net err"))
+async def test_pdf_goto_failure_lands_on_origin_and_proceeds(monkeypatch):
+    """A PDF download refused by ``goto`` falls back to the origin.
+
+    ``page.goto`` on a PDF URL raises "Download is starting" before the
+    navigation commits, leaving the page on ``about:blank``. The in-page
+    ``fetch`` would then be cross-origin and CORS-blocked. The pool must
+    navigate to the origin so the fetch is same-origin, then proceed.
+    """
+    pdf_url = "https://example.com/paper.pdf"
+    page = FakePage(
+        goto_exc=OSError("Download is starting"),
+        goto_raise_on={pdf_url},
+        commit_on_raise=False,
+        evaluate_result=_ok_result(),
+    )
+    _patch_launch(monkeypatch, page)
+    pool = browser_pool.BrowserPool()
+    resp = await pool.fetch(FetchRequest(url=pdf_url, method="GET"))
+    assert resp.status == 200
+    # Full-URL goto (refused) + origin fallback goto (landed).
+    assert [c[0] for c in page.goto_calls] == [
+        pdf_url,
+        "https://example.com",
+    ]
+    assert page.url == "https://example.com"
+    assert len(page.evaluate_calls) == 1
+    assert page.closed is True
+
+
+async def test_networkidle_timeout_skips_origin_fallback(monkeypatch):
+    """A networkidle timeout already landed the page — no origin fallback.
+
+    For endpoints that never reach networkidle (OAI streams), ``goto`` raises
+    a TimeoutError but the navigation did commit, so ``page.url`` is the target
+    URL (same-origin). The origin fallback is skipped to avoid a redundant
+    navigation.
+    """
+    oai_url = "https://example.com/oai?verb=ListRecords"
+    page = FakePage(
+        goto_exc=TimeoutError("networkidle timeout"),
+        goto_raise_on={oai_url},
+        commit_on_raise=True,
+        evaluate_result=_ok_result(),
+    )
+    _patch_launch(monkeypatch, page)
+    pool = browser_pool.BrowserPool()
+    resp = await pool.fetch(FetchRequest(url=oai_url, method="GET"))
+    assert resp.status == 200
+    assert [c[0] for c in page.goto_calls] == [oai_url]
+    assert page.url == oai_url
+    assert page.closed is True
+
+
+async def test_evaluate_timeout_raises_and_closes_page(monkeypatch):
+    """A hanging in-page fetch is bounded by the remaining request budget."""
+    page = FakePage(evaluate_result=_ok_result(), evaluate_delay=5.0)
     _patch_launch(monkeypatch, page)
     pool = browser_pool.BrowserPool()
     with pytest.raises(browser_pool.BrowserPoolError):
-        await pool.fetch(FetchRequest(url="https://example.com", method="GET"))
+        await pool.fetch(
+            FetchRequest(url="https://example.com", method="GET", timeout=0.1),
+        )
     assert page.closed is True
 
 
