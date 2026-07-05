@@ -7,6 +7,7 @@ from apps.ingestion.connectors import (
     CyberLeninkaConnector,
     EuropePMCConnector,
     HALConnector,
+    MathNetConnector,
     OpenAlexConnector,
     PMCConnector,
     SciELOConnector,
@@ -954,3 +955,222 @@ class TestSciELOOaiFetch:
         assert len(items) == 1
         assert "Machine learning" in items[0].title
         assert items[0].journal == "Computer Methods"
+
+
+class TestMathNetEnrichParse:
+    """MathNet enrich_raw parses the article page via HTML structure.
+
+    MathNet renders the citation head in ``<title>``, the bibliographic line
+    (journal/year/volume/issue/pages/DOI) in the first ``<i>``, and labeled
+    fields (Abstract/Keywords/Language) as ``<b>Label:</b>`` + sibling text.
+    The previous linearized-text regex mismatched this structure and left
+    authors/journal/volume/issue/pages empty; these tests pin the structural
+    parse against faithful forthcoming and published fixtures.
+    """
+
+    _FORTHCOMING_HTML = (
+        "<html><head><title>S. O. Speranski, A. V. Grefenshtein, "
+        "“On the complexity of first-order logics of probability”, "
+        "Izvestiya Rossiiskoi Akademii Nauk. Seriya Matematicheskaya</title></head>"
+        "<body><i>Izvestiya Rossiiskoi Akademii Nauk. Seriya Matematicheskaya, "
+        "Forthcoming paper</i>"
+        "<b>Abstract:</b> This article is concerned with Halpern logics.<br>"
+        " Keywords follow."
+        "<b>Keywords:</b> probability logic, quantification"
+        "<b>Language:</b> English"
+        "</body></html>"
+    )
+
+    _PUBLISHED_HTML = (
+        "<html><head><title>M. V. Zhitlukhin, "
+        "“Asymptotically optimal strategies in multi-agent market "
+        "models”, Uspekhi Mat. Nauk, 81:3(489) (2026), 3\u201350"
+        "</title></head>"
+        "<body><i>Uspekhi Matematicheskikh Nauk, 2026, Volume 81 , Issue 3(489) , "
+        "Pages 3\u201350 DOI: https://doi.org/10.4213/rm10325</i>"
+        "<b>Abstract:</b> A survey of results on asymptotically optimal strategies."
+        "<b>Keywords:</b> financial mathematics"
+        "<b>Language:</b> Russian"
+        "</body></html>"
+    )
+
+    def test_citation_head_splits_comma_separated_authors(self) -> None:
+        authors, title = MathNetConnector._mathnet_citation_head(
+            "S. O. Speranski, A. V. Grefenshtein, “On probability”, J",
+        )
+        assert authors == "S. O. Speranski, A. V. Grefenshtein"
+        assert title == "On probability"
+
+    def test_citation_head_returns_empty_when_no_quote(self) -> None:
+        assert MathNetConnector._mathnet_citation_head("no quoted title here") == (
+            "",
+            "",
+        )
+
+    def test_italics_meta_published(self) -> None:
+        from bs4 import BeautifulSoup
+
+        soup = BeautifulSoup(self._PUBLISHED_HTML, "lxml")
+        journal, volume, issue, pages, year, doi = (
+            MathNetConnector._mathnet_italics_meta(soup)
+        )
+        assert journal == "Uspekhi Matematicheskikh Nauk"
+        assert volume == "81"
+        assert issue == "3(489)"
+        assert pages == "3\u201350"
+        assert year == "2026"
+        assert doi == "10.4213/rm10325"
+
+    def test_italics_meta_forthcoming_has_journal_only(self) -> None:
+        from bs4 import BeautifulSoup
+
+        soup = BeautifulSoup(self._FORTHCOMING_HTML, "lxml")
+        journal, volume, issue, pages, year, doi = (
+            MathNetConnector._mathnet_italics_meta(soup)
+        )
+        assert journal == "Izvestiya Rossiiskoi Akademii Nauk. Seriya Matematicheskaya"
+        assert volume == issue == pages == year == doi == ""
+
+    def test_italics_meta_journal_name_with_comma_is_not_truncated(self) -> None:
+        from bs4 import BeautifulSoup
+
+        # Journal full name contains a comma; the year marker anchors the
+        # split so "Series A" is preserved.
+        html = (
+            "<html><body><i>Transactions of the Moscow Math. Society, "
+            "Series A, 2026, Volume 71, Issue 3, Pages 174\u2013185 "
+            "DOI: https://doi.org/10.4213/tmm71</i></body></html>"
+        )
+        soup = BeautifulSoup(html, "lxml")
+        journal, volume, issue, pages, year, doi = (
+            MathNetConnector._mathnet_italics_meta(soup)
+        )
+        assert journal == "Transactions of the Moscow Math. Society, Series A"
+        assert volume == "71"
+        assert issue == "3"
+        assert pages == "174\u2013185"
+        assert year == "2026"
+        assert doi == "10.4213/tmm71"
+
+    def test_italics_meta_single_page_is_captured(self) -> None:
+        from bs4 import BeautifulSoup
+
+        # Errata / short notes carry a lone page, not a range.
+        html = (
+            "<html><body><i>Short Notes Journal, 2026, Volume 5, Issue 1, "
+            "Pages 42 DOI: https://doi.org/10.4213/sn5</i></body></html>"
+        )
+        soup = BeautifulSoup(html, "lxml")
+        _journal, _volume, _issue, pages, _year, _doi = (
+            MathNetConnector._mathnet_italics_meta(soup)
+        )
+        assert pages == "42"
+
+    def test_labeled_value_captures_multiline_abstract(self) -> None:
+        from bs4 import BeautifulSoup
+
+        soup = BeautifulSoup(self._FORTHCOMING_HTML, "lxml")
+        abstract = MathNetConnector._mathnet_labeled_value(soup, "Abstract:")
+        assert "Halpern logics" in abstract
+        assert "Keywords follow" in abstract
+
+    def test_language_code_maps_known_labels(self) -> None:
+        assert MathNetConnector._mathnet_language_code("English") == "en"
+        assert MathNetConnector._mathnet_language_code("Russian") == "ru"
+        assert MathNetConnector._mathnet_language_code("Klingon") == ""
+
+    def test_enrich_raw_forthcoming_fills_authors_journal_abstract(
+        self,
+        monkeypatch,
+    ) -> None:
+        from apps.ingestion.connectors.base import RawArticle
+
+        conn = MathNetConnector()
+        monkeypatch.setattr(
+            conn,
+            "_request_text",
+            lambda _url, **_kwargs: self._FORTHCOMING_HTML,
+        )
+        raw = RawArticle(
+            source_key="mathnet",
+            title="On the complexity of first-order logics of probability",
+            url="https://www.mathnet.ru/eng/im9718",
+            abstract="",
+            full_text="",
+            language="en",
+            year=None,
+            doi="",
+            journal="MathNet.Ru",
+        )
+        enriched = conn.enrich_raw(raw)
+        assert enriched.authors == ("S. O. Speranski", "A. V. Grefenshtein")
+        assert (
+            enriched.journal
+            == "Izvestiya Rossiiskoi Akademii Nauk. Seriya Matematicheskaya"
+        )
+        assert "Halpern logics" in enriched.abstract
+        assert enriched.language == "en"
+        # Forthcoming paper has no volume/issue/pages/year in the <i> line.
+        assert enriched.volume == enriched.issue == enriched.pages == ""
+
+    def test_enrich_raw_published_fills_biblio_and_doi(self, monkeypatch) -> None:
+        from apps.ingestion.connectors.base import RawArticle
+
+        conn = MathNetConnector()
+        monkeypatch.setattr(
+            conn,
+            "_request_text",
+            lambda _url, **_kwargs: self._PUBLISHED_HTML,
+        )
+        raw = RawArticle(
+            source_key="mathnet",
+            title="Asymptotically optimal strategies in multi-agent market models",
+            url="https://www.mathnet.ru/eng/rm10325",
+            abstract="",
+            full_text="",
+            language="en",
+            year=None,
+            doi="",
+            journal="MathNet.Ru",
+        )
+        enriched = conn.enrich_raw(raw)
+        assert enriched.authors == ("M. V. Zhitlukhin",)
+        assert (
+            enriched.title
+            == "Asymptotically optimal strategies in multi-agent market models"
+        )
+        assert enriched.journal == "Uspekhi Matematicheskikh Nauk"
+        assert enriched.volume == "81"
+        assert enriched.issue == "3(489)"
+        assert enriched.pages == "3\u201350"
+        assert enriched.year == 2026
+        assert enriched.doi == "10.4213/rm10325"
+        assert enriched.language == "ru"
+        assert "asymptotically optimal strategies" in enriched.abstract
+
+    def test_enrich_raw_keeps_existing_authors_when_title_has_no_quote(
+        self,
+        monkeypatch,
+    ) -> None:
+        from apps.ingestion.connectors.base import RawArticle
+
+        conn = MathNetConnector()
+        monkeypatch.setattr(
+            conn,
+            "_request_text",
+            lambda _url, **_kwargs: "<html></html>",
+        )
+        raw = RawArticle(
+            source_key="mathnet",
+            title="t",
+            url="https://www.mathnet.ru/eng/x1",
+            abstract="",
+            full_text="",
+            language="en",
+            year=None,
+            doi="",
+            journal="MathNet.Ru",
+            authors=("Existing Author",),
+        )
+        enriched = conn.enrich_raw(raw)
+        assert enriched.authors == ("Existing Author",)
