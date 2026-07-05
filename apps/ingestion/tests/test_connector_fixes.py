@@ -576,3 +576,48 @@ class TestChallengeRetryHTTPError:
             conn._challenge_retry_cookie_string(scraper, "https://example.org", None)
             is None
         )
+
+    def test_challenge_retry_cookie_string_does_not_forward_user_agent(
+        self,
+        monkeypatch,
+    ) -> None:
+        """``get_cookie_string`` must not receive a ``user_agent`` kwarg.
+
+        cloudscraper 1.2.71's ``get_cookie_string`` delegates to
+        ``get_tokens`` which only pops a fixed whitelist of kwargs and
+        forwards the rest to ``Session.request``. ``user_agent`` is not in
+        that whitelist, so passing it raised
+        ``TypeError: Session.request() got an unexpected keyword argument
+        'user_agent'``. The user agent is a *return* value of
+        ``get_cookie_string``; it must not be passed as input. This spy
+        reproduces cloudscraper's forwarding behavior and fails the test if
+        the helper regresses.
+        """
+
+        def _spy(*args: object, **kwargs: object) -> tuple[str, str]:
+            if "user_agent" in kwargs:
+                raise TypeError(
+                    "Session.request() got an unexpected keyword argument 'user_agent'",
+                )
+            return "cf_clearance=stub; path=/", "StubbedAgent/1.0"
+
+        monkeypatch.setattr(
+            "apps.ingestion.connectors.base.cloudscraper.get_cookie_string",
+            _spy,
+        )
+
+        class _StubResponse:
+            status_code = 200
+
+            text = "<html>ok</html>"
+
+        def _stub_get(*args: object, **kwargs: object) -> _StubResponse:
+            return _StubResponse()
+
+        conn = SciELOConnector()
+        scraper = conn._build_scraper()
+        monkeypatch.setattr(scraper, "get", _stub_get)
+        assert (
+            conn._challenge_retry_cookie_string(scraper, "https://example.org", None)
+            == "<html>ok</html>"
+        )
