@@ -137,6 +137,25 @@ class OpenAlexConnector(AsyncApiConnector):
         except (ValueError, KeyError, TypeError):
             return ""
 
+    @staticmethod
+    def _extract_journal(item: dict) -> str:
+        """Extract the journal name from primary_location or best_oa_location."""
+        primary_location = item.get("primary_location")
+        source = (
+            primary_location.get("source")
+            if isinstance(primary_location, dict)
+            else None
+        )
+        if isinstance(source, dict):
+            journal = (source.get("display_name") or "").strip()
+            if journal:
+                return journal
+        best_oa = item.get("best_oa_location")
+        oa_source = best_oa.get("source") if isinstance(best_oa, dict) else None
+        if isinstance(oa_source, dict):
+            return (oa_source.get("display_name") or "").strip()
+        return ""
+
     def _extract_from_payload(
         self,
         query: str,  # noqa: ARG002  # required by base class signature
@@ -161,6 +180,7 @@ class OpenAlexConnector(AsyncApiConnector):
                 url = primary_location.get("landing_page_url", "")
             if not url:
                 url = item.get("id", "")
+            journal = self._extract_journal(item)
             authors = [
                 a.get("author", {}).get("display_name", "")
                 for a in item.get("authorships", [])
@@ -179,7 +199,7 @@ class OpenAlexConnector(AsyncApiConnector):
                     full_text=" ".join([title, abstract or ""]),
                     doi=doi,
                     year=year,
-                    journal="",
+                    journal=journal,
                     authors=tuple(authors),
                 ),
             )
