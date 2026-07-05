@@ -311,3 +311,29 @@ async def test_close_after_use_closes_context(monkeypatch):
 async def test_close_when_not_started_is_noop():
     pool = browser_pool.BrowserPool()
     await pool.close()  # must not raise
+
+
+def test_fetch_helper_decodes_text_via_textdecoder_with_charset():
+    """The text path must decode raw bytes with a charset-aware ``TextDecoder``.
+
+    ``Response.text()`` does not honour legacy single-byte charsets declared in
+    the ``Content-Type`` header (MathNet serves ``Windows-1251`` but ``r.text()``
+    decodes as UTF-8, producing U+FFFD mojibake). The helper must instead read
+    ``arrayBuffer()`` and decode with ``TextDecoder`` using the charset extracted
+    from the Content-Type header (falling back to ``<meta charset>`` then UTF-8).
+    The JS is not executed here — we assert the helper encodes that strategy so
+    a regression (e.g. reverting to ``await r.text()``) fails the test.
+    """
+    helper = browser_pool._FETCH_HELPER
+    assert "await r.text()" not in helper, (
+        "helper must not use Response.text() for the text path — it ignores "
+        "legacy charsets and produces mojibake on Windows-1251 pages"
+    )
+    assert "await r.arrayBuffer()" in helper
+    assert "TextDecoder" in helper
+    assert "charset=" in helper
+    # Content-Type charset is the primary source; <meta charset> the secondary.
+    assert "content-type" in helper
+    assert "meta" in helper
+    # Unknown charset labels must not crash the fetch — UTF-8 fallback required.
+    assert "utf-8" in helper
