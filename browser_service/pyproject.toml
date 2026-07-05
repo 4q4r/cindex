@@ -1,0 +1,55 @@
+[project]
+name = "cindex-browser-sidecar"
+version = "0.1.0"
+description = "Headless Chromium fetch sidecar (cloakbrowser) for cindex HTML connectors"
+readme = "README.md"
+requires-python = ">=3.13"
+dependencies = [
+  "cloakbrowser>=0.4.5",
+  "fastapi>=0.115",
+  "uvicorn[standard]>=0.30",
+  "pydantic>=2",
+  "structlog>=24",
+]
+
+[dependency-groups]
+dev = [
+  "ruff>=0.8",
+  "pytest>=8.3",
+  "pytest-asyncio>=0.24",
+  "httpx>=0.27",
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/cindex_browser_sidecar"]
+
+[tool.ruff]
+line-length = 88
+target-version = "py313"
+exclude = [".venv", "node_modules"]
+
+[tool.ruff.lint]
+# Maximally strict — identical to the main cindex project. Only the
+# formatter-conflict rules are ignored (COM812/ISC001), per ruff recommendation
+# when running `ruff format`. The mutually-exclusive docstring pairs
+# (D203/D211, D212/D213) are left for ruff to auto-resolve under --select ALL.
+select = ["ALL"]
+ignore = ["COM812", "ISC001"]
+
+[tool.ruff.lint.per-file-ignores]
+# Tests: conventional relaxations for `select = ["ALL"]`.
+"tests/**" = [
+  "S101", "ANN", "D", "ARG", "PLC0415", "SLF001", "PLR2004", "TRY003", "EM101",
+  "EM102", "FBT001", "FBT002", "FBT003", "S314", "S310", "PT018", "INP001",
+  "N999", "A002", "ANN401", "PLR0913", "TRY300", "TRY301", "PERF401", "RET504",
+  "S108", "PLR0915", "PLR0904",
+]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]
+addopts = ["--strict-markers", "--strict-config", "-ra", "--tb=short"]

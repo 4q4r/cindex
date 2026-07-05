@@ -1,7 +1,5 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
-
 import pymupdf
 
 from apps.ingestion.connectors import BaseConnector, RawArticle, SourceProfile
@@ -46,16 +44,6 @@ def _build_pdf_bytes(text: str) -> bytes:
     return "".join(parts + xref_lines + [trailer]).encode("latin-1")
 
 
-@dataclass
-class _PdfResponse:
-    """Pdf Response class."""
-
-    content: bytes
-    text: str
-    headers: dict[str, str]
-    status_code: int = 200
-
-
 class PdfConnector(BaseConnector):
     """Pdf source connector."""
 
@@ -64,14 +52,19 @@ class PdfConnector(BaseConnector):
         search_url="https://example.org/search",
     )
 
-    def _request_response(self, url: str, params=None, accept=None):  # type: ignore[override]
+    def _request_text(
+        self,
+        url: str,
+        params: dict[str, str] | None = None,
+        *,
+        ocr_language: str = "eng",
+    ) -> str:
+        """Serve a canned PDF payload through the real extraction path."""
         pdf_bytes = _build_pdf_bytes("Hello PDF world for scholarly extraction")
-        response = _PdfResponse(
-            content=pdf_bytes,
-            text=pdf_bytes.decode("latin-1"),
-            headers={"Content-Type": "application/pdf"},
+        return self._extract_pdf_text_with_language(
+            pdf_bytes,
+            ocr_language=ocr_language,
         )
-        return self._build_scraper(), response, response.text
 
 
 class LandingPdfConnector(BaseConnector):
@@ -82,16 +75,20 @@ class LandingPdfConnector(BaseConnector):
         search_url="https://example.org/search",
     )
 
-    def _request_response(self, url: str, params=None, accept=None):  # type: ignore[override]
+    def _request_text(
+        self,
+        url: str,
+        params: dict[str, str] | None = None,
+        *,
+        ocr_language: str = "eng",
+    ) -> str:
+        """Serve the landing HTML, or a canned PDF when the URL targets a PDF."""
         if url.endswith(".pdf"):
-            pdf_bytes = _build_pdf_bytes("Landing page resolved to PDF body text")
-            response = _PdfResponse(
-                content=pdf_bytes,
-                text=pdf_bytes.decode("latin-1"),
-                headers={"Content-Type": "application/pdf"},
+            return self._extract_pdf_text_with_language(
+                _build_pdf_bytes("Landing page resolved to PDF body text"),
+                ocr_language=ocr_language,
             )
-            return self._build_scraper(), response, response.text
-        html = (
+        return (
             "<html><head>"
             "<meta name='citation_pdf_url' content='https://example.org/article.pdf'>"
             "</head><body>"
@@ -99,12 +96,13 @@ class LandingPdfConnector(BaseConnector):
             "<p>Landing metadata only</p>"
             "</body></html>"
         )
-        response = _PdfResponse(
-            content=html.encode("utf-8"),
-            text=html,
-            headers={"Content-Type": "text/html; charset=utf-8"},
+
+    def _request_pdf_text(self, url: str, *, ocr_language: str = "eng") -> str:
+        """Serve the canned landing-page PDF payload through extraction."""
+        return self._extract_pdf_text_with_language(
+            _build_pdf_bytes("Landing page resolved to PDF body text"),
+            ocr_language=ocr_language,
         )
-        return self._build_scraper(), response, response.text
 
 
 class _OcrPage:

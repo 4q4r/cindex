@@ -8,7 +8,6 @@ from typing import TYPE_CHECKING
 
 import aiohttp
 import structlog
-from cloudscraper.exceptions import CloudflareException
 from django.utils import timezone
 from requests.exceptions import RequestException
 
@@ -354,7 +353,6 @@ class IngestionService:
             RuntimeError,
             ConnectionError,
             ConnectorFetchError,
-            CloudflareException,
             RequestException,
             aiohttp.ClientError,
         ) as exc:

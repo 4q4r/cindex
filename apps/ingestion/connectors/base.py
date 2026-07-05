@@ -1,26 +1,26 @@
 """Base connector primitives for source ingestion.
 
-Provides BaseConnector (HTML/cloudscraper transport) and AsyncApiConnector
-(aiohttp transport), shared by all source connectors.
+Provides BaseConnector (HTML transport via the cloakbrowser sidecar) and
+AsyncApiConnector (aiohttp transport), shared by all source connectors.
 """
 
 from __future__ import annotations
 
 import asyncio
+import base64
 import json
 import os
 import re
 import time
 from dataclasses import dataclass, replace
 from datetime import UTC, datetime
+from functools import cached_property
 from urllib.parse import quote_plus, urljoin
 
 import aiohttp
-import cloudscraper
 import pymupdf
 import requests
 import structlog
-from browserforge.headers import Browser, HeaderGenerator
 from bs4 import BeautifulSoup, Tag
 
 from apps.core.text import normalize_scholarly_text
@@ -104,6 +104,256 @@ class ConnectorFetchError(Exception):
     """Raised when source content is blocked, invalid, or unavailable."""
 
 
+DEFAULT_BROWSER_URL = "http://browser:8081"
+DEFAULT_BROWSER_TIMEOUT_SECONDS = 25.0
+# Headroom over the upstream timeout so the sidecar can return its own 504
+# instead of the worker's HTTP call timing out first.
+_BROWSER_HTTP_TIMEOUT_MARGIN = 10.0
+HTTP_OK_STATUS = 200
+
+
+@dataclass(frozen=True)
+class FetchResult:
+    """Decoded browser sidecar response.
+
+    Attributes:
+        status: Upstream server's HTTP status (not the sidecar's).
+        content_type: Upstream ``Content-Type`` header value (lowercased).
+        body_bytes: Raw response bytes. For text payloads the bytes are
+            re-encoded as UTF-8 so callers can feed them to PDF detection
+            without a separate decode pass.
+        body_text: Browser-decoded text for text content types, or ``None``
+            for binary (base64) payloads such as PDFs.
+
+    """
+
+    status: int
+    content_type: str
+    body_bytes: bytes
+    body_text: str | None
+
+
+class BrowserTransport:
+    """Sync HTTP client forwarding fetches to the cloakbrowser sidecar.
+
+    The distroless cindex worker cannot run a real browser, so HTML-mode
+    connectors proxy every HTTP request through a sidecar service that owns
+    a persistent cloakbrowser (source-patched Chromium) context. The sidecar
+    solves JS challenges (BunnyCDN Shield, Cloudflare Turnstile) and returns
+    the raw upstream body. This class is the thin sync client the connectors
+    use to talk to that sidecar over the internal docker network.
+
+    Each public method builds a JSON fetch request, POSTs it to the sidecar's
+    ``/fetch`` endpoint, and decodes the response into a :class:`FetchResult`.
+    Transient sidecar/network failures are retried with linear backoff;
+    upstream HTTP errors (``status >= 400``) and non-retryable sidecar errors
+    raise :class:`ConnectorFetchError`.
+    """
+
+    def __init__(
+        self,
+        *,
+        base_url: str | None = None,
+        source_key: str = "",
+        max_attempts: int = 3,
+        timeout_seconds: float = DEFAULT_BROWSER_TIMEOUT_SECONDS,
+    ) -> None:
+        """Configure the transport with a sidecar URL and retry policy.
+
+        Args:
+            base_url: Sidecar base URL. Defaults to the ``CINDEX_BROWSER_URL``
+                environment variable or ``http://browser:8081``.
+            source_key: Source identifier used in error messages.
+            max_attempts: Maximum number of attempts per request.
+            timeout_seconds: Per-request upstream fetch timeout forwarded
+                to the sidecar.
+
+        """
+        resolved = base_url or os.getenv("CINDEX_BROWSER_URL", DEFAULT_BROWSER_URL)
+        self._base_url = resolved.rstrip("/")
+        self._source_key = source_key
+        self._max_attempts = max(1, max_attempts)
+        self._timeout_seconds = float(timeout_seconds)
+        self._session = requests.Session()
+
+    def fetch(
+        self,
+        url: str,
+        *,
+        params: dict[str, str] | None = None,
+        accept: str | None = None,
+        timeout: float | None = None,
+    ) -> FetchResult:
+        """GET a resource through the sidecar."""
+        payload = self._payload(
+            url,
+            method="GET",
+            params=params,
+            accept=accept,
+            timeout=timeout,
+        )
+        return self._post(payload)
+
+    def post_form(
+        self,
+        url: str,
+        data: dict[str, str],
+        *,
+        accept: str | None = None,
+        timeout: float | None = None,
+    ) -> FetchResult:
+        """POST an ``application/x-www-form-urlencoded`` form."""
+        payload = self._payload(
+            url,
+            method="POST",
+            data=data,
+            accept=accept,
+            timeout=timeout,
+        )
+        return self._post(payload)
+
+    def post_json(
+        self,
+        url: str,
+        json_body: object,
+        *,
+        accept: str | None = None,
+        timeout: float | None = None,
+    ) -> FetchResult:
+        """POST a JSON body."""
+        payload = self._payload(
+            url,
+            method="POST",
+            json_body=json_body,
+            accept=accept,
+            timeout=timeout,
+        )
+        return self._post(payload)
+
+    def _payload(  # noqa: PLR0913  # many kwargs map 1:1 to sidecar fields
+        self,
+        url: str,
+        *,
+        method: str,
+        params: dict[str, str] | None = None,
+        data: dict[str, str] | None = None,
+        json_body: object | None = None,
+        accept: str | None = None,
+        timeout: float | None,
+    ) -> dict[str, object]:
+        """Build the sidecar fetch request payload."""
+        body: dict[str, object] = {
+            "url": url,
+            "method": method,
+            "timeout": float(
+                timeout if timeout is not None else self._timeout_seconds,
+            ),
+        }
+        if params is not None:
+            body["params"] = params
+        if data is not None:
+            body["data"] = data
+        if json_body is not None:
+            body["json"] = json_body
+        if accept is not None:
+            body["accept"] = accept
+        return body
+
+    def _post(self, payload: dict[str, object]) -> FetchResult:
+        """POST a fetch request to the sidecar with retry/backoff.
+
+        Retries transient sidecar failures (network errors, 502, 504) up to
+        ``max_attempts``. Non-retryable sidecar errors (422, other 4xx/5xx)
+        and upstream HTTP errors (``status >= 400`` in the 200 body) raise
+        :class:`ConnectorFetchError` immediately.
+        """
+        endpoint = f"{self._base_url}/fetch"
+        http_timeout = float(payload["timeout"]) + _BROWSER_HTTP_TIMEOUT_MARGIN
+        last_error: Exception | None = None
+        for attempt in range(1, self._max_attempts + 1):
+            try:
+                response = self._session.post(
+                    endpoint,
+                    json=payload,
+                    timeout=http_timeout,
+                )
+            except requests.RequestException as exc:
+                last_error = exc
+                if attempt < self._max_attempts:
+                    time.sleep(0.6 * attempt)
+                    continue
+                msg = f"{self._source_key}: browser sidecar unreachable: {exc}"
+                raise ConnectorFetchError(msg) from exc
+            status = response.status_code
+            if status == HTTP_OK_STATUS:
+                try:
+                    result = self._parse(response.json())
+                except ValueError as exc:
+                    # sidecar returned 200 with a non-JSON body — fail loudly
+                    # rather than surfacing a requests.JSONDecodeError.
+                    msg = f"{self._source_key}: browser sidecar returned non-JSON body"
+                    raise ConnectorFetchError(msg) from exc
+                if result.status >= HTTP_ERROR_THRESHOLD:
+                    msg = f"{self._source_key}: http {result.status}"
+                    raise ConnectorFetchError(msg)
+                return result
+            if status in (502, 504):
+                last_error = ConnectorFetchError(
+                    f"{self._source_key}: browser sidecar returned {status}",
+                )
+                if attempt < self._max_attempts:
+                    time.sleep(0.6 * attempt)
+                    continue
+                msg = (
+                    f"{self._source_key}: browser sidecar returned {status}"
+                    " after retries"
+                )
+                raise ConnectorFetchError(msg)
+            # 422 (invalid payload) or other 4xx/5xx — no retry.
+            msg = f"{self._source_key}: browser sidecar returned {status}"
+            raise ConnectorFetchError(msg)
+        # Unreachable: the loop either returns or raises on every path.
+        msg = f"{self._source_key}: browser sidecar request failed: {last_error}"
+        raise ConnectorFetchError(msg)
+
+    def _parse(self, data: object) -> FetchResult:
+        """Decode the sidecar JSON response into a :class:`FetchResult`."""
+        if not isinstance(data, dict):
+            msg = f"{self._source_key}: browser sidecar returned non-object response"
+            raise ConnectorFetchError(msg)
+        status = data.get("status")
+        body = data.get("body")
+        if status is None or body is None:
+            msg = (
+                f"{self._source_key}: browser sidecar returned incomplete"
+                f" response: {data!r}"
+            )
+            raise ConnectorFetchError(msg)
+        content_type = str(data.get("content_type") or "")
+        encoding = str(data.get("encoding") or "text")
+        if encoding == "base64":
+            try:
+                body_bytes = base64.b64decode(body, validate=True)
+            except (ValueError, TypeError) as exc:
+                msg = (
+                    f"{self._source_key}: browser sidecar returned invalid base64 body"
+                )
+                raise ConnectorFetchError(msg) from exc
+            return FetchResult(
+                status=int(status),
+                content_type=content_type,
+                body_bytes=body_bytes,
+                body_text=None,
+            )
+        body_text = str(body)
+        return FetchResult(
+            status=int(status),
+            content_type=content_type,
+            body_bytes=body_text.encode("utf-8"),
+            body_text=body_text,
+        )
+
+
 @dataclass(frozen=True)
 class SourceProfile:
     """Source Profile class."""
@@ -146,12 +396,27 @@ class RawArticle:
 
 
 class BaseConnector:
-    """Base source connector for HTML-mode sources (uses cloudscraper)."""
+    """Base source connector for HTML-mode sources (browser sidecar transport).
+
+    HTML-mode connectors never make raw HTTP requests themselves: every fetch
+    is proxied through a cloakbrowser sidecar service (see
+    :class:`BrowserTransport`) so JS challenges (BunnyCDN Shield, Cloudflare
+    Turnstile) are solved by a real Chromium and the raw upstream body is
+    returned to the worker.
+    """
 
     profile: SourceProfile
     REQUEST_TIMEOUT_SECONDS = 25
     MAX_ATTEMPTS = 3
-    _header_generator: HeaderGenerator | None = None
+
+    @cached_property
+    def _transport(self) -> BrowserTransport:
+        """Lazy browser sidecar HTTP transport bound to this source."""
+        return BrowserTransport(
+            source_key=self.profile.source_key,
+            max_attempts=self.MAX_ATTEMPTS,
+            timeout_seconds=self.REQUEST_TIMEOUT_SECONDS,
+        )
 
     def fetch(self, query: str, limit: int = 5) -> list[RawArticle]:
         """Fetch records from the upstream source."""
@@ -302,48 +567,6 @@ class BaseConnector:
             preprint_evidence=preprint_evidence[:3000],
         )
 
-    @staticmethod
-    def _build_scraper() -> cloudscraper.CloudScraper:
-        """Build scraper."""
-        kwargs: dict = {
-            "interpreter": "native",
-            "browser": {"browser": "chrome", "platform": "linux", "mobile": False},
-            "delay": 8,
-        }
-        captcha_provider = os.getenv("CLOUDSCRAPER_CAPTCHA_PROVIDER", "").strip()
-        captcha_key = os.getenv("CLOUDSCRAPER_CAPTCHA_API_KEY", "").strip()
-        if captcha_provider and captcha_key:
-            kwargs["captcha"] = {
-                "provider": captcha_provider,
-                "api_key": captcha_key,
-            }
-        return cloudscraper.create_scraper(**kwargs)
-
-    @classmethod
-    def _get_header_generator(cls) -> HeaderGenerator:
-        """Return header generator."""
-        if cls._header_generator is None:
-            cls._header_generator = HeaderGenerator(
-                browser=[
-                    Browser(name="chrome", min_version=120),
-                    Browser(name="firefox", min_version=120),
-                    Browser(name="edge", min_version=120),
-                ],
-            )
-        return cls._header_generator
-
-    @classmethod
-    def _generate_headers(cls) -> dict[str, str]:
-        """Generate browser-like request headers."""
-        headers = cls._get_header_generator().generate()
-        headers.setdefault("Accept", "text/html,application/xhtml+xml,*/*")
-        # browserforge emits "Accept-Encoding: gzip, deflate, br" but the
-        # runtime image has no brotli decoder, so brotli responses would be
-        # returned as compressed bytes and ``response.text`` would yield
-        # garbage. Restrict to encodings urllib3 decodes transparently.
-        headers["Accept-Encoding"] = "gzip, deflate"
-        return dict(headers)
-
     @classmethod
     def _looks_like_challenge_page(cls, text: str) -> bool:
         """Detect Cloudflare or similar challenge pages."""
@@ -369,176 +592,6 @@ class BaseConnector:
             "proof-of-work scheme",
         )
         return any(marker in lowered for marker in markers)
-
-    def _challenge_retry(
-        self,
-        scraper: cloudscraper.CloudScraper,
-        url: str,
-        params: dict[str, str] | None,
-    ) -> str | None:
-        """Retry a Cloudflare challenge by fetching tokens."""
-        try:
-            tokens, user_agent = cloudscraper.get_tokens(
-                url,
-                browser={"browser": "chrome", "platform": "linux", "mobile": False},
-            )
-            headers = self._generate_headers()
-            headers["User-Agent"] = user_agent
-            headers = {
-                **headers,
-                "Referer": url,
-            }
-            response = scraper.get(
-                url,
-                params=params,
-                headers=headers,
-                cookies=tokens,
-                timeout=self.REQUEST_TIMEOUT_SECONDS,
-            )
-            if int(response.status_code) >= HTTP_ERROR_THRESHOLD:
-                return None
-        except (
-            ValueError,
-            RuntimeError,
-            ConnectionError,
-            TimeoutError,
-            requests.RequestException,
-        ):
-            # pragma: no cover - network dependent
-            # ``cloudscraper.get_tokens`` raises ``requests.HTTPError`` (a
-            # ``RequestException`` subclass) when the upstream answers 403
-            # before tokens can be collected; let the caller fall back to
-            # the next transport instead of propagating the raw error.
-            return None
-        else:
-            return response.text
-
-    def _challenge_retry_cookie_string(
-        self,
-        scraper: cloudscraper.CloudScraper,
-        url: str,
-        params: dict[str, str] | None,
-    ) -> str | None:
-        """Retry a Cloudflare challenge by fetching a cookie string."""
-        try:
-            generated_headers = self._generate_headers()
-            # ``cloudscraper.get_cookie_string`` does not accept a
-            # ``user_agent`` keyword: it delegates to ``get_tokens`` which
-            # only pops a fixed whitelist of kwargs and forwards the rest to
-            # ``Session.request``. Passing ``user_agent=`` therefore raises
-            # ``TypeError``. The user agent is a *return* value here; the
-            # resolved agent is applied to ``headers`` below.
-            cookie_header, user_agent = cloudscraper.get_cookie_string(url)
-            headers = {
-                **generated_headers,
-                "User-Agent": user_agent,
-                "Referer": url,
-                "Cookie": cookie_header,
-            }
-            response = scraper.get(
-                url,
-                params=params,
-                headers=headers,
-                timeout=self.REQUEST_TIMEOUT_SECONDS,
-            )
-            if int(response.status_code) >= HTTP_ERROR_THRESHOLD:
-                return None
-        except (
-            ValueError,
-            RuntimeError,
-            ConnectionError,
-            TimeoutError,
-            requests.RequestException,
-        ):
-            # pragma: no cover - network dependent
-            # ``cloudscraper.get_cookie_string`` raises ``requests.HTTPError``
-            # (a ``RequestException`` subclass) when the upstream answers 403
-            # before a cookie string can be collected; let the caller fall
-            # back to the next transport instead of propagating the raw error.
-            return None
-        else:
-            return response.text
-
-    def _resolve_cloudflare_challenge(
-        self,
-        scraper: cloudscraper.CloudScraper,
-        url: str,
-        params: dict[str, str] | None,
-        body: str,
-        status: int,
-    ) -> tuple[str, int]:
-        """Attempt to resolve a Cloudflare challenge page.
-
-        Returns the resolved body and status code, or the original
-        body and status if no challenge was detected.
-        """
-        if status == HTTP_FORBIDDEN_STATUS or self._looks_like_challenge_page(body):
-            solved = self._challenge_retry(scraper, url, params)
-            if not solved:
-                solved = self._challenge_retry_cookie_string(scraper, url, params)
-            if solved:
-                return solved, 200
-        return body, status
-
-    def _request_response(
-        self,
-        url: str,
-        params: dict[str, str] | None = None,
-        accept: str | None = None,
-    ) -> tuple[cloudscraper.CloudScraper, object, str]:
-        """Send a request for response."""
-        scraper = self._build_scraper()
-        last_error: Exception | None = None
-        for attempt in range(1, self.MAX_ATTEMPTS + 1):
-            try:
-                headers = self._generate_headers()
-                if accept:
-                    headers.setdefault("Accept", accept)
-                response = scraper.get(
-                    url,
-                    params=params,
-                    headers=headers,
-                    timeout=self.REQUEST_TIMEOUT_SECONDS,
-                )
-                status = int(response.status_code)
-                # XML/RSS/Atom feeds are UTF-8 by default (per XML spec), but
-                # when the server omits a charset parameter on a ``text/*``
-                # content type, requests falls back to ISO-8859-1 and produces
-                # mojibake (e.g. Persee OAI). Force UTF-8 for XML payloads.
-                content_type = (response.headers.get("Content-Type") or "").lower()
-                if (
-                    "xml" in content_type
-                    or "rss" in content_type
-                    or "atom" in content_type
-                ) and "charset" not in content_type:
-                    response.encoding = "utf-8"
-                body = response.text
-                body, status = self._resolve_cloudflare_challenge(
-                    scraper,
-                    url,
-                    params,
-                    body,
-                    status,
-                )
-                if status >= HTTP_ERROR_THRESHOLD:
-                    msg = f"{self.profile.source_key}: http {status}"
-                    raise ConnectorFetchError(msg)  # noqa: TRY301  # contextual validation raise
-                if self._looks_like_challenge_page(body):
-                    msg = f"{self.profile.source_key}: cloudflare challenge unresolved"
-                    raise ConnectorFetchError(msg)  # noqa: TRY301  # contextual validation raise
-            except ConnectorFetchError:
-                raise
-            except (ValueError, RuntimeError, ConnectionError, TimeoutError) as exc:
-                # pragma: no cover - network dependent
-                last_error = exc
-                if attempt < self.MAX_ATTEMPTS:
-                    time.sleep(0.6 * attempt)
-            else:
-                return scraper, response, body
-        msg = f"{self.profile.source_key}: request failed after retries: {last_error}"
-        raise ConnectorFetchError(
-            msg,
-        )
 
     @staticmethod
     def _is_pdf_response(url: str, content_type: str, body: bytes) -> bool:
@@ -604,15 +657,26 @@ class BaseConnector:
         *,
         ocr_language: str = "eng",
     ) -> str:
-        """Send a request for text."""
-        _, response, body_text = self._request_response(url, params=params)
-        content_type = str(response.headers.get("Content-Type", ""))
-        body_bytes = bytes(response.content or b"")
-        if self._is_pdf_response(url, content_type, body_bytes):
+        """Fetch a text resource (HTML/XML/RSS/JSON) via the browser sidecar.
+
+        PDF responses are detected by URL/content-type/magic bytes and routed
+        through the PDF text extractor. A residual challenge page — the sidecar
+        normally solves JS challenges in a real Chromium, but a misconfigured
+        source could still serve one — is treated as a fetch error rather than
+        returned as article content.
+        """
+        result = self._transport.fetch(url, params=params)
+        if self._is_pdf_response(url, result.content_type, result.body_bytes):
             return self._extract_pdf_text_with_language(
-                body_bytes,
+                result.body_bytes,
                 ocr_language=ocr_language,
             )
+        body_text = result.body_text
+        if body_text is None:
+            body_text = result.body_bytes.decode("utf-8", errors="replace")
+        if self._looks_like_challenge_page(body_text):
+            msg = f"{self.profile.source_key}: cloudflare challenge unresolved"
+            raise ConnectorFetchError(msg)
         return body_text
 
     def _request_pdf_text(
@@ -622,18 +686,15 @@ class BaseConnector:
         ocr_language: str = "eng",
     ) -> str:
         """Fetch a PDF resource and extract its textual content."""
-        _, response, body_text = self._request_response(
-            url,
-            params=None,
-            accept="application/pdf,*/*",
-        )
-        content_type = str(response.headers.get("Content-Type", ""))
-        body_bytes = bytes(response.content or b"")
-        if self._is_pdf_response(url, content_type, body_bytes):
+        result = self._transport.fetch(url, accept="application/pdf,*/*")
+        if self._is_pdf_response(url, result.content_type, result.body_bytes):
             return self._extract_pdf_text_with_language(
-                body_bytes,
+                result.body_bytes,
                 ocr_language=ocr_language,
             )
+        body_text = result.body_text
+        if body_text is None:
+            body_text = result.body_bytes.decode("utf-8", errors="replace")
         if body_text:
             return normalize_scholarly_text(body_text)
         return ""
@@ -649,34 +710,29 @@ class BaseConnector:
         return self._extract_from_html(query, soup, limit)
 
     def _request_json(self, url: str) -> dict:
-        """Send a request for JSON."""
-        last_error: Exception | None = None
-        for attempt in range(1, self.MAX_ATTEMPTS + 1):
-            try:
-                _, _, body = self._request_response(
-                    url,
-                    params=None,
-                    accept="application/json,text/plain,*/*",
-                )
-                payload = json.loads(body)
-                if not isinstance(payload, dict):
-                    msg = f"{self.profile.source_key}: invalid JSON payload type"
-                    raise ConnectorFetchError(msg)  # noqa: TRY301  # contextual validation raise
-            except ConnectorFetchError:
-                raise
-            except (ValueError, RuntimeError, ConnectionError, TimeoutError) as exc:
-                last_error = exc
-                if attempt < self.MAX_ATTEMPTS:
-                    time.sleep(0.6 * attempt)
-            else:
-                return payload
-        msg = (
-            f"{self.profile.source_key}: json request failed after retries:"
-            f" {last_error}"
+        """Fetch a JSON resource via the browser sidecar and parse it.
+
+        Transient transport failures (sidecar 502/504, network) are retried by
+        ``BrowserTransport``; a payload that is not a JSON object once decoded
+        is a contract violation, not a transient error, and is raised
+        immediately.
+        """
+        result = self._transport.fetch(
+            url,
+            accept="application/json,text/plain,*/*",
         )
-        raise ConnectorFetchError(
-            msg,
-        )
+        body_text = result.body_text
+        if body_text is None:
+            body_text = result.body_bytes.decode("utf-8", errors="replace")
+        try:
+            payload = json.loads(body_text)
+        except json.JSONDecodeError as exc:
+            msg = f"{self.profile.source_key}: invalid JSON payload: {exc}"
+            raise ConnectorFetchError(msg) from exc
+        if not isinstance(payload, dict):
+            msg = f"{self.profile.source_key}: invalid JSON payload type"
+            raise ConnectorFetchError(msg)
+        return payload
 
     def _fetch_api(self, query: str, limit: int) -> list[RawArticle]:
         """Fetch API."""
@@ -1106,10 +1162,13 @@ class BaseConnector:
 
 
 class AsyncApiConnector(BaseConnector):
-    """Base connector for API-mode sources using aiohttp instead of cloudscraper.
+    """Base connector for API-mode sources using aiohttp.
 
-    API-mode connectors do not need Cloudflare challenge handling.
-    They use aiohttp for all HTTP requests (both async and sync contexts).
+    API-mode sources expose explicit JSON endpoints that do not sit behind a
+    JS challenge, so they bypass the browser sidecar and talk to the upstream
+    directly over aiohttp. Both the async entry point and the sync ``fetch``
+    wrapper (which drives the coroutine via ``asyncio.run``) share the same
+    aiohttp session.
     """
 
     profile: SourceProfile
