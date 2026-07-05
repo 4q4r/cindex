@@ -391,8 +391,20 @@ async ([url, headers, data]) => {
 # Shared helper injected into every fetch script. Decides text vs binary by
 # content-type so PDFs (and other binary payloads) are returned as base64
 # bytes (preserving them for the worker's PDF parser) while HTML/XML/JSON/RSS
-# are returned as browser-decoded text (preserving charset detection). The
-# helper is appended to each script before ``page.evaluate``.
+# are returned as browser-decoded text.
+#
+# Charset handling: ``Response.text()`` does NOT always honour a legacy
+# single-byte charset declared in the ``Content-Type`` header (e.g. MathNet
+# serves ``text/html; charset=Windows-1251`` but ``r.text()`` decodes the
+# Cyrillic bytes as UTF-8, producing 156 U+FFFD replacement characters on a
+# typical article page). We therefore read the raw ``arrayBuffer()`` and decode
+# it ourselves with a ``TextDecoder`` configured from, in order of preference:
+#   1. the ``charset=`` parameter of the Content-Type header,
+#   2. a ``<meta charset>`` tag in the first 1 KiB of the body,
+#   3. UTF-8 as the final fallback.
+# WHATWG ``TextDecoder`` supports the legacy single-byte labels we need
+# (``windows-1251``, ``koi8-r``, ``iso-8859-N`` mapped to ``windows-125N``);
+# an unknown label throws ``RangeError`` and we fall back to UTF-8.
 _FETCH_HELPER = """
 async function __toResult(r) {
   const ct = (r.headers.get('content-type') || '').toLowerCase();
@@ -407,9 +419,27 @@ async function __toResult(r) {
     || ct.includes('svg')
     || ct.includes('yaml');
   if (isText) {
+    const buf = new Uint8Array(await r.arrayBuffer());
+    let charset = '';
+    const ctMatch = ct.match(/charset=([^\\s;]+)/i);
+    // Strip surrounding quotes (RFC 7231 permits ``charset="windows-1251"``);
+    // a quoted label would otherwise throw RangeError in TextDecoder and
+    // silently fall back to UTF-8, reintroducing the mojibake this fixes.
+    if (ctMatch) charset = ctMatch[1].toLowerCase().replace(/^["']|["']$/g, '');
+    if (!charset) {
+      const head = new TextDecoder('utf-8').decode(buf.slice(0, 1024));
+      const metaMatch = head.match(/<meta[^>]+charset=["'?\\s]*([\\w-]+)/i);
+      if (metaMatch) charset = metaMatch[1].toLowerCase();
+    }
+    let body;
+    try {
+      body = new TextDecoder(charset || 'utf-8').decode(buf);
+    } catch (err) {
+      body = new TextDecoder('utf-8').decode(buf);
+    }
     return {
       status: r.status,
-      body: await r.text(),
+      body,
       contentType: ct,
       encoding: 'text',
     };
