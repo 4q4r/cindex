@@ -750,6 +750,38 @@ class TestSciELOOaiJournal:
         assert SciELOConnector._clean_oai_journal("") == ""
 
 
+class TestSciELORssAuthors:
+    """_split_rss_authors parses SciELO RSS ``<author>`` semicolon lists.
+
+    SciELO RSS author blobs are ``;``-separated ``Last, First`` pairs; the
+    inner comma must not split a name, and the parsed list must be stored on
+    the RawArticle (previously parsed then discarded).
+    """
+
+    def test_splits_semicolon_list_preserving_inner_commas(self) -> None:
+        blob = (
+            "Cervantes-Guerrero, Mario Daniel; Galván-Tejada, Carlos E.; Cruz, Miguel"
+        )
+        assert SciELOConnector._split_rss_authors(blob) == (
+            "Cervantes-Guerrero, Mario Daniel",
+            "Galván-Tejada, Carlos E.",
+            "Cruz, Miguel",
+        )
+
+    def test_single_name_without_semicolon(self) -> None:
+        assert SciELOConnector._split_rss_authors("Adnan Muhisn, Sinan") == (
+            "Adnan Muhisn, Sinan",
+        )
+
+    def test_dedupes_preserving_order(self) -> None:
+        blob = "Smith, J.; Jones, A.; Smith, J."
+        assert SciELOConnector._split_rss_authors(blob) == ("Smith, J.", "Jones, A.")
+
+    def test_empty_returns_empty_tuple(self) -> None:
+        assert SciELOConnector._split_rss_authors("") == ()
+        assert SciELOConnector._split_rss_authors("   ;  ; ") == ()
+
+
 class TestSciELOQueryTerms:
     """_query_terms normalizes a query into matchable tokens."""
 
