@@ -1031,6 +1031,41 @@ class TestMathNetEnrichParse:
         assert journal == "Izvestiya Rossiiskoi Akademii Nauk. Seriya Matematicheskaya"
         assert volume == issue == pages == year == doi == ""
 
+    def test_italics_meta_journal_name_with_comma_is_not_truncated(self) -> None:
+        from bs4 import BeautifulSoup
+
+        # Journal full name contains a comma; the year marker anchors the
+        # split so "Series A" is preserved.
+        html = (
+            "<html><body><i>Transactions of the Moscow Math. Society, "
+            "Series A, 2026, Volume 71, Issue 3, Pages 174\u2013185 "
+            "DOI: https://doi.org/10.4213/tmm71</i></body></html>"
+        )
+        soup = BeautifulSoup(html, "lxml")
+        journal, volume, issue, pages, year, doi = (
+            MathNetConnector._mathnet_italics_meta(soup)
+        )
+        assert journal == "Transactions of the Moscow Math. Society, Series A"
+        assert volume == "71"
+        assert issue == "3"
+        assert pages == "174\u2013185"
+        assert year == "2026"
+        assert doi == "10.4213/tmm71"
+
+    def test_italics_meta_single_page_is_captured(self) -> None:
+        from bs4 import BeautifulSoup
+
+        # Errata / short notes carry a lone page, not a range.
+        html = (
+            "<html><body><i>Short Notes Journal, 2026, Volume 5, Issue 1, "
+            "Pages 42 DOI: https://doi.org/10.4213/sn5</i></body></html>"
+        )
+        soup = BeautifulSoup(html, "lxml")
+        _journal, _volume, _issue, pages, _year, _doi = (
+            MathNetConnector._mathnet_italics_meta(soup)
+        )
+        assert pages == "42"
+
     def test_labeled_value_captures_multiline_abstract(self) -> None:
         from bs4 import BeautifulSoup
 

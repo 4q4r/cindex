@@ -692,11 +692,22 @@ class MathNetConnector(BaseConnector):
                 break
         if not line:
             return "", "", "", "", "", ""
-        journal = line.split(",", 1)[0].strip()
+        # Journal is the text before the year marker (published) or the
+        # "Forthcoming" marker; anchoring avoids truncating journal names
+        # that themselves contain a comma (e.g. "Transactions of the Moscow
+        # Math. Society, Series A").
+        journal_match = re.match(r"\s*(.+?)\s*,\s*(?:\d{4}|Forthcoming)", line)
+        journal = (
+            journal_match.group(1).strip()
+            if journal_match
+            else line.split(",", 1)[0].strip()
+        )
         year_match = re.search(r",\s*(\d{4})\s*,", line)
         volume_match = re.search(r"Volume\s+(\d+)", line)
         issue_match = re.search(r"Issue\s+(\d+(?:\(\d+\))?)", line)
-        pages_match = re.search(r"Pages\s+([\d]+[–-][\d]+)", line)  # noqa: RUF001
+        # Page range uses an en-dash or hyphen; a lone page (errata, short
+        # notes) is captured too.
+        pages_match = re.search(r"Pages\s+(\d+(?:[–-]\d+)?)", line)  # noqa: RUF001
         doi_match = re.search(r"doi\.org/(10\.\S+?)(?:\s|$)", line, re.IGNORECASE)
         return (
             journal[:300],
