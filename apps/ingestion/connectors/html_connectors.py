@@ -16,6 +16,7 @@ from urllib.parse import quote_plus, urljoin, urlparse
 from xml.etree import ElementTree as ET
 
 import aiohttp
+import requests
 import structlog
 from bs4 import BeautifulSoup
 
@@ -889,6 +890,65 @@ class SciELOConnector(BaseConnector):
         # No abstract block: the description is only the author list.
         return ""
 
+    _OAI_MAX_RESUMPTION_PAGES = 8
+    _MIN_QUERY_TERM_LENGTH = 3
+
+    @staticmethod
+    def _query_terms(query: str) -> list[str]:
+        """Return normalized query terms for OAI post-filtering.
+
+        OAI-PMH ``ListRecords`` has no text-search parameter, so relevance
+        is enforced client-side by matching query terms against each
+        record's text fields. Terms are lowercased and stripped of
+        punctuation; tokens shorter than three characters are dropped as
+        noise. An empty result means the query carried no usable terms,
+        in which case the caller skips filtering.
+        """
+        return [
+            raw
+            for raw in re.split(r"[^\w]+", (query or "").lower())
+            if len(raw) >= SciELOConnector._MIN_QUERY_TERM_LENGTH
+        ]
+
+    @staticmethod
+    def _clean_oai_journal(raw: str) -> str:
+        """Strip the volume/issue/year tail from a SciELO OAI ``dc:source``.
+
+        SciELO OAI records encode the venue as ``<journal title> v.24
+        n.4 2017`` — the volume, issue and year belong on the article,
+        not the journal field. Truncate at the first volume/issue
+        marker so ``journal`` carries only the publication name.
+        """
+        if not raw:
+            return ""
+        return re.sub(
+            r"\s+(?:v|vol|n|no|nº|num)\.?\s*\d.*$",
+            "",
+            raw,
+            flags=re.IGNORECASE,
+        ).strip()
+
+    @staticmethod
+    def _article_matches_terms(article: RawArticle, terms: list[str]) -> bool:
+        """Return True if every query term appears in the article's text fields.
+
+        ``all`` (AND) semantics, not ``any``: a ``machine learning`` query
+        must surface records containing both ``machine`` and ``learning``.
+        ``any`` matched single tokens and produced false positives such as
+        economic ``learning by doing`` or pedagogical ``Blended learning``
+        records that share the word ``learning`` with the query but are not
+        about machine learning.
+        """
+        haystack = " ".join(
+            [
+                article.title or "",
+                article.abstract or "",
+                article.full_text or "",
+                article.journal or "",
+            ],
+        ).lower()
+        return all(term in haystack for term in terms)
+
     def _parse_oai_record(self, rec: ET.Element) -> RawArticle | None:
         """Parse a single OAI-PMH record into a RawArticle.
 
@@ -907,7 +967,8 @@ class SciELOConnector(BaseConnector):
         ]
         abstract = descriptions[0].strip() if descriptions else ""
         sources = [x.get_text(" ", strip=True) for x in rec.find_all("dc:source")]
-        journal = sources[0].strip() if sources else "SciELO"
+        journal = self._clean_oai_journal(sources[0]) if sources else ""
+        journal = journal or "SciELO"
         dates = [x.get_text(" ", strip=True) for x in rec.find_all("dc:date")]
         subjects = [x.get_text(" ", strip=True) for x in rec.find_all("dc:subject")]
         combined = " ".join(
@@ -935,29 +996,54 @@ class SciELOConnector(BaseConnector):
             journal=journal,
         )
 
-    def _fetch_oai(self, query: str, limit: int) -> list[RawArticle]:  # noqa: ARG002  # OAI fetch is date-based; query unused
-        """Fetch OAI."""
+    def _fetch_oai(self, query: str, limit: int) -> list[RawArticle]:
+        """Fetch OAI.
+
+        OAI-PMH ``ListRecords`` is date-based and carries no text-search
+        parameter, so records are post-filtered against the query terms:
+        only articles whose title/abstract/subjects/journal contain
+        every query term (AND semantics) are kept. The harvest iterates
+        resumption tokens until ``limit`` relevant articles are collected
+        or ``_OAI_MAX_RESUMPTION_PAGES`` pages are exhausted, after which
+        the fallback raises so the caller moves on rather than returning
+        query-irrelevant records. When the query yields no usable terms
+        (e.g. empty or stop-word-only), filtering is skipped.
+        """
+        terms = self._query_terms(query)
         current_year = datetime.now(UTC).year
         from_date = f"{max(2000, current_year - 8)}-01-01"
         for endpoint in self.OA_MIRRORS:
             url = f"{endpoint}?verb=ListRecords&metadataPrefix=oai_dc&from={from_date}"
             items: list[RawArticle] = []
             token: str | None = None
-            for _ in range(3):
-                response_xml = self._request_xml_text(url)
-                soup = BeautifulSoup(response_xml, "xml")
-                records = soup.find_all("record")
-                for rec in records:
-                    article = self._parse_oai_record(rec)
-                    if article is not None:
+            try:
+                for _ in range(self._OAI_MAX_RESUMPTION_PAGES):
+                    response_xml = self._request_xml_text(url)
+                    soup = BeautifulSoup(response_xml, "xml")
+                    records = soup.find_all("record")
+                    for rec in records:
+                        article = self._parse_oai_record(rec)
+                        if article is None:
+                            continue
+                        if terms and not self._article_matches_terms(article, terms):
+                            continue
                         items.append(article)
-                    if len(items) >= limit:
-                        return items
-                token_node = soup.find("resumptionToken")
-                token = token_node.get_text(strip=True) if token_node else ""
-                if not token:
-                    break
-                url = f"{endpoint}?verb=ListRecords&resumptionToken={quote_plus(token)}"
+                        if len(items) >= limit:
+                            return items
+                    token_node = soup.find("resumptionToken")
+                    token = token_node.get_text(strip=True) if token_node else ""
+                    if not token:
+                        break
+                    url = (
+                        f"{endpoint}?verb=ListRecords"
+                        f"&resumptionToken={quote_plus(token)}"
+                    )
+            except ConnectorFetchError:
+                # A transport error on one mirror (read timeout, HTTP 503,
+                # connection reset) must not abort the whole SciELO fetch.
+                # Discard the partial harvest from the failing mirror and
+                # fall through to the next endpoint in ``OA_MIRRORS``.
+                continue
             if items:
                 return items[:limit]
         msg = "scielo: oai mirrors yielded no query-relevant entries"
@@ -966,15 +1052,26 @@ class SciELOConnector(BaseConnector):
         )
 
     def _request_xml_text(self, url: str) -> str:
-        """Send a request for XML text."""
+        """Send a request for XML text.
+
+        Network errors (read timeout, connection reset, DNS failure) are
+        translated into ``ConnectorFetchError`` so ``_fetch_oai`` can move
+        on to the next OAI mirror instead of aborting the whole SciELO
+        fetch. A ``requests.ReadTimeout`` on one mirror must not propagate
+        past the ``except ConnectorFetchError`` guard in ``fetch``.
+        """
         scraper = self._build_scraper()
         headers = self._generate_headers()
         headers.setdefault("Accept", "application/xml,text/xml,*/*")
-        response = scraper.get(
-            url,
-            headers=headers,
-            timeout=self.REQUEST_TIMEOUT_SECONDS,
-        )
+        try:
+            response = scraper.get(
+                url,
+                headers=headers,
+                timeout=self.REQUEST_TIMEOUT_SECONDS,
+            )
+        except requests.RequestException as exc:
+            msg = f"{self.profile.source_key}: oai transport error: {exc}"
+            raise ConnectorFetchError(msg) from exc
         status = int(response.status_code)
         if status >= _HTTP_BAD_REQUEST:
             msg = f"{self.profile.source_key}: http {status}"
