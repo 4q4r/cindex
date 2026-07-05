@@ -223,16 +223,16 @@ def test_ajol_oa_filter_keeps_only_open_access(monkeypatch) -> None:
 def test_mathnet_enrichment_extracts_bibliographic_fields(monkeypatch) -> None:
     """Test mathnet enrichment extracts bibliographic fields helper."""
     html = """
-    <html><body>
-      <div>A. N. Yakusheva, “Nontransitivity in Trybula triplets:</div>
-      <div>stability under sums and maxima transformations”,</div>
-      <div>Teor. Veroyatnost. i Primenen., 71:1 (2026), 174–185</div>
-      <div>DOI: https://doi.org/10.4213/tvp5882</div>
-      <div>
-        Abstract: This paper investigates two nontransitive triplets originally
-        proposed by S.Trybula.
-      </div>
-      <div>Keywords: nontransitive triplets</div>
+    <html><head>
+      <title>A. N. Yakusheva, "Nontransitivity in Trybula triplets:
+      stability under sums and maxima transformations",
+      Teor. Veroyatnost. i Primenen.</title>
+    </head><body>
+      <i>Teor. Veroyatnost. i Primenen., 2026, Volume 71, Issue 1,
+      Pages 174–185 DOI: https://doi.org/10.4213/tvp5882</i>
+      <p><b>Abstract:</b> This paper investigates two nontransitive triplets
+      originally proposed by S.Trybula.</p>
+      <p><b>Keywords:</b> nontransitive triplets</p>
     </body></html>
     """
     connector = MathNetConnector()

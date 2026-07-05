@@ -20,7 +20,7 @@ from xml.etree import ElementTree as ET
 
 import aiohttp
 import structlog
-from bs4 import BeautifulSoup
+from bs4 import BeautifulSoup, NavigableString
 
 from .base import BaseConnector, ConnectorFetchError, RawArticle, SourceProfile
 
@@ -589,7 +589,17 @@ class MathNetConnector(BaseConnector):
         return tuple(dict.fromkeys(parts))
 
     def enrich_raw(self, raw: RawArticle) -> RawArticle:
-        """Enrich the raw source payload with parsed metadata."""
+        """Enrich a MathNet article with metadata parsed from its page.
+
+        MathNet renders the citation head (``Authors, "Title", Journal``) in the
+        ``<title>`` tag and the bibliographic line (journal, year, volume,
+        issue, pages, DOI) in the first ``<i>`` element; labeled fields
+        (Abstract, Keywords, Language) are ``<b>Label:</b>`` followed by sibling
+        text. The previous linearized-text regex mismatched this structure
+        (authors parsed empty, journal hardcoded to "MathNet.Ru", volume/issue/
+        pages never matched because they live in ``<i>``, not in labeled ``<b>``
+        fields). Parse the HTML structure directly instead.
+        """
         enriched = super().enrich_raw(raw)
         if not raw.url.startswith("http"):
             return enriched
@@ -601,76 +611,141 @@ class MathNetConnector(BaseConnector):
         page_text = self._html_text(soup)
         if self._looks_like_challenge_page(page_text):
             return enriched
-        normalized = re.sub(r"\s+", " ", page_text.replace("\xa0", " ")).strip()
-        citation_match = re.search(
-            r"(?P<authors>.+?),\s*[“\"](?P<title>.+?)[”\"]\s*,\s*(?P<journal>.+?),\s*(?P<volume>\d+)\s*:\s*(?P<issue>\d+)\s*\((?P<year>\d{4})\),\s*(?P<pages>[\d–-]+)",  # noqa: RUF001
-            normalized,
-        )
-        abstract_match = re.search(
-            (
-                r"Abstract:\s*(?P<abstract>.*?)\s*"
-                r"(?:Keywords:|Full-text PDF|First page|References:|$)"
-            ),
-            normalized,
-            flags=re.IGNORECASE,
-        )
-        if not citation_match and not abstract_match:
-            return enriched
 
-        authors_blob = citation_match.group("authors").strip() if citation_match else ""
-        title = (
-            citation_match.group("title").strip() if citation_match else enriched.title
+        title_text = soup.title.get_text(" ", strip=True) if soup.title else ""
+        authors_blob, parsed_title = self._mathnet_citation_head(title_text)
+        journal, volume, issue, pages, year_str, doi = self._mathnet_italics_meta(soup)
+        abstract = self._mathnet_labeled_value(soup, "Abstract:")
+        language = self._mathnet_language_code(
+            self._mathnet_labeled_value(soup, "Language:"),
         )
-        journal = (
-            citation_match.group("journal").strip()
-            if citation_match
-            else enriched.journal
+
+        final_title = parsed_title or enriched.title
+        final_journal = journal or enriched.journal
+        authors = (
+            self._split_authors(authors_blob) if authors_blob else enriched.authors
         )
-        volume = (
-            citation_match.group("volume").strip()
-            if citation_match
-            else enriched.volume
-        )
-        issue = (
-            citation_match.group("issue").strip() if citation_match else enriched.issue
-        )
-        pages = (
-            citation_match.group("pages").strip() if citation_match else enriched.pages
-        )
-        year = int(citation_match.group("year")) if citation_match else enriched.year
-        abstract = (
-            abstract_match.group("abstract").strip()
-            if abstract_match
-            else enriched.abstract
-        )
-        doi = enriched.doi or self._extract_doi(normalized)
-        authors = self._split_authors(authors_blob)
+        final_year = int(year_str) if year_str else enriched.year
+        final_doi = doi or enriched.doi or self._extract_doi(page_text)
+
         full_text = " ".join(
             part
-            for part in [
-                title,
+            for part in (
+                final_title,
                 authors_blob,
-                journal,
+                final_journal,
                 f"{volume}:{issue}" if volume or issue else "",
                 pages,
                 abstract,
-                normalized,
-            ]
+                page_text,
+            )
             if part
         )
         return replace(
             enriched,
-            title=title[:900],
-            abstract=abstract[:8000],
+            title=final_title[:900],
+            abstract=abstract[:8000] if abstract else enriched.abstract,
             full_text=full_text[:20000],
-            doi=doi,
-            year=year,
-            journal=journal[:300],
+            doi=final_doi,
+            year=final_year,
+            journal=final_journal[:300],
             authors=authors,
             volume=volume[:32],
             issue=issue[:32],
             pages=pages[:32],
+            language=language or enriched.language,
         )
+
+    @staticmethod
+    def _mathnet_citation_head(title_text: str) -> tuple[str, str]:
+        """Parse ``Authors, "Title", …`` from the MathNet ``<title>`` tag.
+
+        Returns ``(authors_blob, title)`` — authors are the comma-separated
+        names before the first quoted title; empty strings when the ``<title>``
+        is absent or does not match the citation shape.
+        """
+        match = re.match(
+            r"\s*(?P<authors>[^“”\"]+?)\s*,\s*[“”\"](?P<title>[^“”\"]+)[””\"]",
+            title_text,
+        )
+        if not match:
+            return "", ""
+        return match.group("authors").strip(), match.group("title").strip()
+
+    @staticmethod
+    def _mathnet_italics_meta(
+        soup: BeautifulSoup,
+    ) -> tuple[str, str, str, str, str, str]:
+        """Parse the bibliographic ``<i>`` line on a MathNet article page.
+
+        The first ``<i>`` carrying the bibliographic line holds either
+        ``Journal Full, Forthcoming paper`` (no volume/year/pages) or
+        ``Journal Full, <year>, Volume V, Issue I, Pages P-Q DOI: https://doi.org/...``.
+        Returns ``(journal, volume, issue, pages, year, doi)`` with empty
+        strings where a field is absent (e.g. forthcoming papers).
+        """
+        line = ""
+        for italics in soup.find_all("i"):
+            text = re.sub(r"\s+", " ", italics.get_text(" ", strip=True)).strip()
+            if "DOI:" in text or "Forthcoming" in text or "Volume" in text:
+                line = text
+                break
+        if not line:
+            return "", "", "", "", "", ""
+        journal = line.split(",", 1)[0].strip()
+        year_match = re.search(r",\s*(\d{4})\s*,", line)
+        volume_match = re.search(r"Volume\s+(\d+)", line)
+        issue_match = re.search(r"Issue\s+(\d+(?:\(\d+\))?)", line)
+        pages_match = re.search(r"Pages\s+([\d]+[–-][\d]+)", line)  # noqa: RUF001
+        doi_match = re.search(r"doi\.org/(10\.\S+?)(?:\s|$)", line, re.IGNORECASE)
+        return (
+            journal[:300],
+            volume_match.group(1) if volume_match else "",
+            issue_match.group(1) if issue_match else "",
+            pages_match.group(1) if pages_match else "",
+            year_match.group(1) if year_match else "",
+            doi_match.group(1).rstrip(".,;)") if doi_match else "",
+        )
+
+    @staticmethod
+    def _mathnet_labeled_value(soup: BeautifulSoup, label: str) -> str:
+        """Return the text following a ``<b>Label:</b>`` field on a MathNet page.
+
+        Labeled metadata (Abstract, Keywords, Language, …) is rendered as a
+        ``<b>Label:</b>`` element followed by the value in sibling text/inline
+        nodes, ending at the next ``<b>``. Walk those siblings and join their
+        text so multi-line abstracts (with ``<br>`` separators) are captured
+        whole rather than truncated at the first line break.
+        """
+        for bold in soup.find_all("b"):
+            if bold.get_text(" ", strip=True) != label:
+                continue
+            parts: list[str] = []
+            sibling = bold.next_sibling
+            while sibling is not None:
+                if isinstance(sibling, NavigableString):
+                    parts.append(str(sibling))
+                elif sibling.name == "b":
+                    break
+                elif sibling.name == "br":
+                    parts.append(" ")
+                else:
+                    parts.append(sibling.get_text(" ", strip=True))
+                sibling = sibling.next_sibling
+            value = re.sub(r"\s+", " ", " ".join(parts)).strip()
+            if value:
+                return value
+        return ""
+
+    @staticmethod
+    def _mathnet_language_code(label: str) -> str:
+        """Map a MathNet ``Language:`` label to an ISO 639-1 code."""
+        return {
+            "english": "en",
+            "russian": "ru",
+            "french": "fr",
+            "german": "de",
+        }.get(label.strip().lower(), "")
 
     def _fetch_home_fallback(self, limit: int) -> list[RawArticle]:
         """Fetch home fallback."""
