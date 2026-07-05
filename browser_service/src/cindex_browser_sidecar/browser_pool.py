@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import asyncio
 import os
+import time
 from typing import TYPE_CHECKING
 from urllib.parse import urlencode, urlsplit
 
@@ -34,6 +35,11 @@ logger = structlog.get_logger(__name__)
 DEFAULT_PROFILE_DIR = "/data/cloak-profile"
 DEFAULT_CONCURRENCY = 4
 DEFAULT_HEADLESS = True
+# Cap on the best-effort navigation wait. JS challenges (BunnyCDN Shield,
+# Cloudflare Turnstile) resolve in a few seconds; capping avoids burning the
+# whole request budget on endpoints that never reach networkidle (OAI streams,
+# long-lived analytics connections) before the in-page fetch even runs.
+_NAV_MAX_WAIT_SECONDS = 15.0
 
 
 class BrowserPoolError(Exception):
@@ -152,54 +158,154 @@ class BrowserPool:
     async def _get(self, page: object, request: FetchRequest) -> FetchResponse:
         """Fetch a GET resource via in-page fetch after solving any challenge."""
         url = self._build_url(str(request.url), request.params)
-        await self._navigate(page, url, request.timeout)
+        remaining = await self._navigate(page, url, request.timeout)
         headers = self._merge_accept(request.headers, request.accept)
-        result = await page.evaluate(  # type: ignore[attr-defined]
+        result = await self._evaluate_fetch(
+            page,
             _with_helper(_GET_FETCH_SCRIPT),
             [url, headers],
+            url,
+            remaining,
         )
         return self._result_to_response(str(request.url), result)
 
     async def _post(self, page: object, request: FetchRequest) -> FetchResponse:
         """Fetch a POST resource (JSON or form) via in-page fetch."""
         url = self._build_url(str(request.url), request.params)
-        await self._navigate(page, self._origin(url), request.timeout)
+        remaining = await self._navigate(page, self._origin(url), request.timeout)
         headers = self._merge_accept(request.headers, request.accept)
         if request.json_body is not None:
-            result = await page.evaluate(  # type: ignore[attr-defined]
+            result = await self._evaluate_fetch(
+                page,
                 _with_helper(_POST_JSON_FETCH_SCRIPT),
                 [url, headers, request.json_body],
+                url,
+                remaining,
             )
         elif request.data is not None:
-            result = await page.evaluate(  # type: ignore[attr-defined]
+            result = await self._evaluate_fetch(
+                page,
                 _with_helper(_POST_FORM_FETCH_SCRIPT),
                 [url, headers, request.data],
+                url,
+                remaining,
             )
         else:
             msg = "POST request requires either json or data body"
             raise BrowserPoolError(msg)
         return self._result_to_response(request.url, result)
 
-    async def _navigate(self, page: object, url: str, timeout_seconds: float) -> None:
-        """Navigate the page to ``url`` and wait for the network to settle.
+    async def _evaluate_fetch(
+        self,
+        page: object,
+        script: str,
+        arg: object,
+        url: str,
+        timeout_seconds: float,
+    ) -> dict[str, object]:
+        """Run an in-page fetch script bounded by the remaining request budget.
 
-        The navigation establishes challenge cookies for the origin. We do not
-        consume its response body — the real resource is fetched afterwards
-        from inside the page via ``fetch`` with the cookie now set.
+        ``page.evaluate`` has no default deadline; without one a server that
+        never responds would hold a concurrency slot forever. ``asyncio.wait_for``
+        cancels the evaluate and frees the page (closed by the caller's
+        ``finally``) so the pool cannot deadlock on a hung fetch.
         """
-        timeout_ms = max(1_000, int(timeout_seconds * 1000))
+        try:
+            result = await asyncio.wait_for(
+                page.evaluate(script, arg),  # type: ignore[attr-defined]
+                timeout=max(1.0, timeout_seconds),
+            )
+        except TimeoutError as exc:
+            msg = f"in-page fetch timed out for {url} after {timeout_seconds:.1f}s"
+            raise BrowserPoolError(msg) from exc
+        except Exception as exc:
+            msg = f"in-page fetch failed for {url}: {exc}"
+            raise BrowserPoolError(msg) from exc
+        if not isinstance(result, dict):
+            msg = f"in-page fetch returned no result for {url}"
+            raise BrowserPoolError(msg)
+        return result
+
+    async def _navigate(
+        self,
+        page: object,
+        url: str,
+        timeout_seconds: float,
+    ) -> float:
+        """Navigate the page to ``url`` to warm challenge cookies (best-effort).
+
+        The navigation solves JS challenges (BunnyCDN Shield, Cloudflare
+        Turnstile) and sets the cookies the subsequent in-page ``fetch`` reuses.
+        It is intentionally best-effort: many endpoints never reach
+        ``networkidle`` (OAI streams, long-lived analytics connections) and PDF
+        URLs trigger a download that ``page.goto`` refuses — both raise, but the
+        in-page ``fetch`` still returns the real body, so we log and continue
+        rather than aborting the whole request.
+
+        Returns the remaining request budget (seconds) for the in-page fetch so
+        the caller can bound ``page.evaluate`` and avoid overrunning the
+        worker's HTTP timeout to the sidecar.
+        """
+        start = time.monotonic()
+        nav_timeout = min(float(timeout_seconds), _NAV_MAX_WAIT_SECONDS)
         try:
             await page.goto(  # type: ignore[attr-defined]
                 url,
                 wait_until="networkidle",
-                timeout=timeout_ms,
+                timeout=int(nav_timeout * 1000),
             )
-        except OSError as exc:
-            msg = f"navigation failed for {url}: {exc}"
-            raise BrowserPoolError(msg) from exc
-        except Exception as exc:
-            msg = f"navigation failed for {url}: {exc}"
-            raise BrowserPoolError(msg) from exc
+        except Exception as exc:  # noqa: BLE001 - best-effort navigation
+            logger.warning(
+                "navigation_best_effort_failed",
+                url=url,
+                exc_info=str(exc),
+            )
+            await self._ensure_same_origin(page, url, nav_timeout)
+        elapsed = time.monotonic() - start
+        return max(1.0, float(timeout_seconds) - elapsed)
+
+    async def _ensure_same_origin(
+        self,
+        page: object,
+        url: str,
+        nav_timeout: float,
+    ) -> None:
+        """Land the page on the target origin if it isn't already.
+
+        A failed ``page.goto`` can leave the page on ``about:blank`` — e.g. a
+        PDF URL triggers a download that ``goto`` refuses before any navigation
+        commits. The in-page ``fetch`` issued afterwards would then be
+        cross-origin and CORS-blocked ("Failed to fetch"). Navigating to the
+        origin makes the fetch same-origin; challenge cookies are already held
+        by the persistent context, so we only need a short ``networkidle`` wait.
+        The OAI timeout case is skipped because the page did land on the target
+        URL (only ``networkidle`` never fired).
+        """
+        try:
+            current = page.url  # type: ignore[attr-defined]
+        except Exception:  # noqa: BLE001 - page.url should never raise
+            current = ""
+        if current and self._same_origin(current, url):
+            return
+        origin = self._origin(url)
+        try:
+            await page.goto(  # type: ignore[attr-defined]
+                origin,
+                wait_until="networkidle",
+                timeout=int(min(nav_timeout, 8.0) * 1000),
+            )
+        except Exception as exc:  # noqa: BLE001 - best-effort origin landing
+            logger.warning(
+                "navigation_origin_fallback_failed",
+                url=origin,
+                exc_info=str(exc),
+            )
+
+    @staticmethod
+    def _same_origin(a: str, b: str) -> bool:
+        """Return ``True`` when two URLs share scheme and host."""
+        pa, pb = urlsplit(a), urlsplit(b)
+        return pa.scheme == pb.scheme and pa.netloc == pb.netloc
 
     @staticmethod
     def _build_url(url: str, params: Mapping[str, str] | None) -> str:
