@@ -675,6 +675,30 @@ class TestBrowserTransport:
             transport.fetch("https://example.org")
         assert calls["n"] == 1
 
+    def test_sidecar_200_non_json_body_raises(self, monkeypatch) -> None:
+        from apps.ingestion.connectors import ConnectorFetchError
+
+        transport = self._make_transport(monkeypatch)
+        calls = {"n": 0}
+
+        def _post(*a, **k):
+            calls["n"] += 1
+
+            class _Resp:
+                status_code = 200
+
+                def json(self):
+                    msg = "non-JSON body"
+                    raise ValueError(msg)
+
+            return _Resp()
+
+        monkeypatch.setattr(transport._session, "post", _post)
+        with pytest.raises(ConnectorFetchError):
+            transport.fetch("https://example.org")
+        # ValueError is a hard failure, not a transient retry trigger.
+        assert calls["n"] == 1
+
     def test_post_json_forwards_json_body(self, monkeypatch) -> None:
         transport = self._make_transport(monkeypatch)
         captured = {}

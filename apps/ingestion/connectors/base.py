@@ -286,7 +286,13 @@ class BrowserTransport:
                 raise ConnectorFetchError(msg) from exc
             status = response.status_code
             if status == HTTP_OK_STATUS:
-                result = self._parse(response.json())
+                try:
+                    result = self._parse(response.json())
+                except ValueError as exc:
+                    # sidecar returned 200 with a non-JSON body — fail loudly
+                    # rather than surfacing a requests.JSONDecodeError.
+                    msg = f"{self._source_key}: browser sidecar returned non-JSON body"
+                    raise ConnectorFetchError(msg) from exc
                 if result.status >= HTTP_ERROR_THRESHOLD:
                     msg = f"{self._source_key}: http {result.status}"
                     raise ConnectorFetchError(msg)
