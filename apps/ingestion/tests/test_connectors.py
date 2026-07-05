@@ -7,6 +7,7 @@ from apps.ingestion.connectors import (
     CiNiiConnector,
     DOAJConnector,
     EuropePMCConnector,
+    IACRConnector,
     MathNetConnector,
     OpenEditionConnector,
     PerseeConnector,
@@ -480,3 +481,50 @@ def test_pmc_strips_conference_abstract_number_and_falls_back_to_pub_date() -> N
     assert regular.title == "5G networks for biomedical telemetry"
     assert regular.year == 2024
     assert regular.doi == "10.1111/pmc.regular.2024"
+
+
+def test_iacr_rss_filter_keeps_matching_eprints_and_skips_off_topic() -> None:
+    """Test iacr rss filter keeps matching eprints and skips off topic helper.
+
+    The IACR ePrint search page is blocked by an anti-bot "tin foil hat"
+    wall and no public search API exists, so the connector reads the RSS
+    feed and filters client-side: only records whose title or abstract
+    contains every query token are kept, off-topic records are dropped.
+    IACR does not assign DOIs, so ``doi`` must stay empty rather than
+    fabricated, and the year is read from the RSS ``pubDate``.
+    """
+    xml = (
+        "<?xml version='1.0' encoding='UTF-8'?>"
+        "<rss version='2.0' xmlns:dc='http://purl.org/dc/elements/1.1/'>"
+        "<channel>"
+        "<item>"
+        "<title>Federated machine learning with secure enclaves</title>"
+        "<link>https://eprint.iacr.org/2024/123</link>"
+        "<description>Privacy-preserving machine learning training.</description>"
+        "<pubDate>Mon, 15 Jan 2024 00:00:00 +0000</pubDate>"
+        "<dc:creator>Alice Smith</dc:creator>"
+        "<dc:creator>Bob Jones</dc:creator>"
+        "</item>"
+        "<item>"
+        "<title>Hash function collisions revisited</title>"
+        "<link>https://eprint.iacr.org/2023/456</link>"
+        "<description>Bounds on collision resistance.</description>"
+        "<pubDate>Wed, 01 Feb 2023 00:00:00 +0000</pubDate>"
+        "<dc:creator>Carol Lee</dc:creator>"
+        "</item>"
+        "</channel></rss>"
+    )
+    connector = IACRConnector()
+    records = connector._parse_rss_xml(xml)
+    items = connector._build_articles("machine learning", records, limit=5)
+
+    assert len(items) == 1
+    only = items[0]
+    assert only.source_key == "iacr"
+    assert only.title == "Federated machine learning with secure enclaves"
+    assert only.url == "https://eprint.iacr.org/2024/123"
+    assert only.year == 2024
+    assert only.doi == ""
+    assert only.authors == ("Alice Smith", "Bob Jones")
+    assert only.journal == "IACR ePrint"
+    assert "machine learning" in only.abstract.lower()
