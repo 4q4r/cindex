@@ -1126,101 +1126,125 @@ class ZenodoConnector(AsyncApiConnector):
 
 
 class IACRConnector(AsyncApiConnector):
-    """IACR ePrint Archive connector via HTML search."""
+    """IACR ePrint Archive connector via the public RSS feed.
+
+    The ePrint search page (``/search``) is guarded by an aggressive
+    anti-bot "tin foil hat" wall that returns a block page even to real
+    browser fingerprints via cloudscraper, and IACR exposes no public
+    search API. The RSS feed (``/rss/rss.xml``) is the only unblocked,
+    machine-readable channel: it lists the ~100 most recent eprints with
+    title, link, authors (``dc:creator``), publication date and an
+    abstract snippet. The feed is fetched with aiohttp (it is served
+    without the anti-bot wall) and filtered client-side to items whose
+    title or abstract contains every query token -- the same approach
+    every known IACR integration takes. IACR ePrint does not assign
+    DOIs, so ``doi`` is left empty rather than fabricated.
+    """
+
+    _DC_NS = "http://purl.org/dc/elements/1.1/"
+    _RSS_URL = "https://eprint.iacr.org/rss/rss.xml"
 
     profile = SourceProfile(
         source_key="iacr",
-        search_url="https://eprint.iacr.org/search",
+        search_url="https://eprint.iacr.org/rss/rss.xml",
         mode="api",
-        query_param="search",
+        query_param="q",
+        indexing_evidence="iacr cryptology eprint",
         language="en",
     )
 
+    def _api_url(self, query: str, limit: int) -> str:  # noqa: ARG002  # RSS is one feed
+        """IACR RSS is a single feed; the query is filtered client-side."""
+        return self._RSS_URL
+
     async def _fetch_async(self, query: str, limit: int) -> list[RawArticle]:
-        try:
-            import aiohttp  # noqa: PLC0415  # lazy import to avoid circular dependency
-        except ImportError:
-            return self._fetch_sync(query, limit)
-        url = f"https://eprint.iacr.org/search?search={quote_plus(query)}"
+        headers = self._generate_headers()
+        headers["Accept"] = "application/rss+xml,application/xml,text/xml,*/*;q=0.8"
+        headers["Accept-Language"] = "en-US,en;q=0.9"
         try:
             async with (
                 aiohttp.ClientSession() as session,
                 session.get(
-                    url,
-                    headers={"User-Agent": "Mozilla/5.0 (compatible; cindex/1.0)"},
-                ) as resp,
+                    self._RSS_URL,
+                    headers=headers,
+                    timeout=aiohttp.ClientTimeout(
+                        total=self.REQUEST_TIMEOUT_SECONDS,
+                    ),
+                ) as response,
             ):
-                resp.raise_for_status()
-                html = await resp.text()
-        except Exception as exc:
-            msg = f"{self.profile.source_key}: async request failed: {exc}"
-            raise ConnectorFetchError(
-                msg,
-            ) from exc
-        return self._parse_iacr_html(html, limit)
+                response.raise_for_status()
+                xml_text = await response.text()
+        except aiohttp.ClientResponseError as exc:
+            status = getattr(exc, "status", None) or getattr(exc, "code", None)
+            msg = f"{self.profile.source_key}: HTTP {status} for {self._RSS_URL}: {exc}"
+            raise ConnectorFetchError(msg) from exc
+        except aiohttp.ClientError as exc:
+            msg = f"{self.profile.source_key}: request failed: {exc}"
+            raise ConnectorFetchError(msg) from exc
+        return self._build_articles(query, self._parse_rss_xml(xml_text), limit)
 
     def _extract_from_payload(
         self,
-        query: str,  # noqa: ARG002  # required by base class signature
+        query: str,
         payload: dict,
         limit: int,
     ) -> list[RawArticle]:
-        """Extract from IACR JSON fixture."""
-        papers = payload.get("papers", payload.get("results", []))
+        """Extract from an IACR RSS-shaped JSON fixture."""
+        records = payload.get("items", payload.get("papers", []))
+        return self._build_articles(query, records, limit)
+
+    @classmethod
+    def _parse_rss_xml(cls, xml_text: str) -> list[dict]:
+        """Parse the IACR RSS feed into a list of record dicts."""
+        root = ET.fromstring(xml_text)  # noqa: S314  # trusted API XML response
+        return [
+            {
+                "title": (item.findtext("title") or "").strip(),
+                "link": (item.findtext("link") or "").strip(),
+                "description": item.findtext("description") or "",
+                "pubDate": item.findtext("pubDate") or "",
+                "creators": [
+                    (c.text or "").strip()
+                    for c in item.findall(f"{{{cls._DC_NS}}}creator")
+                ],
+            }
+            for item in root.findall(".//item")
+        ]
+
+    def _build_articles(
+        self,
+        query: str,
+        records: list[dict],
+        limit: int,
+    ) -> list[RawArticle]:
+        """Filter RSS records by query tokens and build RawArticle list."""
         items: list[RawArticle] = []
-        for entry in papers[:limit]:
-            title = entry.get("title", "").strip()
+        for rec in records:
+            title = (rec.get("title") or "").strip()
             if not title:
                 continue
-            url = entry.get("url", "")
-            doi = entry.get("doi", "") or self._extract_doi(title)
-            if not url and doi:
-                url = f"https://eprint.iacr.org/{doi}"
-            if not url:
+            link = (rec.get("link") or "").strip()
+            if not link.startswith("http"):
                 continue
-            year = self._extract_year(title + " " + str(entry.get("date", "")))
-            items.append(
-                self._raw(
-                    title=title,
-                    url=url,
-                    abstract=entry.get("abstract", ""),
-                    full_text=title,
-                    doi=doi,
-                    year=year,
-                    journal="IACR ePrint",
-                ),
+            abstract = rec.get("description") or ""
+            if not self._matches_query(f"{title} {abstract}", query):
+                continue
+            year = self._extract_year(
+                f"{rec.get('pubDate', '')} {link}",
             )
-        return items
-
-    def _parse_iacr_html(self, html: str, limit: int) -> list[RawArticle]:
-        from bs4 import BeautifulSoup  # noqa: PLC0415, I001  # lazy import to avoid circular dependency
-
-        soup = BeautifulSoup(html, "lxml")
-        items: list[RawArticle] = []
-        for row in soup.select(".paper-entry, .row, .d-flex"):
-            title_link = row.select_one("a.paperlink, a[href*='/eprint/']")
-            if not title_link:
-                continue
-            title = title_link.get_text(strip=True)
-            href = title_link.get("href", "")
-            if not title or not href:
-                continue
-            if not href.startswith("http"):
-                href = f"https://eprint.iacr.org{href}"
-            doi = ""
-            if "/eprint/" in href:
-                paper_id = href.split("/eprint/")[-1].strip("/")
-                doi = f"10.42386/iacr.eprint.{paper_id}"
-            year = self._extract_year(title + " " + href)
+            creators = rec.get("creators") or []
+            authors = [c for c in creators if isinstance(c, str) and c]
             items.append(
                 self._raw(
                     title=title,
-                    url=href,
-                    abstract="",
-                    full_text=title,
-                    doi=doi,
+                    url=link,
+                    abstract=abstract,
+                    full_text=f"{title} {abstract}",
+                    doi="",
                     year=year,
                     journal="IACR ePrint",
+                    authors=tuple(authors),
+                    preprint_evidence="iacr cryptology eprint",
                 ),
             )
             if len(items) >= limit:
