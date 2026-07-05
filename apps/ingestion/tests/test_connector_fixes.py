@@ -5,6 +5,7 @@ from apps.ingestion.connectors import (
     CyberLeninkaConnector,
     EuropePMCConnector,
     HALConnector,
+    OpenAlexConnector,
     PMCConnector,
 )
 
@@ -321,3 +322,71 @@ class TestPubMedEfetch:
         result = PubMedConnector._parse_efetch_abstracts(xml)
         assert result.get("111") == "First."
         assert result.get("222") == "Second."
+
+
+class TestOpenAlexJournal:
+    """OpenAlexConnector should extract journal from primary_location.source."""
+
+    def test_journal_from_primary_location(self) -> None:
+        payload = {
+            "results": [
+                {
+                    "id": "https://openalex.org/W123",
+                    "title": "OpenAlex article",
+                    "abstract_inverted_index": {".": [[0, 0]]},
+                    "doi": "https://doi.org/10.1234/oa",
+                    "publication_year": 2024,
+                    "authorships": [
+                        {"author": {"display_name": "Alice Smith"}},
+                    ],
+                    "primary_location": {
+                        "source": {"display_name": "Nature"},
+                    },
+                },
+            ],
+        }
+        conn = OpenAlexConnector()
+        items = conn._extract_from_payload("test", payload, 5)
+        assert len(items) == 1
+        assert items[0].journal == "Nature"
+
+    def test_journal_from_best_oa_location(self) -> None:
+        payload = {
+            "results": [
+                {
+                    "id": "https://openalex.org/W456",
+                    "title": "OpenAlex OA article",
+                    "doi": "https://doi.org/10.1234/oa2",
+                    "publication_year": 2024,
+                    "authorships": [
+                        {"author": {"display_name": "Bob Jones"}},
+                    ],
+                    "best_oa_location": {
+                        "source": {"display_name": "PLOS ONE"},
+                    },
+                },
+            ],
+        }
+        conn = OpenAlexConnector()
+        items = conn._extract_from_payload("test", payload, 5)
+        assert len(items) == 1
+        assert items[0].journal == "PLOS ONE"
+
+    def test_no_journal_when_missing(self) -> None:
+        payload = {
+            "results": [
+                {
+                    "id": "https://openalex.org/W789",
+                    "title": "OpenAlex no journal",
+                    "doi": "https://doi.org/10.1234/oa3",
+                    "publication_year": 2024,
+                    "authorships": [
+                        {"author": {"display_name": "Carol Lee"}},
+                    ],
+                },
+            ],
+        }
+        conn = OpenAlexConnector()
+        items = conn._extract_from_payload("test", payload, 5)
+        assert len(items) == 1
+        assert items[0].journal == ""
