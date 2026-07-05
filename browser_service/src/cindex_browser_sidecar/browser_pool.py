@@ -422,7 +422,10 @@ async function __toResult(r) {
     const buf = new Uint8Array(await r.arrayBuffer());
     let charset = '';
     const ctMatch = ct.match(/charset=([^\\s;]+)/i);
-    if (ctMatch) charset = ctMatch[1].toLowerCase();
+    // Strip surrounding quotes (RFC 7231 permits ``charset="windows-1251"``);
+    // a quoted label would otherwise throw RangeError in TextDecoder and
+    // silently fall back to UTF-8, reintroducing the mojibake this fixes.
+    if (ctMatch) charset = ctMatch[1].toLowerCase().replace(/^["']|["']$/g, '');
     if (!charset) {
       const head = new TextDecoder('utf-8').decode(buf.slice(0, 1024));
       const metaMatch = head.match(/<meta[^>]+charset=["'?\\s]*([\\w-]+)/i);

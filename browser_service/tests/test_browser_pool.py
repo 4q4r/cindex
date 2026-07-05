@@ -337,3 +337,7 @@ def test_fetch_helper_decodes_text_via_textdecoder_with_charset():
     assert "meta" in helper
     # Unknown charset labels must not crash the fetch — UTF-8 fallback required.
     assert "utf-8" in helper
+    # A quoted charset label (``charset="windows-1251"``) must be unquoted before
+    # being passed to TextDecoder, otherwise it throws RangeError and silently
+    # falls back to UTF-8 — reintroducing the mojibake this path exists to fix.
+    assert "replace(/^[\"']|[\"']$/g" in helper
