@@ -422,10 +422,13 @@ class BaseConnector:
         """Retry a Cloudflare challenge by fetching a cookie string."""
         try:
             generated_headers = self._generate_headers()
-            cookie_header, user_agent = cloudscraper.get_cookie_string(
-                url,
-                user_agent=generated_headers.get("User-Agent"),
-            )
+            # ``cloudscraper.get_cookie_string`` does not accept a
+            # ``user_agent`` keyword: it delegates to ``get_tokens`` which
+            # only pops a fixed whitelist of kwargs and forwards the rest to
+            # ``Session.request``. Passing ``user_agent=`` therefore raises
+            # ``TypeError``. The user agent is a *return* value here; the
+            # resolved agent is applied to ``headers`` below.
+            cookie_header, user_agent = cloudscraper.get_cookie_string(url)
             headers = {
                 **generated_headers,
                 "User-Agent": user_agent,
