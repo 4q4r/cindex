@@ -7,6 +7,7 @@ from apps.ingestion.connectors import (
     HALConnector,
     OpenAlexConnector,
     PMCConnector,
+    SciELOConnector,
 )
 
 
@@ -527,3 +528,51 @@ class TestOpenAlexJournal:
         items = conn._extract_from_payload("test", payload, 5)
         assert len(items) == 1
         assert items[0].journal == ""
+
+
+class TestChallengeRetryHTTPError:
+    """_challenge_retry must swallow cloudscraper's HTTPError and return None.
+
+    ``cloudscraper.get_tokens`` raises ``requests.HTTPError`` when the
+    upstream answers 403 before tokens can be collected (e.g. the SciELO
+    search endpoint). The retry helper must absorb that and return ``None``
+    so ``_resolve_cloudflare_challenge`` returns the original 403 status,
+    ``_request_response`` raises ``ConnectorFetchError``, and the SciELO
+    connector falls back to OAI/HTML. Before the fix the raw ``HTTPError``
+    propagated past every ``except ConnectorFetchError`` and aborted the
+    whole fetch.
+    """
+
+    def test_challenge_retry_returns_none_on_http_error(self, monkeypatch) -> None:
+        import requests
+
+        def _raise(*args: object, **kwargs: object) -> None:
+            raise requests.HTTPError("403 Client Error: Forbidden for url: x")
+
+        monkeypatch.setattr(
+            "apps.ingestion.connectors.base.cloudscraper.get_tokens",
+            _raise,
+        )
+        conn = SciELOConnector()
+        scraper = conn._build_scraper()
+        assert conn._challenge_retry(scraper, "https://example.org", None) is None
+
+    def test_challenge_retry_cookie_string_returns_none_on_http_error(
+        self,
+        monkeypatch,
+    ) -> None:
+        import requests
+
+        def _raise(*args: object, **kwargs: object) -> None:
+            raise requests.HTTPError("403 Client Error: Forbidden for url: x")
+
+        monkeypatch.setattr(
+            "apps.ingestion.connectors.base.cloudscraper.get_cookie_string",
+            _raise,
+        )
+        conn = SciELOConnector()
+        scraper = conn._build_scraper()
+        assert (
+            conn._challenge_retry_cookie_string(scraper, "https://example.org", None)
+            is None
+        )

@@ -18,6 +18,7 @@ from urllib.parse import quote_plus, urljoin
 import aiohttp
 import cloudscraper
 import pymupdf
+import requests
 import structlog
 from browserforge.headers import Browser, HeaderGenerator
 from bs4 import BeautifulSoup, Tag
@@ -396,8 +397,18 @@ class BaseConnector:
             )
             if int(response.status_code) >= HTTP_ERROR_THRESHOLD:
                 return None
-        except (ValueError, RuntimeError, ConnectionError, TimeoutError):
+        except (
+            ValueError,
+            RuntimeError,
+            ConnectionError,
+            TimeoutError,
+            requests.RequestException,
+        ):
             # pragma: no cover - network dependent
+            # ``cloudscraper.get_tokens`` raises ``requests.HTTPError`` (a
+            # ``RequestException`` subclass) when the upstream answers 403
+            # before tokens can be collected; let the caller fall back to
+            # the next transport instead of propagating the raw error.
             return None
         else:
             return response.text
@@ -429,8 +440,18 @@ class BaseConnector:
             )
             if int(response.status_code) >= HTTP_ERROR_THRESHOLD:
                 return None
-        except (ValueError, RuntimeError, ConnectionError, TimeoutError):
+        except (
+            ValueError,
+            RuntimeError,
+            ConnectionError,
+            TimeoutError,
+            requests.RequestException,
+        ):
             # pragma: no cover - network dependent
+            # ``cloudscraper.get_cookie_string`` raises ``requests.HTTPError``
+            # (a ``RequestException`` subclass) when the upstream answers 403
+            # before a cookie string can be collected; let the caller fall
+            # back to the next transport instead of propagating the raw error.
             return None
         else:
             return response.text
