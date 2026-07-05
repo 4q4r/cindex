@@ -18,14 +18,6 @@ from apps.ingestion.connectors import (
 )
 
 
-class _HtmlResponse:
-    """Dummy HTML response for parser sanitation tests."""
-
-    def __init__(self, content: bytes, content_type: str) -> None:
-        self.content = content
-        self.headers = {"Content-Type": content_type}
-
-
 class _ScriptConnector(BaseConnector):
     """Dummy connector whose landing page contains boilerplate scripts."""
 
@@ -34,7 +26,7 @@ class _ScriptConnector(BaseConnector):
         search_url="https://example.org/search",
     )
 
-    def _request_response(self, url: str, params=None, accept=None):  # type: ignore[override]
+    def _request_text(self, url, params=None, *, ocr_language="eng") -> str:  # type: ignore[override]
         html = """
         <html>
           <head>
@@ -49,11 +41,7 @@ class _ScriptConnector(BaseConnector):
           </body>
         </html>
         """
-        response = _HtmlResponse(
-            content=html.encode("utf-8"),
-            content_type="text/html; charset=utf-8",
-        )
-        return self._build_scraper(), response, html
+        return html
 
     def _extract_pdf_url(self, soup, *blobs) -> str:  # type: ignore[override]
         return ""

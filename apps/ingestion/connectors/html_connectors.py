@@ -1,12 +1,15 @@
 """HTML-mode and WebSocket-mode source connectors.
 
-These connectors use cloudscraper for HTTP transport because HTML-mode sources
-may require Cloudflare challenge resolution. API-mode connectors are in
-api_connectors.py and use aiohttp instead.
+These connectors fetch HTML/XML/RSS payloads through the browser sidecar
+(``BrowserTransport`` → cloakbrowser Chromium), which solves JS challenges
+(BunnyCDN Shield, Cloudflare Turnstile) and presents a real-browser TLS
+fingerprint. API-mode connectors are in api_connectors.py and talk to explicit
+JSON endpoints over aiohttp.
 """
 
 from __future__ import annotations
 
+import json
 import os
 import re
 import time
@@ -16,7 +19,6 @@ from urllib.parse import quote_plus, urljoin, urlparse
 from xml.etree import ElementTree as ET
 
 import aiohttp
-import requests
 import structlog
 from bs4 import BeautifulSoup
 
@@ -206,48 +208,25 @@ class SciEngineConnector(BaseConnector):
 
     def _request_search_page(self, query: str, page: int) -> dict:
         """Request one SciEngine search page and return the parsed JSON."""
-        scraper = self._build_scraper()
-        headers = self._generate_headers()
-        headers["Accept"] = "application/json, text/plain, */*"
         form = {
             self.profile.query_param: query,
             "searchType": "all",
             "curpage": str(page),
             "dept": str(self._PAGE_SIZE),
         }
-        last_error: Exception | None = None
-        for attempt in range(1, self.MAX_ATTEMPTS + 1):
-            try:
-                response = scraper.post(
-                    self.profile.search_url,
-                    data=form,
-                    headers=headers,
-                    timeout=self.REQUEST_TIMEOUT_SECONDS,
-                )
-            except (RuntimeError, ConnectionError, TimeoutError) as exc:
-                # pragma: no cover - network dependent
-                last_error = exc
-                if attempt < self.MAX_ATTEMPTS:
-                    time.sleep(0.6 * attempt)
-                    continue
-                msg = f"sciengine: request failed after {attempt} attempts: {exc}"
-                raise ConnectorFetchError(msg) from exc
-            status = int(response.status_code)
-            if status >= _HTTP_BAD_REQUEST:
-                msg = f"sciengine: api http {status}"
-                raise ConnectorFetchError(msg)  # contextual validation raise
-            try:
-                return response.json()
-            except ValueError as exc:
-                # pragma: no cover - network dependent
-                last_error = exc
-                if attempt < self.MAX_ATTEMPTS:
-                    time.sleep(0.6 * attempt)
-                    continue
-                msg = "sciengine: invalid api json"
-                raise ConnectorFetchError(msg) from exc
-        msg = f"sciengine: request failed after retries: {last_error}"
-        raise ConnectorFetchError(msg)
+        result = self._transport.post_form(
+            self.profile.search_url,
+            form,
+            accept="application/json, text/plain, */*",
+        )
+        body_text = result.body_text
+        if body_text is None:
+            body_text = result.body_bytes.decode("utf-8", errors="replace")
+        try:
+            return json.loads(body_text)
+        except json.JSONDecodeError as exc:
+            msg = "sciengine: invalid api json"
+            raise ConnectorFetchError(msg) from exc
 
     def _extract_from_payload(
         self,
@@ -346,27 +325,23 @@ class CyberLeninkaConnector(BaseConnector):
 
     def _fetch_api(self, query: str, limit: int) -> list[RawArticle]:
         """Fetch API."""
-        scraper = self._build_scraper()
-        headers = self._generate_headers()
-        headers["Content-Type"] = "application/json"
         payload = {
             "q": query,
             "size": max(3, limit * 2),
             "from": 0,
             "mode": "articles",
         }
-        response = scraper.post(
+        result = self._transport.post_json(
             "https://cyberleninka.ru/api/search",
-            json=payload,
-            headers=headers,
-            timeout=self.REQUEST_TIMEOUT_SECONDS,
+            payload,
+            accept="application/json, text/plain, */*",
         )
-        if int(response.status_code) >= _HTTP_BAD_REQUEST:
-            msg = f"cyberleninka: api http {response.status_code}"
-            raise ConnectorFetchError(msg)
+        body_text = result.body_text
+        if body_text is None:
+            body_text = result.body_bytes.decode("utf-8", errors="replace")
         try:
-            data = response.json()
-        except ValueError as exc:  # pragma: no cover - network dependent
+            data = json.loads(body_text)
+        except json.JSONDecodeError as exc:
             msg = "cyberleninka: invalid api json"
             raise ConnectorFetchError(msg) from exc
         return self._extract_from_payload(query, data, limit)
@@ -549,11 +524,9 @@ class MathNetConnector(BaseConnector):
     def _post_mathnet_search(self, search_query: str) -> str:
         """Post a search request to MathNet and return the HTML response.
 
-        Raises ConnectorFetchError if the request fails after retries.
+        Raises ``ConnectorFetchError`` if the sidecar transport fails; the
+        ``BrowserTransport`` already retries transient sidecar/network errors.
         """
-        scraper = self._build_scraper()
-        headers = self._generate_headers()
-        headers["Content-Type"] = "application/x-www-form-urlencoded"
         payload = {
             "tjrnid": "",
             "keywords": search_query,
@@ -567,31 +540,14 @@ class MathNetConnector(BaseConnector):
             "yr1": "",
             "yr2": "",
         }
-        last_error: Exception | None = None
-        html = ""
-        for attempt in range(1, self.MAX_ATTEMPTS + 1):
-            try:
-                response = scraper.post(
-                    "https://www.mathnet.ru/php/searchpapers_do.phtml?jrnid=&option_lang=eng",
-                    data=payload,
-                    headers=headers,
-                    timeout=self.REQUEST_TIMEOUT_SECONDS,
-                )
-                if int(response.status_code) >= _HTTP_BAD_REQUEST:
-                    msg = f"mathnet: http {response.status_code}"
-                    raise ConnectorFetchError(msg)
-                html = response.text
-                break
-            except (ValueError, RuntimeError, ConnectionError) as exc:
-                last_error = exc
-                if attempt < self.MAX_ATTEMPTS:
-                    time.sleep(0.6 * attempt)
-        if not html:
-            msg = f"mathnet: request failed after retries: {last_error}"
-            raise ConnectorFetchError(
-                msg,
-            )
-        return html
+        result = self._transport.post_form(
+            "https://www.mathnet.ru/php/searchpapers_do.phtml?jrnid=&option_lang=eng",
+            payload,
+        )
+        body_text = result.body_text
+        if body_text is None:
+            body_text = result.body_bytes.decode("utf-8", errors="replace")
+        return body_text
 
     def _search_mathnet(
         self,
@@ -1054,29 +1010,18 @@ class SciELOConnector(BaseConnector):
     def _request_xml_text(self, url: str) -> str:
         """Send a request for XML text.
 
-        Network errors (read timeout, connection reset, DNS failure) are
-        translated into ``ConnectorFetchError`` so ``_fetch_oai`` can move
-        on to the next OAI mirror instead of aborting the whole SciELO
-        fetch. A ``requests.ReadTimeout`` on one mirror must not propagate
-        past the ``except ConnectorFetchError`` guard in ``fetch``.
+        Transport failures (read timeout, connection reset, DNS failure,
+        sidecar 502/504) are raised as ``ConnectorFetchError`` by
+        ``BrowserTransport``, so ``_fetch_oai`` can move on to the next OAI
+        mirror instead of aborting the whole SciELO fetch. A transport error
+        on one mirror must not propagate past the ``except
+        ConnectorFetchError`` guard in ``fetch``.
         """
-        scraper = self._build_scraper()
-        headers = self._generate_headers()
-        headers.setdefault("Accept", "application/xml,text/xml,*/*")
-        try:
-            response = scraper.get(
-                url,
-                headers=headers,
-                timeout=self.REQUEST_TIMEOUT_SECONDS,
-            )
-        except requests.RequestException as exc:
-            msg = f"{self.profile.source_key}: oai transport error: {exc}"
-            raise ConnectorFetchError(msg) from exc
-        status = int(response.status_code)
-        if status >= _HTTP_BAD_REQUEST:
-            msg = f"{self.profile.source_key}: http {status}"
-            raise ConnectorFetchError(msg)
-        return response.content.decode("utf-8", errors="replace")
+        result = self._transport.fetch(
+            url,
+            accept="application/xml,text/xml,*/*",
+        )
+        return result.body_bytes.decode("utf-8", errors="replace")
 
     def _fetch_html(self, query: str, limit: int) -> list[RawArticle]:
         """Fetch HTML."""

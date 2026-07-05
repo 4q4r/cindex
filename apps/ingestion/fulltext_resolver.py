@@ -183,24 +183,24 @@ class LawfulFullTextResolver:
         if not url.startswith("http"):
             return ""
         try:
-            _, response, body = self.connector._request_response(  # noqa: SLF001
+            result = self.connector._transport.fetch(  # noqa: SLF001
                 url,
-                params=None,
                 accept="text/html,application/xhtml+xml,application/pdf,*/*",
             )
-            content_type = str(response.headers.get("Content-Type", ""))
-            body_bytes = bytes(response.content or b"")
             if self.connector._is_pdf_response(  # noqa: SLF001
                 url,
-                content_type,
-                body_bytes,
+                result.content_type,
+                result.body_bytes,
             ):
                 pdf_text = self.connector._extract_pdf_text_with_language(  # noqa: SLF001
-                    body_bytes,
+                    result.body_bytes,
                     ocr_language=ocr_language,
                 )
                 if pdf_text:
                     return normalize_scholarly_text(pdf_text)
+            body = result.body_text
+            if body is None:
+                body = result.body_bytes.decode("utf-8", errors="replace")
             if body:
                 soup = BaseConnector._sanitize_html_soup(  # noqa: SLF001
                     BeautifulSoup(body, "lxml"),

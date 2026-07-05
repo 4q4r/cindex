@@ -1,7 +1,8 @@
 """API-mode connectors adapted from paper-search-mcp.
 
-These connectors use aiohttp instead of cloudscraper since API endpoints
-do not require Cloudflare challenge handling.
+These connectors talk to explicit JSON REST endpoints over aiohttp; they do
+not need the browser sidecar because API endpoints serve real JSON rather
+than JS-challenge pages.
 """
 
 # ruff: noqa: RUF001  # en-dashes in citation regex patterns are intentional
@@ -1181,15 +1182,15 @@ class IACRConnector(AsyncApiConnector):
 
     The ePrint search page (``/search``) is guarded by an aggressive
     anti-bot "tin foil hat" wall that returns a block page even to real
-    browser fingerprints via cloudscraper, and IACR exposes no public
-    search API. The RSS feed (``/rss/rss.xml``) is the only unblocked,
-    machine-readable channel: it lists the ~100 most recent eprints with
-    title, link, authors (``dc:creator``), publication date and an
-    abstract snippet. The feed is fetched with aiohttp (it is served
-    without the anti-bot wall) and filtered client-side to items whose
-    title or abstract contains every query token -- the same approach
-    every known IACR integration takes. IACR ePrint does not assign
-    DOIs, so ``doi`` is left empty rather than fabricated.
+    browsers, and IACR exposes no public search API. The RSS feed
+    (``/rss/rss.xml``) is the only unblocked, machine-readable channel: it
+    lists the ~100 most recent eprints with title, link, authors
+    (``dc:creator``), publication date and an abstract snippet. The feed is
+    fetched with aiohttp (it is served without the anti-bot wall) and
+    filtered client-side to items whose title or abstract contains every
+    query token -- the same approach every known IACR integration takes.
+    IACR ePrint does not assign DOIs, so ``doi`` is left empty rather than
+    fabricated.
     """
 
     _DC_NS = "http://purl.org/dc/elements/1.1/"
@@ -1209,9 +1210,11 @@ class IACRConnector(AsyncApiConnector):
         return self._RSS_URL
 
     async def _fetch_async(self, query: str, limit: int) -> list[RawArticle]:
-        headers = self._generate_headers()
-        headers["Accept"] = "application/rss+xml,application/xml,text/xml,*/*;q=0.8"
-        headers["Accept-Language"] = "en-US,en;q=0.9"
+        headers = {
+            "Accept": "application/rss+xml,application/xml,text/xml,*/*;q=0.8",
+            "Accept-Language": "en-US,en;q=0.9",
+            "User-Agent": "cindex/1.0 (academic-article-search)",
+        }
         try:
             async with (
                 aiohttp.ClientSession() as session,
@@ -1304,11 +1307,11 @@ class IACRConnector(AsyncApiConnector):
 
 
 class ExaConnector(AsyncApiConnector):
-    """Exa source connector via REST API (cloudscraper transport).
+    """Exa source connector via REST API (aiohttp transport).
 
-    ``api.exa.ai`` is behind Cloudflare, which 403-blocks aiohttp's TLS
-    fingerprint with a challenge page, so POSTs go through cloudscraper
-    (browser TLS impersonation) in a worker thread.
+    ``api.exa.ai`` is a documented REST endpoint; per the project transport
+    policy explicit APIs use aiohttp directly. The POST is a JSON request
+    authenticated with ``x-api-key``.
     """
 
     profile = SourceProfile(
@@ -1333,25 +1336,25 @@ class ExaConnector(AsyncApiConnector):
         url: str,
         headers: dict[str, str],
         payload: dict,
-        timeout: float,  # noqa: ASYNC109  # forwarded to sync cloudscraper, not async wait
+        timeout: float,  # noqa: ASYNC109  # total aiohttp request timeout
     ) -> dict:
-        """POST JSON to Exa via cloudscraper in a worker thread.
+        """POST JSON to Exa over aiohttp.
 
-        ``api.exa.ai`` sits behind Cloudflare, which 403-blocks aiohttp's
-        TLS fingerprint with an HTML challenge page (``server: cloudflare``,
-        ``cf-ray`` set) even with a valid API key and browser-like headers.
-        cloudscraper impersonates a real browser TLS stack and is allowed
-        through. It is sync (requests-based), so it runs in
-        ``asyncio.to_thread`` to stay non-blocking. Returns the parsed JSON
-        body; raises ``ConnectorFetchError`` on non-200 or invalid JSON.
+        ``api.exa.ai`` is a documented REST endpoint; per the project transport
+        policy explicit APIs use aiohttp directly. Transient transport errors
+        (network, timeout) propagate as ``aiohttp.ClientError`` /
+        ``TimeoutError`` so ``_fetch_single_lang`` can retry them; non-2xx
+        responses and invalid JSON raise ``ConnectorFetchError`` (terminal —
+        retrying a 4xx or a corrupt body will not help).
         """
-
-        def _do_post() -> tuple[int, str]:
-            scraper = self._build_scraper()
-            resp = scraper.post(url, headers=headers, json=payload, timeout=timeout)
-            return int(resp.status_code), resp.text
-
-        status, text = await asyncio.to_thread(_do_post)
+        async with (
+            aiohttp.ClientSession(
+                timeout=aiohttp.ClientTimeout(total=timeout),
+            ) as session,
+            session.post(url, json=payload, headers=headers) as resp,
+        ):
+            text = await resp.text()
+            status = resp.status
         if status >= HTTP_ERROR_THRESHOLD:
             msg = f"{self.profile.source_key}: HTTP {status} for {url}"
             raise ConnectorFetchError(msg)
@@ -1390,7 +1393,7 @@ class ExaConnector(AsyncApiConnector):
                 return self._extract_from_payload(lang_query, data, per_lang), None
             except ConnectorFetchError:
                 break
-            except (ValueError, RuntimeError, OSError) as exc:
+            except (aiohttp.ClientError, TimeoutError, OSError) as exc:
                 if attempt < self.MAX_ATTEMPTS:
                     await asyncio.sleep(0.6 * attempt)
                 else:

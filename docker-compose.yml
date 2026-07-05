@@ -59,6 +59,7 @@ services:
       CINDEX_RESUME_SEARCH_JOBS: "1"
       CINDEX_LOCAL_IMPORT_SCAN_INTERVAL_SECONDS: "30"
       CINDEX_LOCAL_IMPORT_DIRECTORY: /app/local_imports
+      CINDEX_BROWSER_URL: http://browser:8081
     deploy:
       resources:
         limits:
@@ -72,6 +73,8 @@ services:
     command: ["-A", "config", "worker", "-l", "info"]
     depends_on:
       app:
+        condition: service_healthy
+      browser:
         condition: service_healthy
       redis:
         condition: service_healthy
@@ -95,6 +98,34 @@ services:
         condition: service_healthy
       redis:
         condition: service_healthy
+    restart: unless-stopped
+
+  browser:
+    build: ./browser_service
+    environment:
+      CINDEX_BROWSER_PORT: "8081"
+      CINDEX_PROFILE_DIR: /data/cloak-profile
+      CINDEX_BROWSER_HEADLESS: "1"
+      CINDEX_BROWSER_CONCURRENCY: "4"
+    volumes:
+      - cloak_profile:/data/cloak-profile
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "python",
+          "-c",
+          "import sys, urllib.request; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:8081/healthz', timeout=4).status == 200 else 1)",
+        ]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 15s
+    deploy:
+      resources:
+        limits:
+          cpus: "1.00"
+          memory: 2g
     restart: unless-stopped
 
   db:
@@ -155,3 +186,4 @@ services:
 
 volumes:
   pgdata:
+  cloak_profile:

@@ -2,37 +2,47 @@ from __future__ import annotations
 
 from types import SimpleNamespace
 
+from apps.ingestion.connectors.base import FetchResult
 from apps.ingestion.fulltext_resolver import LawfulFullTextResolver
 
 
-class _DummyResponse:
-    def __init__(self, content: bytes, content_type: str) -> None:
-        self.content = content
-        self.headers = {"Content-Type": content_type}
+class _DummyTransport:
+    """Stand-in for ``BrowserTransport`` returning canned PDF payloads."""
 
-
-class _DummyConnector:
-    def _request_response(self, url: str, params=None, accept=None):
+    def fetch(self, url, *, params=None, accept=None, timeout=None) -> FetchResult:
         if url == "https://example.org/full.pdf":
-            pdf_bytes = b"%PDF-1.4 dummy"
-            return (
-                None,
-                _DummyResponse(pdf_bytes, "application/pdf"),
-                pdf_bytes.decode("latin-1"),
+            return FetchResult(
+                status=200,
+                content_type="application/pdf",
+                body_bytes=b"%PDF-1.4 dummy",
+                body_text=None,
             )
         msg = f"unexpected url {url}"
         raise AssertionError(msg)
 
-    def _is_pdf_response(self, url: str, content_type: str, body: bytes) -> bool:
+    def post_form(self, *args, **kwargs) -> FetchResult:
+        msg = "post_form not expected"
+        raise AssertionError(msg)
+
+    def post_json(self, *args, **kwargs) -> FetchResult:
+        msg = "post_json not expected"
+        raise AssertionError(msg)
+
+
+class _DummyConnector:
+    def __init__(self) -> None:
+        self._transport = _DummyTransport()
+
+    def _is_pdf_response(self, url, content_type, body) -> bool:
         return url.endswith(".pdf") or "application/pdf" in content_type
 
-    def _extract_pdf_text(self, pdf_bytes: bytes) -> str:
-        return "PDF body text"
-
     def _extract_pdf_text_with_language(
-        self, pdf_bytes: bytes, *, ocr_language: str = "eng"
+        self,
+        pdf_bytes,
+        *,
+        ocr_language: str = "eng",
     ) -> str:
-        return self._extract_pdf_text(pdf_bytes)
+        return "PDF body text"
 
     def _extract_pdf_url(self, soup, raw_url, raw_full_text, combined_page_text) -> str:
         return ""

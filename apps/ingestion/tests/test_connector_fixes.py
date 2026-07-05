@@ -1,5 +1,7 @@
 """Tests for connector quick-win fixes: author/volume/journal/abstract extraction."""
 
+import pytest
+
 from apps.ingestion.connectors import (
     CrossrefConnector,
     CyberLeninkaConnector,
@@ -530,97 +532,170 @@ class TestOpenAlexJournal:
         assert items[0].journal == ""
 
 
-class TestChallengeRetryHTTPError:
-    """_challenge_retry must swallow cloudscraper's HTTPError and return None.
+class TestBrowserTransport:
+    """``BrowserTransport`` proxies fetches to the cloakbrowser sidecar.
 
-    ``cloudscraper.get_tokens`` raises ``requests.HTTPError`` when the
-    upstream answers 403 before tokens can be collected (e.g. the SciELO
-    search endpoint). The retry helper must absorb that and return ``None``
-    so ``_resolve_cloudflare_challenge`` returns the original 403 status,
-    ``_request_response`` raises ``ConnectorFetchError``, and the SciELO
-    connector falls back to OAI/HTML. Before the fix the raw ``HTTPError``
-    propagated past every ``except ConnectorFetchError`` and aborted the
-    whole fetch.
+    ``Session.post`` is stubbed so no real HTTP is performed. The tests pin
+    the contract connectors rely on: transient sidecar failures (network
+    errors, 502/504) retry with backoff; upstream HTTP errors
+    (``status >= 400`` returned in the 200 body) and non-retryable sidecar
+    errors (422/other 4xx) raise :class:`ConnectorFetchError`.
     """
 
-    def test_challenge_retry_returns_none_on_http_error(self, monkeypatch) -> None:
+    @staticmethod
+    def _make_transport(monkeypatch):
+        from apps.ingestion.connectors import base
+
+        monkeypatch.setattr(base.time, "sleep", lambda _seconds: None)
+        return base.BrowserTransport(source_key="test", max_attempts=3)
+
+    @staticmethod
+    def _response(status_code, payload):
+        class _Resp:
+            def __init__(self) -> None:
+                self.status_code = status_code
+
+            def json(self):
+                return payload
+
+        return _Resp()
+
+    def test_fetch_returns_decoded_text_body(self, monkeypatch) -> None:
+        transport = self._make_transport(monkeypatch)
+        monkeypatch.setattr(
+            transport._session,
+            "post",
+            lambda *a, **k: self._response(
+                200,
+                {
+                    "status": 200,
+                    "content_type": "text/html",
+                    "encoding": "text",
+                    "body": "<html>ok</html>",
+                },
+            ),
+        )
+        result = transport.fetch("https://example.org")
+        assert result.status == 200
+        assert result.body_text == "<html>ok</html>"
+        assert result.body_bytes == b"<html>ok</html>"
+        assert result.content_type == "text/html"
+
+    def test_fetch_decodes_base64_body(self, monkeypatch) -> None:
+        import base64
+
+        transport = self._make_transport(monkeypatch)
+        raw = b"%PDF-1.4 binary"
+        monkeypatch.setattr(
+            transport._session,
+            "post",
+            lambda *a, **k: self._response(
+                200,
+                {
+                    "status": 200,
+                    "content_type": "application/pdf",
+                    "encoding": "base64",
+                    "body": base64.b64encode(raw).decode(),
+                },
+            ),
+        )
+        result = transport.fetch("https://example.org")
+        assert result.body_bytes == raw
+        assert result.body_text is None
+
+    def test_upstream_http_error_raises(self, monkeypatch) -> None:
+        from apps.ingestion.connectors import ConnectorFetchError
+
+        transport = self._make_transport(monkeypatch)
+        monkeypatch.setattr(
+            transport._session,
+            "post",
+            lambda *a, **k: self._response(
+                200,
+                {
+                    "status": 403,
+                    "content_type": "text/html",
+                    "encoding": "text",
+                    "body": "<html>403</html>",
+                },
+            ),
+        )
+        with pytest.raises(ConnectorFetchError):
+            transport.fetch("https://example.org")
+
+    def test_retries_on_network_error_then_succeeds(self, monkeypatch) -> None:
         import requests
 
-        def _raise(*args: object, **kwargs: object) -> None:
-            raise requests.HTTPError("403 Client Error: Forbidden for url: x")
+        transport = self._make_transport(monkeypatch)
+        calls = {"n": 0}
 
+        def _post(*a, **k):
+            calls["n"] += 1
+            if calls["n"] == 1:
+                raise requests.ConnectionError("boom")
+            return self._response(
+                200,
+                {
+                    "status": 200,
+                    "content_type": "text/html",
+                    "encoding": "text",
+                    "body": "ok",
+                },
+            )
+
+        monkeypatch.setattr(transport._session, "post", _post)
+        result = transport.fetch("https://example.org")
+        assert result.body_text == "ok"
+        assert calls["n"] == 2
+
+    def test_retries_on_502_then_raises_after_max_attempts(self, monkeypatch) -> None:
+        from apps.ingestion.connectors import ConnectorFetchError
+
+        transport = self._make_transport(monkeypatch)
         monkeypatch.setattr(
-            "apps.ingestion.connectors.base.cloudscraper.get_tokens",
-            _raise,
+            transport._session,
+            "post",
+            lambda *a, **k: self._response(502, {}),
         )
-        conn = SciELOConnector()
-        scraper = conn._build_scraper()
-        assert conn._challenge_retry(scraper, "https://example.org", None) is None
+        with pytest.raises(ConnectorFetchError):
+            transport.fetch("https://example.org")
 
-    def test_challenge_retry_cookie_string_returns_none_on_http_error(
-        self,
-        monkeypatch,
-    ) -> None:
-        import requests
+    def test_sidecar_422_raises_without_retry(self, monkeypatch) -> None:
+        from apps.ingestion.connectors import ConnectorFetchError
 
-        def _raise(*args: object, **kwargs: object) -> None:
-            raise requests.HTTPError("403 Client Error: Forbidden for url: x")
+        transport = self._make_transport(monkeypatch)
+        calls = {"n": 0}
 
-        monkeypatch.setattr(
-            "apps.ingestion.connectors.base.cloudscraper.get_cookie_string",
-            _raise,
-        )
-        conn = SciELOConnector()
-        scraper = conn._build_scraper()
-        assert (
-            conn._challenge_retry_cookie_string(scraper, "https://example.org", None)
-            is None
-        )
+        def _post(*a, **k):
+            calls["n"] += 1
+            return self._response(422, {})
 
-    def test_challenge_retry_cookie_string_does_not_forward_user_agent(
-        self,
-        monkeypatch,
-    ) -> None:
-        """``get_cookie_string`` must not receive a ``user_agent`` kwarg.
+        monkeypatch.setattr(transport._session, "post", _post)
+        with pytest.raises(ConnectorFetchError):
+            transport.fetch("https://example.org")
+        assert calls["n"] == 1
 
-        cloudscraper 1.2.71's ``get_cookie_string`` delegates to
-        ``get_tokens`` which only pops a fixed whitelist of kwargs and
-        forwards the rest to ``Session.request``. ``user_agent`` is not in
-        that whitelist, so passing it raised
-        ``TypeError: Session.request() got an unexpected keyword argument
-        'user_agent'``. The user agent is a *return* value of
-        ``get_cookie_string``; it must not be passed as input. This spy
-        reproduces cloudscraper's forwarding behavior and fails the test if
-        the helper regresses.
-        """
+    def test_post_json_forwards_json_body(self, monkeypatch) -> None:
+        transport = self._make_transport(monkeypatch)
+        captured = {}
 
-        def _spy(*args: object, **kwargs: object) -> tuple[str, str]:
-            if "user_agent" in kwargs:
-                raise TypeError(
-                    "Session.request() got an unexpected keyword argument 'user_agent'",
-                )
-            return "cf_clearance=stub; path=/", "StubbedAgent/1.0"
+        def _post(endpoint, json=None, timeout=None):
+            captured["payload"] = json
+            return self._response(
+                200,
+                {
+                    "status": 200,
+                    "content_type": "application/json",
+                    "encoding": "text",
+                    "body": "{}",
+                },
+            )
 
-        monkeypatch.setattr(
-            "apps.ingestion.connectors.base.cloudscraper.get_cookie_string",
-            _spy,
-        )
-
-        class _StubResponse:
-            status_code = 200
-
-            text = "<html>ok</html>"
-
-        def _stub_get(*args: object, **kwargs: object) -> _StubResponse:
-            return _StubResponse()
-
-        conn = SciELOConnector()
-        scraper = conn._build_scraper()
-        monkeypatch.setattr(scraper, "get", _stub_get)
-        assert (
-            conn._challenge_retry_cookie_string(scraper, "https://example.org", None)
-            == "<html>ok</html>"
-        )
+        monkeypatch.setattr(transport._session, "post", _post)
+        transport.post_json("https://example.org/api", {"q": "math"})
+        assert captured["payload"]["method"] == "POST"
+        assert captured["payload"]["json"] == {"q": "math"}
+        assert captured["payload"]["url"] == "https://example.org/api"
 
 
 class TestSciELOOaiJournal:
@@ -784,7 +859,6 @@ class TestSciELOOaiFetch:
         assert len(items) == 2
 
     def test_no_relevant_raises(self, monkeypatch) -> None:
-        import pytest
 
         from apps.ingestion.connectors.base import ConnectorFetchError
 

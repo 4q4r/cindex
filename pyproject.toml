@@ -17,8 +17,6 @@ dependencies = [
   "python-dotenv>=1.0",
   "uvicorn>=0.30",
   "gunicorn>=23.0",
-  "cloudscraper>=1.2.71",
-  "browserforge>=1.2.4",
   "websockets>=14.2",
   "uvicorn-worker>=0.4.0",
   "pymupdf>=1.27.2",
@@ -83,6 +81,7 @@ DJANGO_SETTINGS_MODULE = "config.settings"
 python_files = ["test_*.py"]
 python_classes = ["Test*"]
 python_functions = ["test_*"]
+norecursedirs = [".git", ".venv", "node_modules", "browser_service"]
 addopts = [
   "--strict-markers",
   "--strict-config",

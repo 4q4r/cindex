@@ -38,6 +38,10 @@ flowchart LR
         CONN["24 source connectors\napi / html connectors"]
     end
 
+    subgraph Sidecar["Browser sidecar"]
+        BROWSER["cloakbrowser Chromium\nbrowser_service · POST /fetch"]
+    end
+
     subgraph Stores
         PG[("PostgreSQL 18.3\narticles · sources · search jobs")]
         REDIS[("Redis\nCelery broker + backend")]
@@ -51,6 +55,8 @@ flowchart LR
     BEAT --> INGEST
     INGEST --> CONN
     CONN --> SVC
+    CONN -- "HTML mode\nPOST /fetch" --> BROWSER
+    BROWSER --> CONN
     WORKER --> REDIS
     WORKER --> PG
     SVC --> ELIG
@@ -82,7 +88,7 @@ Request flow:
 | Async     | Celery 5 with Redis broker/result backend; Celery beat for nightly ingestion                            |
 | Database  | PostgreSQL 18.3 (`psycopg`) — the only persistence and search store                                     |
 | Search    | `SearchService` — Postgres `icontains` + weighted `Case/When` scoring (no FTS dependency at this layer) |
-| Ingestion | `cloudscraper` (HTML) + `aiohttp` (API) connectors with circuit-breaker and retry                       |
+| Ingestion | `cloakbrowser` Chromium sidecar (HTML) + `aiohttp` (API) connectors with circuit-breaker and retry      |
 | Frontend  | React 19, Vite 7, TypeScript 5.9, Tailwind 4 (built with **bun**)                                       |
 | Runtime   | `gcr.io/distroless/python3-debian13` (non-root, no shell), gunicorn ASGI                                |
 | Edge      | nginx serving the built frontend and proxying `/api` to the Django app                                  |
@@ -102,8 +108,9 @@ apps/
 config/          Django settings, ASGI/WSGI, Celery app, gunicorn config
 frontend/        React + Vite + Tailwind client (bun-managed)
 nginx/           Reverse-proxy config
+browser_service/ Browser sidecar (cloakbrowser Chromium, FastAPI) for HTML connectors
 Dockerfile       Multi-stage build → distroless runtime
-docker-compose.yml   app + celery worker/beat + postgres + redis + nginx
+docker-compose.yml   app + celery worker/beat + browser sidecar + postgres + redis + nginx
 .github/workflows/ci.yml   lint, unit tests, scheduled live smoke/quality
 docs/archive/    Historical (abandoned-stack) documents — see its README
 ```
@@ -139,8 +146,17 @@ docs/archive/    Historical (abandoned-stack) documents — see its README
 - **API mode (`aiohttp`):** Europe PMC, OpenAlex, Crossref, PubMed, arXiv, DOAJ,
   PMC, CORE, DBLP, HAL, Zenodo, IACR, and the optional Exa connector
   (enabled only when `EXA_API_KEY` is set).
-- **HTML mode (`cloudscraper`):** CiNii, SciEngine, CyberLeninka, MathNet,
+- **HTML mode (`cloakbrowser` sidecar):** CiNii, SciEngine, CyberLeninka, MathNet,
   SciELO, Persee, OpenEdition, Medknow, DergiPark, Hrcak, AJOL.
+
+HTML-mode connectors do not import a browser stack. They call a small FastAPI
+sidecar (`browser_service/`, `POST /fetch`) that owns a single persistent
+source-patched Chromium context (cloakbrowser, `humanize=True`,
+`human_preset="careful"`) and returns the raw server body for HTML/XML/JSON/RSS.
+This passes JS challenges (BunnyCDN Shield, Cloudflare Turnstile, FingerprintJS)
+that Cloudflare-only scrapers cannot. The worker reaches it at
+`CINDEX_BROWSER_URL` (default `http://browser:8081`) over the internal docker
+network. See `browser_service/README.md` for the sidecar contract.
 
 Each connector implements a `BaseConnector` contract with source-specific
 selectors and evidence mapping. `IngestionService` wraps the fan-out with a
@@ -206,10 +222,14 @@ bun run dev        # local dev server
 ## Deployment (Docker)
 
 `docker-compose.yml` brings up the full stack: Django app, Celery worker, Celery
-beat, PostgreSQL 18.3, Redis 8, the built frontend, and nginx. Secrets
-(`postgres_password`, `secret_key`) are provided as files via Docker secrets,
-not environment literals. The runtime image is distroless and runs as a
-non-root user with no shell.
+beat, the browser sidecar (cloakbrowser Chromium), PostgreSQL 18.3, Redis 8,
+the built frontend, and nginx. Secrets (`postgres_password`, `secret_key`) are
+provided as files via Docker secrets, not environment literals. The app/worker
+runtime image is distroless and runs as a non-root user with no shell; only the
+browser sidecar carries a slim Python + Chromium runtime (it cannot be
+distroless because Chromium needs shared libraries). The worker reaches the
+sidecar at `CINDEX_BROWSER_URL` (default `http://browser:8081`) and depends on
+its health check before starting.
 
 ```bash
 docker compose up -d --build
