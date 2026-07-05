@@ -706,6 +706,31 @@ class TestSciELOArticleMatchesTerms:
             ["machine", "learning"],
         )
 
+    def test_partial_match_is_rejected(self) -> None:
+        """AND semantics: a single shared token must not pass a 2-term query.
+
+        ``learning by doing`` and ``Blended learning`` share ``learning``
+        with ``machine learning`` but are not about ML; the matcher must
+        require both terms.
+        """
+        from apps.ingestion.connectors.base import RawArticle
+
+        art = RawArticle(
+            source_key="scielo",
+            title="A relationship between external public debt and economic growth",
+            url="https://x",
+            abstract="An endogenous growth model with learning by doing.",
+            full_text="",
+            language="en",
+            year=2015,
+            doi="",
+            journal="Estudios Económicos",
+        )
+        assert not SciELOConnector._article_matches_terms(
+            art,
+            ["machine", "learning"],
+        )
+
 
 class TestSciELOOaiFetch:
     """_fetch_oai post-filters records by query terms and cleans journal.
@@ -769,3 +794,33 @@ class TestSciELOOaiFetch:
 
         with pytest.raises(ConnectorFetchError):
             conn._fetch_oai("quantum computing", 3)
+
+    def test_oai_fails_over_to_next_mirror(self, monkeypatch) -> None:
+        """A transport error on the first mirror falls through to the next.
+
+        ``_request_xml_text`` translates network errors into
+        ``ConnectorFetchError``. ``_fetch_oai`` must catch that exception per
+        endpoint and move on to the next mirror rather than aborting the
+        whole fetch — a read timeout on ``scielo.isciii.es`` must surface
+        records from ``scielo.org.mx``.
+        """
+        from apps.ingestion.connectors.base import ConnectorFetchError
+
+        conn = SciELOConnector()
+        isciii, mexico = conn.OA_MIRRORS
+
+        def stub(url: str) -> str:
+            if url.startswith(isciii):
+                msg = "scielo: oai transport error: simulated read timeout"
+                raise ConnectorFetchError(msg)
+            if url.startswith(mexico):
+                return self._OAI_XML
+            msg = f"unexpected url: {url}"
+            raise AssertionError(msg)
+
+        monkeypatch.setattr(conn, "_request_xml_text", stub)
+
+        items = conn._fetch_oai("machine learning", 3)
+        assert len(items) == 1
+        assert "Machine learning" in items[0].title
+        assert items[0].journal == "Computer Methods"
