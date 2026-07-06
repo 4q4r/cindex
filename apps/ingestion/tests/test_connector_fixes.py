@@ -1206,6 +1206,21 @@ class TestAJOLAbstractFromArticlePage:
         "</head><body><p>no abstract here</p></body></html>"
     )
 
+    # Heading INSIDE the abstract container — the extractor must prefer the
+    # ``<p>`` over the bare ``div`` so the literal word "Abstract" does not
+    # leak into the extracted abstract (``select_one`` returns matches in
+    # document order, so a bare ``div.article-abstract`` listed alongside the
+    # ``<p>`` selector would always win and include the heading text).
+    _ARTICLE_HTML_HEADING_INSIDE = (
+        "<html><body>"
+        '<div class="article-abstract">'
+        "<h3>Abstract</h3>"
+        "<p>The two major motivations in medical science are to prevent and "
+        "diagnose diseases with care.</p>"
+        "</div>"
+        "</body></html>"
+    )
+
     def test_page_range_abstract_replaced_by_article_page_abstract(
         self,
         monkeypatch,
@@ -1260,6 +1275,34 @@ class TestAJOLAbstractFromArticlePage:
         assert enriched.abstract == (
             "A genuine long abstract describing the study in detail."
         )
+
+    def test_heading_inside_abstract_div_does_not_leak(
+        self,
+        monkeypatch,
+    ) -> None:
+        from apps.ingestion.connectors.base import RawArticle
+
+        conn = AJOLConnector()
+        monkeypatch.setattr(
+            conn,
+            "_request_text",
+            lambda _url, **_kwargs: self._ARTICLE_HTML_HEADING_INSIDE,
+        )
+        raw = RawArticle(
+            source_key="ajol",
+            title="Heading inside abstract div",
+            url="https://www.ajol.info/index.php/wajiar/article/view/2",
+            abstract="8-16",
+            full_text="",
+            language="en",
+            year=None,
+            doi="",
+            journal="AJOL",
+        )
+        enriched = conn.enrich_raw(raw)
+        assert "diagnose diseases with care" in enriched.abstract
+        # The literal heading word must not be prepended to the abstract.
+        assert not enriched.abstract.lower().startswith("abstract")
 
     @pytest.mark.parametrize(
         ("text", "expected"),

@@ -2044,9 +2044,15 @@ class AJOLConnector(BaseConnector):
         fallback for templates that inline the abstract differently.
         """
         node = soup.select_one(
-            "div.article-abstract p, div.article-abstract, "
-            "div.abstract p, section.abstract p",
+            "div.article-abstract p, div.abstract p, section.abstract p",
         )
+        if node is None:
+            # Fall back to the bare container only when no ``<p>`` is present.
+            # ``select_one`` returns matches in document order, so listing the
+            # bare ``div.article-abstract`` alongside the ``<p>`` selector would
+            # always pick the container (it precedes its child) and leak any
+            # heading text (e.g. a literal ``"Abstract"``) into the result.
+            node = soup.select_one("div.article-abstract")
         if node:
             text = node.get_text(" ", strip=True)
             if text:
