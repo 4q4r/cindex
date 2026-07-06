@@ -22,7 +22,17 @@ import aiohttp
 import structlog
 from bs4 import BeautifulSoup, NavigableString
 
-from .base import BaseConnector, ConnectorFetchError, RawArticle, SourceProfile
+from apps.core.text import normalize_scholarly_text
+
+from .base import (
+    INDEXING_TOKENS,
+    PEER_REVIEW_TOKENS,
+    PREPRINT_TOKENS,
+    BaseConnector,
+    ConnectorFetchError,
+    RawArticle,
+    SourceProfile,
+)
 
 _HTTP_BAD_REQUEST = 400
 _MIN_TITLE_LENGTH = 14
@@ -1247,6 +1257,262 @@ class SciELOConnector(BaseConnector):
         if json_ld_items:
             return json_ld_items
         return []
+
+    # --- ArticleMeta enrichment -------------------------------------------
+
+    _ARTICLEMETA_API = "https://articlemeta.scielo.org/api/v1/article/"
+    _ARTICLEMETA_TIMEOUT_SECONDS = 20.0
+    _ABSTRACT_LABEL_RE = re.compile(
+        r"^(?:RESUM[EO]S?|RESUMEN|ABSTRACTS?|SUMMAR(?:Y|IES)|"
+        r"ZUSAMMENFASSUNG(?:EN)?|RIASSUNTI?|SAMENVATTING(?:EN)?|"
+        r"RÉSUMÉS?)\s+",
+        re.IGNORECASE,
+    )
+    _RESOURCE_PID_RE = re.compile(
+        r"/resource/[a-z]+/(S[A-Za-z0-9-]+)(?:[/?#]|$)",
+    )
+    _QUERY_PID_RE = re.compile(r"[?&]pid=(S[A-Za-z0-9-]+)")
+    _COLLECTION_RE = re.compile(r"^(S.*)-([a-z]{2,5})$")
+
+    def enrich_raw(self, raw: RawArticle) -> RawArticle:
+        """Enrich a SciELO raw article via the ArticleMeta REST API.
+
+        SciELO RSS carries the title, authors and a Spanish abstract but
+        hardcodes ``journal="SciELO"`` (RSS has no journal field) and lacks
+        the DOI. The article landing page
+        (``search.scielo.org/resource/<lang>/<PID>``) sits behind a BunnyCDN
+        interstitial the browser sidecar cannot reliably clear within its
+        navigation budget, so the inherited ``enrich_raw`` page fetch raises
+        ``ConnectorFetchError`` and breaks ingestion. ArticleMeta
+        (``articlemeta.scielo.org/api/v1/article/``) returns the same metadata
+        as structured JSON with no challenge, so it is the clean enrichment
+        source. On any ArticleMeta failure the RSS payload is returned
+        unchanged — the article is still indexable, just without the enriched
+        journal/DOI. This is graceful degradation, not a fabricated fallback:
+        no journal or DOI is invented when the API is unreachable.
+        """
+        if not raw.url.startswith("http"):
+            return raw
+        pid = self._scielo_pid_from_url(raw.url)
+        if pid is None:
+            return raw
+        code, collection = pid
+        data = self._fetch_articlemeta(code, collection)
+        if not data:
+            return raw
+        journal = self._articlemeta_journal(data) or raw.journal
+        doi = self._articlemeta_doi(data) or raw.doi
+        year = self._articlemeta_year(data) or raw.year
+        abstract = self._articlemeta_abstract(data) or raw.abstract
+        authors = self._articlemeta_authors(data) or raw.authors
+        combined = " ".join(
+            [raw.title or "", abstract or "", journal or "", " ".join(authors)],
+        )
+        peer_review_evidence = self._merge_evidence(
+            raw.peer_review_evidence,
+            combined,
+            PEER_REVIEW_TOKENS,
+        )
+        indexing_evidence = self._merge_evidence(
+            raw.indexing_evidence,
+            combined,
+            INDEXING_TOKENS,
+        )
+        preprint_evidence = self._merge_evidence(
+            raw.preprint_evidence,
+            combined,
+            PREPRINT_TOKENS,
+        )
+        full_text = normalize_scholarly_text(f"{raw.title} {abstract} {combined}")
+        return replace(
+            raw,
+            doi=doi,
+            year=year,
+            journal=normalize_scholarly_text(journal, max_length=300),
+            abstract=(abstract or "")[:8000],
+            authors=authors,
+            full_text=full_text,
+            peer_review_evidence=peer_review_evidence[:3000],
+            indexing_evidence=indexing_evidence[:3000],
+            preprint_evidence=preprint_evidence[:3000],
+        )
+
+    @classmethod
+    def _scielo_pid_from_url(cls, url: str) -> tuple[str, str | None] | None:
+        """Extract the SciELO PID code and optional collection from a URL.
+
+        Two URL shapes carry a PID:
+
+        - ``search.scielo.org/resource/<lang>/<code>[-<collection>]`` (RSS);
+        - ``...scielo...php?...&pid=<code>&...`` (OAI/article), with no
+          collection suffix (ArticleMeta resolves by code alone).
+
+        Returns ``(code, collection_or_none)`` or ``None`` when no PID is
+        present. The collection is split off the resource PID by matching a
+        trailing ``-<2-5 lowercase letters>`` suffix, so the hyphen inside an
+        ISSN (``S2960-2467…``) is never mistaken for the separator.
+        """
+        if not url:
+            return None
+        match = cls._RESOURCE_PID_RE.search(url)
+        if match:
+            pid = match.group(1)
+            coll = cls._COLLECTION_RE.match(pid)
+            if coll:
+                return coll.group(1), coll.group(2)
+            return pid, None
+        match = cls._QUERY_PID_RE.search(url)
+        if match:
+            return match.group(1), None
+        return None
+
+    def _fetch_articlemeta(
+        self,
+        code: str,
+        collection: str | None,
+    ) -> dict | None:
+        """Fetch the ArticleMeta record for a SciELO PID via aiohttp.
+
+        Returns the parsed JSON document, or ``None`` on any network, HTTP or
+        parse failure so the caller can fall back to the RSS payload. Uses an
+        ``asyncio.run`` bridge (the connector runs sync inside a prefork
+        celery worker with no event loop), mirroring ``MedknowConnector``.
+        """
+        params: dict[str, str] = {"code": code}
+        if collection:
+            params["collection"] = collection
+
+        async def _fetch() -> dict:
+            async with (
+                aiohttp.ClientSession() as session,
+                session.get(
+                    self._ARTICLEMETA_API,
+                    params=params,
+                    timeout=aiohttp.ClientTimeout(
+                        total=self._ARTICLEMETA_TIMEOUT_SECONDS,
+                    ),
+                ) as resp,
+            ):
+                resp.raise_for_status()
+                return await resp.json()
+
+        import asyncio as _asyncio  # noqa: PLC0415  # lazy import; celery prefork has no loop
+
+        try:
+            return _asyncio.run(_fetch())
+        except (
+            ValueError,
+            RuntimeError,
+            ConnectionError,
+            TimeoutError,
+            aiohttp.ClientError,
+        ):
+            logger.warning(
+                "scielo: articlemeta fetch failed for %s/%s",
+                code,
+                collection,
+                exc_info=True,
+            )
+            return None
+
+    @staticmethod
+    def _first_field(block: list[dict] | None) -> str:
+        """Return the ``_`` value of the first entry in an ISIS field list."""
+        if not block or not isinstance(block, list):
+            return ""
+        first = block[0]
+        if not isinstance(first, dict):
+            return ""
+        return str(first.get("_", "")).strip()
+
+    def _articlemeta_journal(self, data: dict) -> str:
+        """Return the full journal name from ArticleMeta ``title.v100``."""
+        title_block = data.get("title") or {}
+        if not isinstance(title_block, dict):
+            return ""
+        return self._first_field(title_block.get("v100"))
+
+    def _articlemeta_doi(self, data: dict) -> str:
+        """Return the DOI from ArticleMeta (top-level ``doi`` or ``v237``)."""
+        doi = str(data.get("doi", "")).strip()
+        if doi:
+            return doi
+        article = data.get("article") or {}
+        if not isinstance(article, dict):
+            return ""
+        v237 = article.get("v237")
+        if isinstance(v237, list) and v237 and isinstance(v237[0], dict):
+            return str(v237[0].get("_", "")).strip()
+        return ""
+
+    @staticmethod
+    def _articlemeta_year(data: dict) -> int | None:
+        """Return the publication year from ArticleMeta ``publication_year``."""
+        year = str(data.get("publication_year", "")).strip()
+        if year.isdigit():
+            return int(year)
+        return None
+
+    def _articlemeta_abstract(self, data: dict) -> str:
+        """Return the cleanest abstract from ArticleMeta ``article.v83``.
+
+        ``v83`` entries carry a language-prefixed label (``Abstract `` /
+        ``Resumen `` / ``Resumo ``) in the ``a`` field. Prefer the English
+        abstract, then the article's original language (``v40``), then the
+        first available. The leading label is stripped.
+        """
+        article = data.get("article") or {}
+        if not isinstance(article, dict):
+            return ""
+        entries = article.get("v83")
+        if not isinstance(entries, list) or not entries:
+            return ""
+        original = self._first_field(article.get("v40")).lower()
+        chosen: dict | None = None
+        for entry in entries:
+            if str(entry.get("l", "")).lower() == "en":
+                chosen = entry
+                break
+        if chosen is None and original:
+            for entry in entries:
+                if str(entry.get("l", "")).lower() == original:
+                    chosen = entry
+                    break
+        if chosen is None:
+            chosen = entries[0]
+        if not isinstance(chosen, dict):
+            return ""
+        text = str(chosen.get("a", "")).strip()
+        text = self._ABSTRACT_LABEL_RE.sub("", text, count=1).strip()
+        return text[:8000]
+
+    def _articlemeta_authors(self, data: dict) -> tuple[str, ...]:
+        """Return authors from ArticleMeta ``article.v10`` as ``surname, given``.
+
+        ``v10`` entries use ``s`` for the surname and ``n`` for the given
+        name; both are optional. Entries missing both are dropped. Order is
+        preserved and exact duplicates are removed.
+        """
+        article = data.get("article") or {}
+        if not isinstance(article, dict):
+            return ()
+        entries = article.get("v10")
+        if not isinstance(entries, list):
+            return ()
+        authors: list[str] = []
+        for entry in entries:
+            if not isinstance(entry, dict):
+                continue
+            surname = str(entry.get("s", "")).strip()
+            given = str(entry.get("n", "")).strip()
+            if surname and given:
+                name = f"{surname}, {given}"
+            elif surname or given:
+                name = surname or given
+            else:
+                continue
+            authors.append(name)
+        return tuple(dict.fromkeys(authors))
 
 
 class PerseeConnector(BaseConnector):
