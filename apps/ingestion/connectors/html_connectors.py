@@ -43,7 +43,7 @@ class CiNiiConnector(BaseConnector):
         abstract_selector=".snippet, .description, p",
         journal_selector=".publisher, .journal, .source",
         indexing_evidence="scopus web of science",
-        language="ja",
+        language="",
     )
 
     def fetch(self, query: str, limit: int = 5) -> list[RawArticle]:
@@ -111,9 +111,44 @@ class CiNiiConnector(BaseConnector):
                     year=year,
                     journal=journal,
                     authors=authors_list or None,
+                    language=self._infer_cinii_language(f"{title} {abstract}"),
                 ),
             )
         return items
+
+    # Unicode block bounds for Japanese-script detection. Hiragana and
+    # Katakana are Japanese-specific; CJK Unified Ideographs (Han) are shared
+    # with Chinese but treated as Japanese here because CiNii is a Japanese
+    # database whose CJK records are overwhelmingly Japanese.
+    _HIRAGANA_START = 0x3040
+    _KATAKANA_END = 0x30FF
+    _CJK_IDEOGRAPH_START = 0x4E00
+    _CJK_IDEOGRAPH_END = 0x9FFF
+    _HALFWIDTH_KATAKANA_START = 0xFF66
+    _HALFWIDTH_KATAKANA_END = 0xFF9F
+
+    @classmethod
+    def _infer_cinii_language(cls, text: str) -> str:
+        """Infer the record language from title/abstract script.
+
+        CiNii OpenSearch items omit ``dc:language``, and the source indexes
+        both Japanese and English records, so a hardcoded ``ja`` profile
+        default mislabels English proceedings. Hiragana and Katakana are
+        Japanese-specific; Han ideographs without kana are ambiguous between
+        Japanese and Chinese, but CiNii is a Japanese database where the
+        overwhelming CJK majority is Japanese, so any CJK character resolves
+        to ``ja``. Latin-only text resolves to empty (language unknown) rather
+        than a wrong guess.
+        """
+        for char in text or "":
+            code = ord(char)
+            if (
+                cls._HIRAGANA_START <= code <= cls._KATAKANA_END
+                or cls._CJK_IDEOGRAPH_START <= code <= cls._CJK_IDEOGRAPH_END
+                or cls._HALFWIDTH_KATAKANA_START <= code <= cls._HALFWIDTH_KATAKANA_END
+            ):
+                return "ja"
+        return ""
 
     @staticmethod
     def _extract_cinii_journal(entry: dict) -> str:

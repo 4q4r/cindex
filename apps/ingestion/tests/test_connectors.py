@@ -251,6 +251,9 @@ def test_cinii_payload_extraction_prefers_real_year_and_doi() -> None:
     assert items[0].journal == "CiNii Journal"
     assert items[0].authors == ("Sato, Hanako", "Tanaka, Ichiro")
     assert items[0].url == "https://cir.nii.ac.jp/crid/1970012345678901234"
+    # Latin-only title -> language inferred as empty (unknown), not the old
+    # hardcoded "ja" profile default.
+    assert items[0].language == ""
 
 
 def test_cinii_book_without_doi_keeps_clean_journal() -> None:
@@ -286,6 +289,30 @@ def test_cinii_book_without_doi_keeps_clean_journal() -> None:
     assert items[0].doi == ""
     assert items[0].journal == "IEEE Press"
     assert items[0].authors == ("Kulkarni, Parag",)
+
+
+@pytest.mark.parametrize(
+    ("text", "expected"),
+    [
+        # Latin-only English proceedings -> unknown, not the old hardcoded "ja".
+        ("31st International Conference on Machine Learning", ""),
+        ("Reinforcement and systemic machine learning for decision making", ""),
+        # Hiragana -> Japanese.
+        ("しくみがわかる深層学習", "ja"),
+        # Katakana -> Japanese.
+        ("Python パイソン 深層学習入門", "ja"),
+        # Pure Han ideographs, no kana -> Japanese for the CiNii context.
+        ("深層学習入門", "ja"),
+        # Halfwidth Katakana -> Japanese.
+        ("ｱｲｳｴｵ", "ja"),
+        # Empty / whitespace -> unknown.
+        ("", ""),
+        ("   ", ""),
+    ],
+)
+def test_cinii_infer_language_from_script(text: str, expected: str) -> None:
+    """CiNii language is inferred from Unicode script, not a hardcoded ja."""
+    assert CiNiiConnector._infer_cinii_language(text) == expected
 
 
 def test_ajol_oa_filter_keeps_only_open_access(monkeypatch) -> None:

@@ -569,27 +569,39 @@ class BaseConnector:
 
     @classmethod
     def _looks_like_challenge_page(cls, text: str) -> bool:
-        """Detect Cloudflare or similar challenge pages."""
+        """Detect a residual Cloudflare challenge or block page.
+
+        The browser sidecar solves JS challenges in a real Chromium, so a
+        well-behaved source returns its article body. This detector is the
+        residual net for the rare case where the sidecar still hands back a
+        challenge interstitial (e.g. a managed challenge served with HTTP 200
+        while the challenge JS is still running). It matches only
+        challenge-specific HTML signatures — element IDs/classes, the
+        ``cdn-cgi/challenge-platform`` path, the Turnstile host, and the
+        canonical interstitial phrases — so legitimate pages that merely
+        reference Cloudflare (a ``cdnjs.cloudflare.com`` CDN script URL, a
+        ``Ray ID`` footer on a normal page) or discuss challenges in prose
+        (a ``proof-of-work`` abstract) are not misclassified.
+
+        Upstream HTTP error status (``>= 400``) is already raised by the
+        transport before this check runs, so the markers target body content
+        only.
+        """
         lowered = (text or "").lower()
         markers = (
-            "checking your browser",
-            "please wait",
+            # Cloudflare challenge HTML element ids/classes and the challenge
+            # platform path — exclusive to interstitial challenge pages.
             "cf-browser-verification",
+            "challenge-running",
             "cf_chl_opt",
-            "challenge-platform",
-            "enable javascript",
-            "just a moment",
-            "attention required",
-            "cloudflare",
-            "ray id",
-            "are you a robot",
-            "are you human",
-            "verify you are human",
-            "please verify",
-            "security check",
-            "checking your connection",
-            "proof-of-work",
-            "proof-of-work scheme",
+            "_cf_chl_",
+            "cf-turnstile",
+            "cdn-cgi/challenge-platform",
+            "challenges.cloudflare.com",
+            # Canonical Cloudflare interstitial / block phrases.
+            "checking your browser before access",
+            "attention required! | cloudflare",
+            "sorry, you have been blocked",
         )
         return any(marker in lowered for marker in markers)
 
@@ -933,18 +945,25 @@ class BaseConnector:
         volume: str = "",
         issue: str = "",
         pages: str = "",
+        language: str = "",
         peer_review_evidence: str = "",
         indexing_evidence: str = "",
         preprint_evidence: str = "",
     ) -> RawArticle:
-        """Build a RawArticle instance."""
+        """Build a RawArticle instance.
+
+        ``language`` overrides the profile default when non-empty, so a
+        connector that can infer the per-record language (e.g. CiNii, whose
+        OpenSearch items omit ``dc:language``) can pass it explicitly; callers
+        that leave it empty fall back to ``self.profile.language``.
+        """
         return RawArticle(
             source_key=self.profile.source_key,
             title=normalize_scholarly_text(title, max_length=900),
             url=url,
             abstract=normalize_scholarly_text(abstract, max_length=8000),
             full_text=normalize_scholarly_text(full_text),
-            language=self.profile.language,
+            language=(language or self.profile.language),
             year=year,
             doi=normalize_scholarly_text(doi, max_length=128),
             journal=normalize_scholarly_text(journal, max_length=300),
