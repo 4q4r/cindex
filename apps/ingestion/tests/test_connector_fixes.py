@@ -1,5 +1,7 @@
 """Tests for connector quick-win fixes: author/volume/journal/abstract extraction."""
 
+from typing import ClassVar
+
 import pytest
 
 from apps.ingestion.connectors import (
@@ -957,6 +959,255 @@ class TestSciELOOaiFetch:
         assert len(items) == 1
         assert "Machine learning" in items[0].title
         assert items[0].journal == "Computer Methods"
+
+
+class TestSciELOArticleMetaEnrich:
+    """enrich_raw pulls journal/DOI/abstract/authors from the ArticleMeta API.
+
+    SciELO RSS hardcodes ``journal="SciELO"`` (RSS has no journal field) and
+    carries no DOI, and the article landing page sits behind a BunnyCDN
+    interstitial the sidecar cannot clear, so the inherited ``enrich_raw``
+    page fetch raised ``ConnectorFetchError`` and broke ingestion. The override
+    fetches ArticleMeta JSON instead and never touches the article page; on
+    API failure it returns the RSS payload unchanged (graceful, no raise).
+    """
+
+    _ARTICLEMETA: ClassVar[dict[str, object]] = {
+        "doi": "10.61286/E-RMS.V4I.381",
+        "publication_year": "2026",
+        "title": {"v100": [{"_": "e-Revista Multidisciplinaria del Saber"}]},
+        "article": {
+            "v40": [{"_": "es"}],
+            "v12": [{"l": "es", "_": "Titulo en espanol"}],
+            "v83": [
+                {
+                    "l": "es",
+                    "a": "Resumen  Introduccion. Estudio sobre diabetes.",
+                    "_": "",
+                },
+                {"l": "en", "a": "Abstract  Introduction. Study on diabetes.", "_": ""},
+            ],
+            "v10": [
+                {
+                    "s": "Cervantes-Guerrero",
+                    "n": "Mario Daniel",
+                    "k": "0000-0003-2754-5388",
+                },
+                {"s": "Galvan-Tejada", "n": "Carlos E.", "k": "0000-0002-7635-4687"},
+            ],
+            "v237": [{"_": "10.61286/e-rms.v4i.381"}],
+        },
+    }
+
+    def _raw(self, **overrides) -> object:
+        from apps.ingestion.connectors.base import RawArticle
+
+        defaults = {
+            "source_key": "scielo",
+            "title": "Explainable AI for diabetes",
+            "url": "https://search.scielo.org/resource/pt/S2960-24672026000102026-ven",
+            "abstract": "Resumen Estudio sobre diabetes.",
+            "full_text": (
+                "Explainable AI for diabetes Resumen Estudio sobre diabetes. SciELO"
+            ),
+            "language": "es",
+            "year": 2026,
+            "doi": "",
+            "journal": "SciELO",
+            "authors": ("Cervantes-Guerrero, Mario Daniel", "Galvan-Tejada, Carlos E."),
+        }
+        defaults.update(overrides)
+        return RawArticle(**defaults)
+
+    def test_pid_from_resource_url_with_collection(self) -> None:
+        pid = SciELOConnector._scielo_pid_from_url(
+            "https://search.scielo.org/resource/pt/S2960-24672026000102026-ven",
+        )
+        assert pid == ("S2960-24672026000102026", "ven")
+
+    def test_pid_from_resource_url_without_collection(self) -> None:
+        pid = SciELOConnector._scielo_pid_from_url(
+            "https://search.scielo.org/resource/en/S0100879X1998000800011",
+        )
+        assert pid == ("S0100879X1998000800011", None)
+
+    def test_pid_from_oai_query_param(self) -> None:
+        pid = SciELOConnector._scielo_pid_from_url(
+            "https://www.scielo.br/scielo.php?script=sci_arttext"
+            "&pid=S0100-879X1998000800011&lng=en",
+        )
+        # ISSN hyphen is preserved; no collection in the pid= param.
+        assert pid == ("S0100-879X1998000800011", None)
+
+    def test_pid_missing_returns_none(self) -> None:
+        assert (
+            SciELOConnector._scielo_pid_from_url("https://www.scielo.br/a/acupuntura")
+            is None
+        )
+        assert SciELOConnector._scielo_pid_from_url("") is None
+
+    def test_enrich_fills_journal_doi_year_abstract_authors(self, monkeypatch) -> None:
+        conn = SciELOConnector()
+        monkeypatch.setattr(
+            conn,
+            "_fetch_articlemeta",
+            lambda _c, _coll: self._ARTICLEMETA,
+        )
+
+        # The override must NOT call the article-page fetch (the 502 source).
+        def _no_page_fetch(*_args, **_kwargs):
+            msg = "enrich_raw must not fetch the article landing page"
+            raise AssertionError(msg)
+
+        monkeypatch.setattr(conn, "_request_text", _no_page_fetch)
+
+        raw = conn.enrich_raw(self._raw())
+        assert raw.journal == "e-Revista Multidisciplinaria del Saber"
+        assert raw.doi == "10.61286/E-RMS.V4I.381"
+        assert raw.year == 2026
+        # English abstract is preferred over the Spanish one.
+        assert raw.abstract.startswith("Introduction. Study on diabetes.")
+        assert "Resumen" not in raw.abstract
+        assert raw.authors == (
+            "Cervantes-Guerrero, Mario Daniel",
+            "Galvan-Tejada, Carlos E.",
+        )
+
+    def test_enrich_strips_abstract_label(self, monkeypatch) -> None:
+        conn = SciELOConnector()
+        monkeypatch.setattr(
+            conn,
+            "_fetch_articlemeta",
+            lambda _c, _coll: self._ARTICLEMETA,
+        )
+        monkeypatch.setattr(conn, "_request_text", lambda *_a, **_k: "")
+
+        raw = conn.enrich_raw(self._raw())
+        assert not raw.abstract.lower().startswith("abstract")
+        assert not raw.abstract.lower().startswith("resumen")
+
+    def test_enrich_api_failure_returns_raw_unchanged(self, monkeypatch) -> None:
+        conn = SciELOConnector()
+        monkeypatch.setattr(conn, "_fetch_articlemeta", lambda _c, _coll: None)
+
+        original = self._raw()
+        raw = conn.enrich_raw(original)
+        assert raw.journal == "SciELO"
+        assert raw.doi == ""
+        assert raw.year == 2026
+        assert raw.abstract == original.abstract
+
+    def test_enrich_no_pid_returns_raw_unchanged(self, monkeypatch) -> None:
+        conn = SciELOConnector()
+        # _fetch_articlemeta must never be reached when no PID is found.
+        monkeypatch.setattr(
+            conn,
+            "_fetch_articlemeta",
+            lambda *_a, **_k: pytest.fail("must not call ArticleMeta without a PID"),
+        )
+        original = self._raw(url="https://www.scielo.br/a/no-pid-here")
+        raw = conn.enrich_raw(original)
+        assert raw is original or raw.journal == "SciELO"
+
+    def test_authors_surname_given(self) -> None:
+        conn = SciELOConnector()
+        authors = conn._articlemeta_authors(self._ARTICLEMETA)
+        assert authors == (
+            "Cervantes-Guerrero, Mario Daniel",
+            "Galvan-Tejada, Carlos E.",
+        )
+
+    def test_authors_drops_empty_and_dedupes(self) -> None:
+        conn = SciELOConnector()
+        data = {
+            "article": {
+                "v10": [
+                    {"s": "Smith", "n": "J."},
+                    {"s": "Smith", "n": "J."},
+                    {"s": "", "n": ""},
+                    {"s": "Jones"},
+                ],
+            },
+        }
+        assert conn._articlemeta_authors(data) == ("Smith, J.", "Jones")
+
+    def test_abstract_prefers_english_then_original(self) -> None:
+        conn = SciELOConnector()
+        # English present -> English wins.
+        assert conn._articlemeta_abstract(self._ARTICLEMETA).startswith(
+            "Introduction. Study on diabetes.",
+        )
+
+    def test_abstract_falls_back_to_original_language(self, monkeypatch) -> None:
+        conn = SciELOConnector()
+        data = {
+            "article": {
+                "v40": [{"_": "pt"}],
+                "v83": [
+                    {"l": "pt", "a": "Resumo  Texto em portugues."},
+                    {"l": "es", "a": "Resumen  Texto en espanol."},
+                ],
+            },
+        }
+        assert conn._articlemeta_abstract(data).startswith("Texto em portugues.")
+
+    def test_abstract_falls_back_to_first_when_no_match(self) -> None:
+        conn = SciELOConnector()
+        data = {
+            "article": {
+                "v40": [{"_": "fr"}],
+                "v83": [{"l": "de", "a": "Zusammenfassung  Deutsche Text."}],
+            },
+        }
+        assert conn._articlemeta_abstract(data).startswith("Deutsche Text.")
+
+    def test_abstract_strips_italian_singular_label(self) -> None:
+        conn = SciELOConnector()
+        data = {"article": {"v83": [{"l": "it", "a": "Riassunto  Testo italiano."}]}}
+        assert conn._articlemeta_abstract(data).startswith("Testo italiano.")
+
+    def test_abstract_strips_spanish_plural_label(self) -> None:
+        conn = SciELOConnector()
+        data = {"article": {"v83": [{"l": "es", "a": "Resumenes  Estudio."}]}}
+        assert conn._articlemeta_abstract(data).startswith("Estudio.")
+
+    def test_doi_null_does_not_become_string_none(self) -> None:
+        conn = SciELOConnector()
+        assert conn._articlemeta_doi({"doi": None}) == ""
+        assert (
+            conn._articlemeta_doi(
+                {"article": {"v237": [{"_": None}]}},
+            )
+            == ""
+        )
+
+    def test_journal_v100_null_does_not_become_string_none(self) -> None:
+        conn = SciELOConnector()
+        assert conn._articlemeta_journal({"title": {"v100": [{"_": None}]}}) == ""
+
+    def test_abstract_a_null_does_not_become_string_none(self) -> None:
+        conn = SciELOConnector()
+        data = {"article": {"v83": [{"l": "es", "a": None}]}}
+        assert conn._articlemeta_abstract(data) == ""
+
+    def test_authors_null_surname_keeps_given_only(self) -> None:
+        conn = SciELOConnector()
+        data = {"article": {"v10": [{"s": None, "n": "Mario"}]}}
+        assert conn._articlemeta_authors(data) == ("Mario",)
+
+    def test_enrich_non_dict_api_payload_returns_raw_unchanged(
+        self,
+        monkeypatch,
+    ) -> None:
+        raw = self._raw()
+        conn = SciELOConnector()
+        monkeypatch.setattr(
+            conn,
+            "_fetch_articlemeta",
+            lambda code, coll: ["unexpected", "list"],
+        )
+        result = conn.enrich_raw(raw)
+        assert result is raw
 
 
 class TestMathNetEnrichParse:
