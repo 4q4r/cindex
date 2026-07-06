@@ -1161,6 +1161,54 @@ class TestSciELOArticleMetaEnrich:
         }
         assert conn._articlemeta_abstract(data).startswith("Deutsche Text.")
 
+    def test_abstract_strips_italian_singular_label(self) -> None:
+        conn = SciELOConnector()
+        data = {"article": {"v83": [{"l": "it", "a": "Riassunto  Testo italiano."}]}}
+        assert conn._articlemeta_abstract(data).startswith("Testo italiano.")
+
+    def test_abstract_strips_spanish_plural_label(self) -> None:
+        conn = SciELOConnector()
+        data = {"article": {"v83": [{"l": "es", "a": "Resumenes  Estudio."}]}}
+        assert conn._articlemeta_abstract(data).startswith("Estudio.")
+
+    def test_doi_null_does_not_become_string_none(self) -> None:
+        conn = SciELOConnector()
+        assert conn._articlemeta_doi({"doi": None}) == ""
+        assert (
+            conn._articlemeta_doi(
+                {"article": {"v237": [{"_": None}]}},
+            )
+            == ""
+        )
+
+    def test_journal_v100_null_does_not_become_string_none(self) -> None:
+        conn = SciELOConnector()
+        assert conn._articlemeta_journal({"title": {"v100": [{"_": None}]}}) == ""
+
+    def test_abstract_a_null_does_not_become_string_none(self) -> None:
+        conn = SciELOConnector()
+        data = {"article": {"v83": [{"l": "es", "a": None}]}}
+        assert conn._articlemeta_abstract(data) == ""
+
+    def test_authors_null_surname_keeps_given_only(self) -> None:
+        conn = SciELOConnector()
+        data = {"article": {"v10": [{"s": None, "n": "Mario"}]}}
+        assert conn._articlemeta_authors(data) == ("Mario",)
+
+    def test_enrich_non_dict_api_payload_returns_raw_unchanged(
+        self,
+        monkeypatch,
+    ) -> None:
+        raw = self._raw()
+        conn = SciELOConnector()
+        monkeypatch.setattr(
+            conn,
+            "_fetch_articlemeta",
+            lambda code, coll: ["unexpected", "list"],
+        )
+        result = conn.enrich_raw(raw)
+        assert result is raw
+
 
 class TestMathNetEnrichParse:
     """MathNet enrich_raw parses the article page via HTML structure.

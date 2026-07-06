@@ -1263,8 +1263,8 @@ class SciELOConnector(BaseConnector):
     _ARTICLEMETA_API = "https://articlemeta.scielo.org/api/v1/article/"
     _ARTICLEMETA_TIMEOUT_SECONDS = 20.0
     _ABSTRACT_LABEL_RE = re.compile(
-        r"^(?:RESUM[EO]S?|RESUMEN|ABSTRACTS?|SUMMAR(?:Y|IES)|"
-        r"ZUSAMMENFASSUNG(?:EN)?|RIASSUNTI?|SAMENVATTING(?:EN)?|"
+        r"^(?:RESUM[EO]S?|RESUMEN(?:ES)?|ABSTRACTS?|SUMMAR(?:Y|IES)|"
+        r"ZUSAMMENFASSUNG(?:EN)?|RIASSUNT[OI]|SAMENVATTING(?:EN)?|"
         r"RÉSUMÉS?)\s+",
         re.IGNORECASE,
     )
@@ -1298,7 +1298,7 @@ class SciELOConnector(BaseConnector):
             return raw
         code, collection = pid
         data = self._fetch_articlemeta(code, collection)
-        if not data:
+        if not isinstance(data, dict):
             return raw
         journal = self._articlemeta_journal(data) or raw.journal
         doi = self._articlemeta_doi(data) or raw.doi
@@ -1423,7 +1423,8 @@ class SciELOConnector(BaseConnector):
         first = block[0]
         if not isinstance(first, dict):
             return ""
-        return str(first.get("_", "")).strip()
+        value = first.get("_")
+        return str(value).strip() if value is not None else ""
 
     def _articlemeta_journal(self, data: dict) -> str:
         """Return the full journal name from ArticleMeta ``title.v100``."""
@@ -1434,7 +1435,7 @@ class SciELOConnector(BaseConnector):
 
     def _articlemeta_doi(self, data: dict) -> str:
         """Return the DOI from ArticleMeta (top-level ``doi`` or ``v237``)."""
-        doi = str(data.get("doi", "")).strip()
+        doi = str(data.get("doi") or "").strip()
         if doi:
             return doi
         article = data.get("article") or {}
@@ -1442,13 +1443,13 @@ class SciELOConnector(BaseConnector):
             return ""
         v237 = article.get("v237")
         if isinstance(v237, list) and v237 and isinstance(v237[0], dict):
-            return str(v237[0].get("_", "")).strip()
+            return str(v237[0].get("_") or "").strip()
         return ""
 
     @staticmethod
     def _articlemeta_year(data: dict) -> int | None:
         """Return the publication year from ArticleMeta ``publication_year``."""
-        year = str(data.get("publication_year", "")).strip()
+        year = str(data.get("publication_year") or "").strip()
         if year.isdigit():
             return int(year)
         return None
@@ -1470,19 +1471,19 @@ class SciELOConnector(BaseConnector):
         original = self._first_field(article.get("v40")).lower()
         chosen: dict | None = None
         for entry in entries:
-            if str(entry.get("l", "")).lower() == "en":
+            if str(entry.get("l") or "").lower() == "en":
                 chosen = entry
                 break
         if chosen is None and original:
             for entry in entries:
-                if str(entry.get("l", "")).lower() == original:
+                if str(entry.get("l") or "").lower() == original:
                     chosen = entry
                     break
         if chosen is None:
             chosen = entries[0]
         if not isinstance(chosen, dict):
             return ""
-        text = str(chosen.get("a", "")).strip()
+        text = str(chosen.get("a") or "").strip()
         text = self._ABSTRACT_LABEL_RE.sub("", text, count=1).strip()
         return text[:8000]
 
@@ -1503,8 +1504,8 @@ class SciELOConnector(BaseConnector):
         for entry in entries:
             if not isinstance(entry, dict):
                 continue
-            surname = str(entry.get("s", "")).strip()
-            given = str(entry.get("n", "")).strip()
+            surname = str(entry.get("s") or "").strip()
+            given = str(entry.get("n") or "").strip()
             if surname and given:
                 name = f"{surname}, {given}"
             elif surname or given:
