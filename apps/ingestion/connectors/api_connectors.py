@@ -504,7 +504,12 @@ class DOAJConnector(AsyncApiConnector):
     def _api_url(self, query: str, limit: int) -> str:
         return f"{self.profile.search_url}/{quote_plus(query)}?pageSize={limit}"
 
-    _ABSTRACT_LABEL_RE = re.compile(r"^\s*abstract\s*[:：]?\s+", re.IGNORECASE)
+    # Match a leading ``Abstract`` label followed by either a colon (ASCII or
+    # full-width CJK) with optional trailing whitespace, or by whitespace
+    # (space/newline). ``"Abstract: Background"``, the full-width colon form
+    # with no trailing space, and ``"Abstract\nBackground"`` all resolve as
+    # labels; a bare ``"Abstract"`` with no separator is left untouched.
+    _ABSTRACT_LABEL_RE = re.compile(r"^\s*abstract\s*(?:[:：]\s*|\s+)", re.IGNORECASE)
 
     @staticmethod
     def _strip_abstract_label(abstract: str) -> str:
@@ -513,10 +518,11 @@ class DOAJConnector(AsyncApiConnector):
         BMC / BioData Central and similar publishers emit the abstract field
         with a literal ``"Abstract"`` heading, e.g. ``"Abstract Background
         Constructing a predictive model..."``. A bare leading ``Abstract`` is
-        removed only when it behaves as a label — followed by a colon or by a
-        capitalised token (a structured-abstract section header or a sentence
-        start) — so legitimate sentences such as ``"Abstract algebra is..."``
-        (next token lower-case) are preserved verbatim.
+        removed only when it behaves as a label — followed by a colon (ASCII or
+        full-width) or by a capitalised token (a structured-abstract section
+        header or a sentence start) — so legitimate sentences such as
+        ``"Abstract algebra is..."`` (next token lower-case, no colon) are
+        preserved verbatim.
         """
         if not abstract:
             return abstract

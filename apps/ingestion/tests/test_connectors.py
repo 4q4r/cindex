@@ -144,6 +144,23 @@ def test_doaj_payload_extraction() -> None:
             "Abstract: this article reviews the literature.",
             "this article reviews the literature.",
         ),
+        # Full-width colon (CJK punctuation) is also a label.
+        (
+            "Abstract：Background Constructing a predictive model",
+            "Background Constructing a predictive model",
+        ),
+        # A newline between label and body is still a label.
+        (
+            "Abstract\nBackground Constructing a predictive model",
+            "Background Constructing a predictive model",
+        ),
+        # Capitalised next token is treated as a label (structured-abstract
+        # section header or sentence start), even when the word could be a body
+        # term if it were lower-cased.
+        (
+            "Abstract Algebra is central to modern mathematics.",
+            "Algebra is central to modern mathematics.",
+        ),
         # Legitimate sentences that merely start with the word "Abstract" must
         # be preserved — the next token is lower-case and there is no colon.
         (
