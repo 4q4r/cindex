@@ -301,8 +301,8 @@ def test_cinii_book_without_doi_keeps_clean_journal() -> None:
         ("しくみがわかる深層学習", "ja"),
         # Katakana -> Japanese.
         ("Python パイソン 深層学習入門", "ja"),
-        # Kanji only (no kana) -> Japanese for the CiNii context.
-        ("幾何的深層学習から圏論的深層学習へ", "ja"),
+        # Pure Han ideographs, no kana -> Japanese for the CiNii context.
+        ("深層学習入門", "ja"),
         # Halfwidth Katakana -> Japanese.
         ("ｱｲｳｴｵ", "ja"),
         # Empty / whitespace -> unknown.
