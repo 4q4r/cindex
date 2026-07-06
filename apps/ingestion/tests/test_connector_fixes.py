@@ -4,6 +4,7 @@ import pytest
 
 from apps.ingestion.connectors import (
     AJOLConnector,
+    BaseConnector,
     CrossrefConnector,
     CyberLeninkaConnector,
     EuropePMCConnector,
@@ -1319,3 +1320,96 @@ class TestAJOLAbstractFromArticlePage:
     )
     def test_looks_like_page_range(self, text: str, expected: bool) -> None:
         assert AJOLConnector._looks_like_page_range(text) is expected
+
+
+class TestChallengePageDetector:
+    """Regression guard for the residual challenge-page detector.
+
+    The detector must catch real Cloudflare/BunnyCDN interstitials while
+    leaving legitimate pages that merely reference Cloudflare (a
+    ``cdnjs.cloudflare.com`` CDN script URL — the CiNii false positive — or a
+    ``Ray ID`` footer) or discuss challenges in prose (a ``proof-of-work``
+    abstract) untouched.
+    """
+
+    @pytest.mark.parametrize(
+        ("html", "reason"),
+        [
+            (
+                "<html><head><title>Just a moment...</title></head>"
+                '<body><div id="challenge-running"></div>'
+                '<div class="cf-browser-verification"></div></body></html>',
+                "cf challenge interstitial",
+            ),
+            (
+                '<html><body><script src="/cdn-cgi/challenge-platform/h/'
+                'g/orchestrate/managed/v1"></script></body></html>',
+                "cdn-cgi challenge-platform path",
+            ),
+            (
+                "<html><body><script>window._cf_chl_opt={}</script></body></html>",
+                "_cf_chl_opt js var",
+            ),
+            (
+                '<html><body><div class="cf-turnstile"'
+                ' data-sitekey="x"></div></body></html>',
+                "turnstile widget",
+            ),
+            (
+                "<html><head><title>Attention Required! | Cloudflare</title>"
+                "</head><body>Sorry, you have been blocked.</body></html>",
+                "cf block page",
+            ),
+        ],
+    )
+    def test_detects_real_challenge_pages(self, html: str, reason: str) -> None:
+        assert BaseConnector._looks_like_challenge_page(html) is True, reason
+
+    @pytest.mark.parametrize(
+        ("html", "reason"),
+        [
+            # The CiNii false positive: a legitimate page loading jsrender from
+            # the cdnjs.cloudflare.com CDN. The bare word "cloudflare" must not
+            # trip the detector.
+            (
+                "<html><body>Back to top</body>"
+                '<script src="https://cdnjs.cloudflare.com/ajax/libs/'
+                'jsrender/1.0.7/jsrender.min.js"></script></html>',
+                "cdnjs CDN script url",
+            ),
+            # A normal Cloudflare-proxied page footer with a Ray ID — not a
+            # challenge page.
+            (
+                "<html><body>Article body</body>"
+                "<footer>Ray ID: 8a4f-abc123</footer></html>",
+                "ray id footer",
+            ),
+            # A scholarly abstract that discusses proof-of-work consensus.
+            (
+                "<html><body><p>This paper analyses the proof-of-work scheme"
+                " used in early cryptocurrencies.</p></body></html>",
+                "proof-of-work in abstract prose",
+            ),
+            # Generic phrases that previously caused false positives.
+            (
+                "<html><body><noscript>Please enable JavaScript to use this"
+                " site.</noscript></body></html>",
+                "enable javascript noscript",
+            ),
+            (
+                "<html><body>Please wait while the dataset loads.</body></html>",
+                "please wait loader",
+            ),
+            (
+                "<html><body>Security check completed for this session.</body></html>",
+                "security check prose",
+            ),
+            ("", "empty body"),
+        ],
+    )
+    def test_does_not_flag_legitimate_pages(
+        self,
+        html: str,
+        reason: str,
+    ) -> None:
+        assert BaseConnector._looks_like_challenge_page(html) is False, reason
