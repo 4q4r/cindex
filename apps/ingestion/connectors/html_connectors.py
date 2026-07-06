@@ -2014,15 +2014,59 @@ class AJOLConnector(BaseConnector):
                     )
                     or journal
                 )
+            # AJOL OAI ``dc:description`` sometimes carries only a page range
+            # (e.g. ``"8-16"``) rather than a real abstract. The article page
+            # exposes the true abstract in ``div.article-abstract`` — prefer it
+            # whenever the OAI abstract is missing or looks like a page range.
+            abstract = enriched.abstract
+            page_abstract = self._extract_article_abstract(soup)
+            if page_abstract and (
+                not abstract or self._looks_like_page_range(abstract)
+            ):
+                abstract = page_abstract
             return replace(
                 enriched,
                 doi=doi,
                 year=year,
                 journal=journal[:300],
+                abstract=abstract,
                 full_text=" ".join([enriched.full_text, page_text[:12000]])[:20000],
             )
         except (ValueError, RuntimeError, ConnectionError):
             return enriched
+
+    def _extract_article_abstract(self, soup: BeautifulSoup) -> str:
+        """Return the article-page abstract text, or ``""`` if absent.
+
+        AJOL article pages render the abstract inside
+        ``div.article-abstract`` (and sometimes ``div.abstract`` / a
+        ``section.abstract``). A ``citation_abstract`` meta tag is the
+        fallback for templates that inline the abstract differently.
+        """
+        node = soup.select_one(
+            "div.article-abstract p, div.article-abstract, "
+            "div.abstract p, section.abstract p",
+        )
+        if node:
+            text = node.get_text(" ", strip=True)
+            if text:
+                return text[:4000]
+        return self._extract_meta_content(soup, ["citation_abstract"])
+
+    _PAGE_RANGE_MAX_LEN = 12
+
+    @staticmethod
+    def _looks_like_page_range(text: str) -> bool:
+        """Return ``True`` when ``text`` is just a page range like ``"8-16"``.
+
+        AJOL OAI ``dc:description`` is occasionally populated with the article
+        page span instead of an abstract; such a value is not a usable
+        abstract and should be replaced by the article-page abstract.
+        """
+        t = (text or "").strip()
+        if not t or len(t) > AJOLConnector._PAGE_RANGE_MAX_LEN:
+            return False
+        return bool(re.fullmatch(r"\d+\s*[-–]\s*\d+", t))  # noqa: RUF001
 
     def _is_open_access_text(self, text: str) -> bool:
         """Return whether open access text."""
