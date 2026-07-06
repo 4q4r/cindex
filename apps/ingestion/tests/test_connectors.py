@@ -1,4 +1,5 @@
 # ruff: noqa: RUF001
+import pytest
 from bs4 import BeautifulSoup
 
 from apps.ingestion.connectors import (
@@ -119,6 +120,100 @@ def test_doaj_payload_extraction() -> None:
     assert len(items) == 1
     assert items[0].source_key == "doaj"
     assert items[0].journal == "Ecology OA"
+
+
+@pytest.mark.parametrize(
+    ("raw_abstract", "expected"),
+    [
+        # BMC / BioData Central structured abstracts prepend a literal
+        # "Abstract" heading followed by a capitalised section header.
+        (
+            "Abstract Background Constructing a predictive model is challenging",
+            "Background Constructing a predictive model is challenging",
+        ),
+        (
+            "Abstract: Background Constructing a predictive model",
+            "Background Constructing a predictive model",
+        ),
+        (
+            "ABSTRACT The study examines the role of X.",
+            "The study examines the role of X.",
+        ),
+        # A colon label is unambiguous regardless of the next token's case.
+        (
+            "Abstract: this article reviews the literature.",
+            "this article reviews the literature.",
+        ),
+        # Full-width colon (CJK punctuation) is also a label.
+        (
+            "Abstract：Background Constructing a predictive model",
+            "Background Constructing a predictive model",
+        ),
+        # A newline between label and body is still a label.
+        (
+            "Abstract\nBackground Constructing a predictive model",
+            "Background Constructing a predictive model",
+        ),
+        # Capitalised next token is treated as a label (structured-abstract
+        # section header or sentence start), even when the word could be a body
+        # term if it were lower-cased.
+        (
+            "Abstract Algebra is central to modern mathematics.",
+            "Algebra is central to modern mathematics.",
+        ),
+        # Legitimate sentences that merely start with the word "Abstract" must
+        # be preserved — the next token is lower-case and there is no colon.
+        (
+            "Abstract algebra is a branch of mathematics.",
+            "Abstract algebra is a branch of mathematics.",
+        ),
+        # No leading label at all — untouched.
+        ("Peer-reviewed ecology article", "Peer-reviewed ecology article"),
+        ("", ""),
+    ],
+)
+def test_doaj_strip_abstract_label(raw_abstract: str, expected: str) -> None:
+    """Leading ``Abstract`` label is stripped only when it is a label.
+
+    Publishers such as BMC / BioData Central emit the abstract field with a
+    literal ``"Abstract"`` heading (``"Abstract Background ..."``); the helper
+    removes that heading but preserves real sentences that happen to start
+    with the word ``Abstract`` (e.g. ``"Abstract algebra is..."``).
+    """
+    assert DOAJConnector()._strip_abstract_label(raw_abstract) == expected
+
+
+def test_doaj_payload_strips_leading_abstract_label() -> None:
+    """End-to-end: a DOAJ record whose abstract starts with ``Abstract`` is
+    extracted with the label stripped from both ``abstract`` and
+    ``full_text``."""
+    payload = {
+        "results": [
+            {
+                "bibjson": {
+                    "title": "Preeclampsia prediction pipeline",
+                    "abstract": (
+                        "Abstract Background Constructing a predictive model"
+                        " is challenging in imbalanced medical data."
+                    ),
+                    "year": 2025,
+                    "journal": {"title": "BioData Mining"},
+                    "identifier": [
+                        {"type": "doi", "id": "10.1186/s13040-025-00440-1"},
+                    ],
+                    "link": [{"url": "https://doi.org/10.1186/s13040-025-00440-1"}],
+                },
+            },
+        ],
+    }
+    items = DOAJConnector()._extract_from_payload("preeclampsia", payload, limit=5)
+
+    assert len(items) == 1
+    assert items[0].abstract.startswith("Background Constructing")
+    assert "Abstract " not in items[0].abstract
+    assert items[0].full_text.startswith("Preeclampsia prediction pipeline")
+    # The label must not leak into full_text either.
+    assert "Abstract Background" not in items[0].full_text
 
 
 def test_cinii_payload_extraction_prefers_real_year_and_doi() -> None:
