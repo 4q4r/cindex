@@ -1529,6 +1529,10 @@ class PerseeConnector(BaseConnector):
         indexing_evidence="scopus web of science",
         language="fr",
     )
+    _PERSEE_CITATION_RE = re.compile(
+        r"\bPour citer cet article\b",
+        re.IGNORECASE,
+    )
 
     def fetch(self, query: str, limit: int = 5) -> list[RawArticle]:
         """Fetch records from the upstream source.
@@ -1576,6 +1580,13 @@ class PerseeConnector(BaseConnector):
             year = self._extract_year(node_text) or self._extract_year(url_value)
             abstract_node = node.select_one(".searchContext")
             abstract = abstract_node.get_text(" ", strip=True) if abstract_node else ""
+            # ``.searchContext`` is a relevance-highlighted snippet that Persee
+            # concatenates from several document fragments; it regularly trails
+            # into the "Pour citer cet article" citation block (authors,
+            # journal, pages, DOI, affiliations). Strip from that marker so
+            # the fallback abstract (used when enrichment cannot reach the
+            # landing page) is the abstract fragment, not the bibliography.
+            abstract = self._PERSEE_CITATION_RE.split(abstract, maxsplit=1)[0].strip()
             doi = self._extract_doi(node_text)
             combined = f"{title} {abstract} {authors} {journal} {url_value}"
             if not self._is_article_like_item(title, url_value, doi, year):

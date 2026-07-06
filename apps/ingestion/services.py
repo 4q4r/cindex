@@ -344,7 +344,19 @@ class IngestionService:
             for raw in raws:
                 try:
                     enriched_raws.append(connector.enrich_raw(raw))
-                except (ValueError, RuntimeError):
+                except (ValueError, RuntimeError, ConnectorFetchError):
+                    # A single article's enrichment must not abort the whole
+                    # source: a sidecar 502/403 or a residual challenge page on
+                    # one landing page degrades to the raw payload (already
+                    # fetched) instead of discarding every article. A fetch-
+                    # level ConnectorFetchError (no articles fetched at all) is
+                    # still surfaced by the outer handler below.
+                    logger.warning(
+                        "%s: enrich_raw failed for %s, keeping raw payload",
+                        source_key,
+                        raw.url,
+                        exc_info=True,
+                    )
                     enriched_raws.append(raw)
             enrich_seconds = time.perf_counter() - enrich_started
             cls._mark_success(source)

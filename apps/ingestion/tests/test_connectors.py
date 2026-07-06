@@ -491,6 +491,46 @@ def test_persee_html_parser_keeps_real_articles() -> None:
     assert items[1].year == 2026
 
 
+def test_persee_search_context_strips_citation_block() -> None:
+    """The ``.searchContext`` snippet trails into a "Pour citer cet article"
+    citation block (authors, journal, pages, DOI, affiliations). The parser
+    must cut at that marker so the fallback abstract is the abstract
+    fragment, not the bibliography.
+    """
+    html = """
+    <html><body>
+      <article class='doc-result'>
+        <a class='title'
+           href='https://www.persee.fr/doc/estat_2018_1?q=machine+learning'>
+          Econometrics and Machine Learning
+        </a>
+        <div class='contributors'><span class='name'>Arthur Charpentier</span></div>
+        <div class='documentBibRef'><span class='collection'>
+          <a href='/journal/estat'>Economie et Statistique</a>
+        </span></div>
+        <div class='documentYear'>Année 2018</div>
+        <div class='searchContext'>
+          On the face of it, econometrics and <em>machine</em>
+          <em>learning</em> share a common goal.
+          Pour citer cet article: Charpentier, A. (2018).
+          Econometrics and Machine Learning. Economie et Statistique,
+          505-506, pp. 147-169. https://doi.org/10.24187/ecostat.2018.505d.1970
+          * University of Rennes 1 &amp; CREM
+        </div>
+      </article>
+    </body></html>
+    """
+    soup = BeautifulSoup(html, "lxml")
+    items = PerseeConnector()._extract_from_html("machine learning", soup, limit=5)
+
+    assert len(items) == 1
+    abstract = items[0].abstract
+    assert "Pour citer cet article" not in abstract
+    assert "10.24187/ecostat.2018.505d.1970" not in abstract
+    assert "University of Rennes" not in abstract
+    assert abstract.startswith("On the face of it, econometrics and")
+
+
 def test_sciengine_payload_extraction_rebuilds_doi_url_and_strips_html() -> None:
     """Test sciengine payload extraction rebuilds doi url and strips html helper.
 

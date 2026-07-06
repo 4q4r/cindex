@@ -268,3 +268,66 @@ def test_ingestion_surfaces_connector_fetch_error_as_failed_source(
     source = Source.objects.get(key="failing")
     assert source.total_failures == 1
     assert source.last_error
+
+
+class EnrichFailingConnector:
+    """Connector whose ``enrich_raw`` raises ``ConnectorFetchError``.
+
+    Models a sidecar 502/403 or a residual challenge page on one article
+    landing page: fetch succeeds (articles are returned), but enrichment
+    of each article's landing page fails. The raw payload is already fetched
+    and eligible, so a single-article enrichment failure must degrade to the
+    raw record instead of aborting the whole source.
+    """
+
+    def fetch(self, query: str, limit: int = 5):
+        return [
+            RawArticle(
+                source_key="enrich-failing",
+                title="Peer reviewed indexed article",
+                url="https://example.org/a1",
+                abstract="peer reviewed and indexed in scopus",
+                full_text="journal article doi 10.9999/enrichfail.1",
+                language="en",
+                year=2024,
+                doi="10.9999/enrichfail.1",
+                journal="Dummy Journal",
+                peer_review_evidence="peer reviewed",
+                indexing_evidence="scopus web of science",
+                preprint_evidence="journal article",
+            ),
+        ]
+
+    def enrich_raw(self, raw: RawArticle) -> RawArticle:
+        raise ConnectorFetchError("enrich-failing: sidecar 502 on landing page")
+
+
+def test_ingestion_enrich_connector_fetch_error_keeps_raw_source(
+    monkeypatch,
+    db,
+) -> None:
+    """An enrich-level ``ConnectorFetchError`` must not abort the source.
+
+    A fetch-level error (no articles fetched) still marks the source failed
+    (see ``test_ingestion_surfaces_connector_fetch_error_as_failed_source``).
+    But once articles are fetched, a per-article enrichment failure (sidecar
+    502/403 or residual challenge page on the landing page) must degrade to
+    the already-fetched raw payload, keep the source marked successful, and
+    still index the article — not discard every article for that source.
+    """
+    monkeypatch.setattr(
+        "apps.ingestion.services.CONNECTORS",
+        {"enrich-failing": EnrichFailingConnector},
+    )
+
+    articles = IngestionService.ingest_query(
+        "test",
+        source_keys=["enrich-failing"],
+        per_source_limit=1,
+    )
+
+    assert len(articles) == 1
+    assert articles[0].doi == "10.9999/enrichfail.1"
+    source = Source.objects.get(key="enrich-failing")
+    assert source.total_failures == 0
+    assert not source.last_error
