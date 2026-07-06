@@ -10,7 +10,7 @@ import aiohttp
 from bs4 import BeautifulSoup
 
 from apps.core.text import normalize_scholarly_text
-from apps.ingestion.connectors import BaseConnector, RawArticle
+from apps.ingestion.connectors import BaseConnector, ConnectorFetchError, RawArticle
 
 
 class LawfulFullTextResolver:
@@ -218,11 +218,16 @@ class LawfulFullTextResolver:
                             pdf_url,
                             ocr_language=ocr_language,
                         )
-                    except (ValueError, RuntimeError, ConnectionError):
+                    except (
+                        ValueError,
+                        RuntimeError,
+                        ConnectionError,
+                        ConnectorFetchError,
+                    ):
                         pdf_text = ""
                     if pdf_text:
                         return normalize_scholarly_text(pdf_text)
                 return text
-        except (ValueError, RuntimeError, ConnectionError):
+        except (ValueError, RuntimeError, ConnectionError, ConnectorFetchError):
             return ""
         return ""

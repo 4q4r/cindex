@@ -3,6 +3,7 @@
 import pytest
 
 from apps.ingestion.connectors import (
+    AJOLConnector,
     CrossrefConnector,
     CyberLeninkaConnector,
     EuropePMCConnector,
@@ -1174,3 +1175,147 @@ class TestMathNetEnrichParse:
         )
         enriched = conn.enrich_raw(raw)
         assert enriched.authors == ("Existing Author",)
+
+
+class TestAJOLAbstractFromArticlePage:
+    """AJOL ``enrich_raw`` replaces page-range OAI abstracts with the real one.
+
+    AJOL OAI ``dc:description`` is occasionally just the article page span
+    (e.g. ``"8-16"``). The article page exposes the true abstract in
+    ``div.article-abstract``; ``enrich_raw`` must prefer it over the
+    page-range pseudo-abstract, while keeping a legitimate OAI abstract
+    when no article-page abstract is present.
+    """
+
+    _ARTICLE_HTML = (
+        "<html><head>"
+        '<meta name="citation_journal_title" content="West African Journal"/>'
+        '<meta name="citation_date" content="2017/09/20"/>'
+        "</head><body>"
+        "<h2>Abstract</h2>"
+        '<div class="article-abstract"><p>'
+        "The two major motivations in medical science are to prevent and "
+        "diagnose diseases with care."
+        "</p></div>"
+        "</body></html>"
+    )
+
+    _ARTICLE_HTML_NO_ABSTRACT = (
+        "<html><head>"
+        '<meta name="citation_journal_title" content="West African Journal"/>'
+        "</head><body><p>no abstract here</p></body></html>"
+    )
+
+    # Heading INSIDE the abstract container — the extractor must prefer the
+    # ``<p>`` over the bare ``div`` so the literal word "Abstract" does not
+    # leak into the extracted abstract (``select_one`` returns matches in
+    # document order, so a bare ``div.article-abstract`` listed alongside the
+    # ``<p>`` selector would always win and include the heading text).
+    _ARTICLE_HTML_HEADING_INSIDE = (
+        "<html><body>"
+        '<div class="article-abstract">'
+        "<h3>Abstract</h3>"
+        "<p>The two major motivations in medical science are to prevent and "
+        "diagnose diseases with care.</p>"
+        "</div>"
+        "</body></html>"
+    )
+
+    def test_page_range_abstract_replaced_by_article_page_abstract(
+        self,
+        monkeypatch,
+    ) -> None:
+        from apps.ingestion.connectors.base import RawArticle
+
+        conn = AJOLConnector()
+        monkeypatch.setattr(
+            conn,
+            "_request_text",
+            lambda _url, **_kwargs: self._ARTICLE_HTML,
+        )
+        raw = RawArticle(
+            source_key="ajol",
+            title="A framework for diagnosing confusable diseases",
+            url="https://www.ajol.info/index.php/wajiar/article/view/161476",
+            abstract="8-16",
+            full_text="",
+            language="en",
+            year=None,
+            doi="",
+            journal="AJOL",
+        )
+        enriched = conn.enrich_raw(raw)
+        assert "diagnose diseases with care" in enriched.abstract
+        assert enriched.abstract != "8-16"
+
+    def test_legitimate_oai_abstract_kept_when_no_article_page_abstract(
+        self,
+        monkeypatch,
+    ) -> None:
+        from apps.ingestion.connectors.base import RawArticle
+
+        conn = AJOLConnector()
+        monkeypatch.setattr(
+            conn,
+            "_request_text",
+            lambda _url, **_kwargs: self._ARTICLE_HTML_NO_ABSTRACT,
+        )
+        raw = RawArticle(
+            source_key="ajol",
+            title="Some real article",
+            url="https://www.ajol.info/index.php/wajiar/article/view/1",
+            abstract="A genuine long abstract describing the study in detail.",
+            full_text="",
+            language="en",
+            year=None,
+            doi="",
+            journal="AJOL",
+        )
+        enriched = conn.enrich_raw(raw)
+        assert enriched.abstract == (
+            "A genuine long abstract describing the study in detail."
+        )
+
+    def test_heading_inside_abstract_div_does_not_leak(
+        self,
+        monkeypatch,
+    ) -> None:
+        from apps.ingestion.connectors.base import RawArticle
+
+        conn = AJOLConnector()
+        monkeypatch.setattr(
+            conn,
+            "_request_text",
+            lambda _url, **_kwargs: self._ARTICLE_HTML_HEADING_INSIDE,
+        )
+        raw = RawArticle(
+            source_key="ajol",
+            title="Heading inside abstract div",
+            url="https://www.ajol.info/index.php/wajiar/article/view/2",
+            abstract="8-16",
+            full_text="",
+            language="en",
+            year=None,
+            doi="",
+            journal="AJOL",
+        )
+        enriched = conn.enrich_raw(raw)
+        assert "diagnose diseases with care" in enriched.abstract
+        # The literal heading word must not be prepended to the abstract.
+        assert not enriched.abstract.lower().startswith("abstract")
+
+    @pytest.mark.parametrize(
+        ("text", "expected"),
+        [
+            ("8-16", True),
+            ("37-53", True),
+            (" 8 – 16 ", True),  # noqa: RUF001 - en dash is the test payload
+            ("8–16", True),  # noqa: RUF001 - en dash is the test payload
+            ("A real abstract sentence.", False),
+            ("", False),
+            ("pages 8-16 and more", False),
+            ("1234567890123", False),
+        ],
+    )
+    def test_looks_like_page_range(self, text: str, expected: bool) -> None:
+        assert AJOLConnector._looks_like_page_range(text) is expected
