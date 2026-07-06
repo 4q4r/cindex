@@ -504,6 +504,32 @@ class DOAJConnector(AsyncApiConnector):
     def _api_url(self, query: str, limit: int) -> str:
         return f"{self.profile.search_url}/{quote_plus(query)}?pageSize={limit}"
 
+    _ABSTRACT_LABEL_RE = re.compile(r"^\s*abstract\s*[:：]?\s+", re.IGNORECASE)
+
+    @staticmethod
+    def _strip_abstract_label(abstract: str) -> str:
+        """Strip a leading ``Abstract`` label some publishers prepend.
+
+        BMC / BioData Central and similar publishers emit the abstract field
+        with a literal ``"Abstract"`` heading, e.g. ``"Abstract Background
+        Constructing a predictive model..."``. A bare leading ``Abstract`` is
+        removed only when it behaves as a label — followed by a colon or by a
+        capitalised token (a structured-abstract section header or a sentence
+        start) — so legitimate sentences such as ``"Abstract algebra is..."``
+        (next token lower-case) are preserved verbatim.
+        """
+        if not abstract:
+            return abstract
+        match = DOAJConnector._ABSTRACT_LABEL_RE.match(abstract)
+        if match is None:
+            return abstract
+        remainder = abstract[match.end() :]
+        matched = match.group()
+        had_colon = ":" in matched or "：" in matched
+        if had_colon or (remainder and remainder[0].isupper()):
+            return remainder
+        return abstract
+
     def _extract_doaj_doi(self, bibjson: dict, title: str, abstract: str) -> str:
         """Extract DOI from DOAJ bibjson identifiers or text.
 
@@ -550,7 +576,7 @@ class DOAJConnector(AsyncApiConnector):
         title = bibjson.get("title", "").strip()
         if not title:
             return None
-        abstract = bibjson.get("abstract", "") or ""
+        abstract = self._strip_abstract_label(bibjson.get("abstract", "") or "")
         doi = self._extract_doaj_doi(bibjson, title, abstract)
         url = self._extract_doaj_url(bibjson, doi)
         year = bibjson.get("year")
