@@ -1873,6 +1873,7 @@ class TestOpenAlexJournal:
                 {
                     "id": "https://openalex.org/W456",
                     "title": "OpenAlex OA article",
+                    "abstract_inverted_index": {"Abstract": [0], "text": [1]},
                     "doi": "https://doi.org/10.1234/oa2",
                     "publication_year": 2024,
                     "authorships": [
@@ -1895,6 +1896,7 @@ class TestOpenAlexJournal:
                 {
                     "id": "https://openalex.org/W789",
                     "title": "OpenAlex no journal",
+                    "abstract_inverted_index": {"Abstract": [0], "text": [1]},
                     "doi": "https://doi.org/10.1234/oa3",
                     "publication_year": 2024,
                     "authorships": [
@@ -1907,6 +1909,87 @@ class TestOpenAlexJournal:
         items = conn._extract_from_payload("test", payload, 5)
         assert len(items) == 1
         assert items[0].journal == ""
+
+
+class TestOpenAlexAbstract:
+    """OpenAlexConnector must drop works with a null/missing abstract.
+
+    OpenAlex genuinely returns ``abstract_inverted_index: null`` for a sizeable
+    share of works (verified live: 6/15 null for 'medical imaging', including
+    the seminal 'A survey on deep learning in medical image analysis').
+    Crossref lacks these abstracts too, so there is no enrichment fallback.
+    Such null-abstract works are garbage for the search index, so they are
+    filtered out and a larger page is requested so the result still reaches
+    ``limit`` articles with a real abstract.
+    """
+
+    def _rec(self, title: str, inverted_index: object, doi: str) -> dict:
+        rec = {
+            "id": f"https://openalex.org/{doi}",
+            "title": title,
+            "doi": f"https://doi.org/{doi}",
+            "publication_year": 2024,
+            "authorships": [{"author": {"display_name": "An Author"}}],
+            "primary_location": {"landing_page_url": "https://example.org/x"},
+        }
+        if inverted_index is not None:
+            rec["abstract_inverted_index"] = inverted_index
+        return rec
+
+    def test_null_abstract_is_dropped(self) -> None:
+        payload = {
+            "results": [
+                self._rec("Survey", None, "10.1/survey"),
+                self._rec(
+                    "Real Article",
+                    {"A": [0], "real": [1], "abstract": [2]},
+                    "10.1/a",
+                ),
+            ],
+        }
+        conn = OpenAlexConnector()
+        items = conn._extract_from_payload("test", payload, 5)
+        assert len(items) == 1
+        assert items[0].title == "Real Article"
+        assert items[0].abstract == "A real abstract"
+
+    def test_missing_abstract_key_is_dropped(self) -> None:
+        """A work carrying no ``abstract_inverted_index`` key is also dropped."""
+        payload = {
+            "results": [
+                {
+                    "id": "https://openalex.org/Wmissing",
+                    "title": "No abstract key",
+                    "doi": "https://doi.org/10.1/missing",
+                    "publication_year": 2024,
+                    "authorships": [{"author": {"display_name": "An Author"}}],
+                    "primary_location": {
+                        "landing_page_url": "https://example.org/y",
+                    },
+                },
+                self._rec(
+                    "Kept",
+                    {"Kept": [0], "abstract": [1]},
+                    "10.1/k",
+                ),
+            ],
+        }
+        conn = OpenAlexConnector()
+        items = conn._extract_from_payload("test", payload, 5)
+        assert [it.title for it in items] == ["Kept"]
+
+    def test_overfetch_keeps_limit_after_filtering(self) -> None:
+        """Filtering null-abstract works must not shrink the result below
+        ``limit`` when the over-fetched page contains enough real abstracts."""
+        results = [self._rec(f"Null {i}", None, f"10.1/n{i}") for i in range(3)] + [
+            self._rec(f"Article {i}", {f"Abstract{i}": [0]}, f"10.1/a{i}")
+            for i in range(5)
+        ]
+        payload = {"results": results}
+        conn = OpenAlexConnector()
+        items = conn._extract_from_payload("test", payload, 4)
+        assert len(items) == 4
+        assert all(it.abstract for it in items)
 
 
 class TestBrowserTransport:
