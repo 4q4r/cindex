@@ -73,10 +73,19 @@ class EuropePMCConnector(AsyncApiConnector):
         language="en",
     )
 
+    # Over-fetch the upstream page: some EuropePMC records (editorials,
+    # letters, comments) carry a null ``abstractText`` and are dropped below
+    # as garbage. Requesting a larger page keeps the filtered result count
+    # close to ``limit`` instead of shrinking whenever a query surfaces
+    # editorials (which broad-matches many medical queries).
+    _OVERFETCH_FACTOR = 3
+
     def _api_url(self, query: str, limit: int) -> str:
+        page = limit * self._OVERFETCH_FACTOR
         return (
             "https://www.ebi.ac.uk/europepmc/webservices/rest/search"
-            f"?query={quote_plus(query)}&format=json&pageSize={limit}&resultType=core"
+            f"?query={quote_plus(query)}&format=json"
+            f"&pageSize={page}&resultType=core"
         )
 
     def _extract_from_payload(
@@ -87,9 +96,16 @@ class EuropePMCConnector(AsyncApiConnector):
     ) -> list[RawArticle]:
         records = payload.get("resultList", {}).get("result", [])
         items: list[RawArticle] = []
-        for rec in records[:limit]:
-            title = rec.get("title", "").strip()
-            abstract = rec.get("abstractText", "")
+        for rec in records:
+            if len(items) >= limit:
+                break
+            title = (rec.get("title") or "").strip()
+            # ``abstractText`` is null (not absent) for editorials/letters;
+            # ``rec.get("abstractText", "")`` returns None for a present-but-
+            # null key, which would inject "None" into full_text and surface
+            # an empty-abstract record as garbage. Coerce to "" and skip
+            # records with no usable abstract.
+            abstract = (rec.get("abstractText") or "").strip()
             journal = _extract_epmc_journal(rec) or "Europe PMC"
             doi = rec.get("doi", "") or self._extract_doi(f"{title} {abstract}")
             year = rec.get("pubYear")
@@ -110,7 +126,7 @@ class EuropePMCConnector(AsyncApiConnector):
                     if author_string
                     else ()
                 )
-            if not title or not url_value:
+            if not title or not url_value or not abstract:
                 continue
             items.append(
                 self._raw(
