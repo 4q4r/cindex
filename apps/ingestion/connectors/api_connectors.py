@@ -1081,7 +1081,7 @@ class HALConnector(AsyncApiConnector):
     def _api_url(self, query: str, limit: int) -> str:
         fields = (
             "halId_s,title_s,authFullName_s,abstract_s,"
-            "doiId_s,publicationDateY_i,uri_s,journalTitle_s"
+            "doiId_s,publicationDateY_i,uri_s,journalTitle_s,language_s"
         )
         return (
             f"{self.profile.search_url}"
@@ -1129,6 +1129,12 @@ class HALConnector(AsyncApiConnector):
             # marker (consistent with arXiv/PMC preprint connectors).
             if len(journal) < HALConnector._MIN_JOURNAL_LEN:
                 journal = "HAL"
+            # ``language_s`` carries the ISO code (e.g. "en", "fr") per record.
+            # It is a multi-valued Solr field; take the first value. Passing it
+            # explicitly lets _raw() override the "fr" profile default for the
+            # many English-language works indexed by this French repository.
+            langs = doc.get("language_s", [])
+            language = langs[0].strip() if isinstance(langs, list) and langs else ""
             items.append(
                 self._raw(
                     title=title,
@@ -1139,6 +1145,7 @@ class HALConnector(AsyncApiConnector):
                     year=year,
                     journal=journal,
                     authors=authors,
+                    language=language,
                 ),
             )
         return items
