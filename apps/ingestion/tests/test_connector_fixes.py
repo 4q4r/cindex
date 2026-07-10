@@ -347,6 +347,1269 @@ class TestCyberLeninkaAuthors:
         assert items[0].authors == ()
 
 
+class TestCyberLeninkaAbstractFallback:
+    """CyberLeninka ``enrich_raw`` backfills an empty abstract from the body.
+
+    The search API leaves ``annotation`` empty for a minority of articles, and
+    the landing page carries no abstract meta tag, so the inherited
+    ``enrich_raw`` cannot recover it. The page renders the body inside
+    ``div.ocr[itemprop="articleBody"]``, but that block is prepended with a
+    recommended-article preview and interleaved with the bibliography, so the
+    abstract must be located relative to the article's *own* title paragraph
+    (matched fuzzily, since the page sometimes OCR-flattens ``й`` to ``и``),
+    skipping keyword/affiliation lines, and stopping at the first numbered
+    reference or journal citation.
+    """
+
+    _ARTICLE_HTML = (
+        "<html><body>"
+        '<div class="ocr" itemprop="articleBody">'
+        # Recommended-article preview with an unrelated title — must not be
+        # matched as this article's title.
+        "<p>Смотрите также: совершенно иная статья о квантовых вычислениях</p>"  # noqa: RUF001
+        # Author line before the title.
+        "<p>Михайлова М. В.</p>"  # noqa: RUF001
+        # The article's own title, OCR-flattened (НЕИРО- instead of НЕЙРО-).
+        "<p>НЕИРОМАТЕМАТИКА В МАШИННОМ ОБУЧЕНИИ</p>"  # noqa: RUF001
+        # Keyword lines precede the abstract and must be skipped, not stop.
+        "<p>Ключевые слова: нейроматематика, машинное обучение, граф</p>"
+        "<p>Keywords: neuromathematics, machine learning, graph</p>"
+        # The abstract prose run.
+        "<p>К нейроматематике принято относить раздел вычислительной "  # noqa: RUF001
+        "математики, связанный с разработкой методов решения задач.</p>"  # noqa: RUF001
+        "<p>Если рассматривать нейрокомпьютеры как устройства переработки "
+        "информации, возникают вопросы о применимости таких систем.</p>"  # noqa: RUF001
+        # Numbered reference list ends the run.
+        "<p>1)\tу рассматриваемой задачи отсутствует алгоритм решения</p>"  # noqa: RUF001
+        # Journal citation would also end the run if reached.
+        "<p>Вестник медицинского института. 2023. Том 13. № 2.</p>"
+        "</div></body></html>"
+    )
+
+    _ARTICLE_HTML_AFFILIATION = (
+        "<html><body>"
+        '<div class="ocr" itemprop="articleBody">'
+        "<p>Особенности применения наноматериалов в строительстве</p>"
+        # Affiliation line right after the title — short and must be skipped.
+        "<p>Московский государственный университет, кафедра физики</p>"
+        "<p>В работе рассмотрены особенности применения наноматериалов "  # noqa: RUF001
+        "в современных строительных конструкциях и их долговечность.</p>"
+        "<p>Вестник строительных наук. 2022. Том 8. № 1.</p>"
+        "</div></body></html>"
+    )
+
+    _ARTICLE_HTML_NO_OCR = "<html><body><p>no article body block here</p></body></html>"
+
+    _ARTICLE_HTML_PROSE = (
+        "<html><body>"
+        '<div class="ocr" itemprop="articleBody">'
+        "<p>Машинное обучение в задачах классификации</p>"
+        # Common Russian prose tokens that must NOT end the abstract run:
+        # "in such cases", "i.e.", "etc.", "in one or another", "since".
+        "<p>В работе рассматриваются методы машинного обучения, "  # noqa: RUF001
+        "в том числе ансамблевые подходы, т.е. композиции моделей, "  # noqa: RUF001
+        "и т.д., применяемые т.к. они устойчивы к переобучению.</p>"
+        "<p>Показано, что в том или ином случае метод сходится.</p>"
+        "<p>Вестник информатики. 2023. Том 13. № 2.</p>"
+        "</div></body></html>"
+    )
+
+    _ARTICLE_HTML_RELATED_PREVIEW = (
+        "<html><body>"
+        '<div class="ocr" itemprop="articleBody">'
+        # A related-article preview sharing ≥60% of the title's tokens — must
+        # be rejected as the title via the preview-prefix guard.
+        "<p>Смотрите также: глубокое машинное обучение в медицинских "
+        "задачах</p>"
+        "<p>Машинное обучение в диагностике заболеваний</p>"
+        "<p>Ключевые слова: машинное обучение, диагностика</p>"
+        "<p>В работе машинное обучение применяется к диагностике "  # noqa: RUF001
+        "заболеваний на ранних стадиях.</p>"
+        "<p>Вестник медицинского журнала. 2022. Том 5. № 1.</p>"
+        "</div></body></html>"
+    )
+
+    _ARTICLE_HTML_PREVIEW_VARIANT = (
+        "<html><body>"
+        '<div class="ocr" itemprop="articleBody">'
+        # An unlisted preview prefix sharing ≥60% of the title's tokens — must
+        # be rejected via the expanded preview-prefix guard.
+        "<p>Также в этом номере: методы оптимизации в логистике предприятия"
+        "</p>"
+        "<p>Методы оптимизации в логистике</p>"
+        "<p>В работе предложен метод оптимизации маршрутов доставки.</p>"  # noqa: RUF001
+        "<p>Том 7. № 2.</p>"
+        "</div></body></html>"
+    )
+
+    _ARTICLE_HTML_SQUARE_REFS = (
+        "<html><body>"
+        '<div class="ocr" itemprop="articleBody">'
+        "<p>Методы оптимизации в логистике</p>"
+        # Bare author line (surname + two initials, no institution) before the
+        # abstract run — must be skipped via the author-initial guard.
+        "<p>Иванов И.И., Петров П.П.</p>"
+        "<p>В работе предложен метод оптимизации маршрутов доставки.</p>"  # noqa: RUF001
+        "<p>Эксперименты показали снижение издержек на 15 процентов.</p>"
+        # Bibliography heading variant — must end the abstract run.
+        "<p>Список использованной литературы</p>"
+        # Square-bracket references after the header must not be collected.
+        "<p>[1] Смирнов А.А. Логистика. М.: Наука, 2020.</p>"  # noqa: RUF001
+        "<p>[2] Козлов В.В. Оптимизация. СПб.: Питер, 2019.</p>"  # noqa: RUF001
+        "</div></body></html>"
+    )
+
+    _ARTICLE_HTML_SHORT_OCR_TITLE = (
+        "<html><body>"
+        '<div class="ocr" itemprop="articleBody">'
+        # Body title OCR-flattened (й→и); a short single-token title whose only
+        # differing token is the й-bearing one — only the й↔и fold rescues it.
+        "<p>Неиросети</p>"
+        "<p>Нейросетевые модели описаны кратко в данной работе.</p>"
+        "<p>Том 3. № 1.</p>"
+        "</div></body></html>"
+    )
+
+    _ARTICLE_HTML_PREVIEW_VYPUSK = (
+        "<html><body>"
+        '<div class="ocr" itemprop="articleBody">'
+        # An "in this issue" preview whose normalized text embeds the title as
+        # a substring — without the "в этом выпуске" prefix guard the substring
+        # branch of _find_cyberleninka_title would match the preview as the
+        # title, so the real title would be collected as the abstract opener.
+        "<p>В этом выпуске: методы оптимизации в логистике предприятия</p>"  # noqa: RUF001
+        "<p>Методы оптимизации в логистике</p>"
+        "<p>В работе предложен метод оптимизации маршрутов доставки.</p>"  # noqa: RUF001
+        "<p>Том 7. № 2.</p>"
+        "</div></body></html>"
+    )
+
+    def test_abstract_extracted_from_body_after_ocr_title(self, monkeypatch) -> None:
+        from apps.ingestion.connectors.base import RawArticle
+
+        conn = CyberLeninkaConnector()
+        monkeypatch.setattr(
+            conn,
+            "_request_text",
+            lambda _url, **_kwargs: self._ARTICLE_HTML,
+        )
+        raw = RawArticle(
+            source_key="cyberleninka",
+            title="Нейроматематика в машинном обучении",
+            url="https://cyberleninka.ru/article/n/neyromatematika",
+            abstract="",
+            full_text="",
+            language="ru",
+            year=None,
+            doi="",
+            journal="CL Journal",
+        )
+        enriched = conn.enrich_raw(raw)
+        assert "вычислительной математики" in enriched.abstract
+        assert "нейрокомпьютеры" in enriched.abstract
+        # The recommended-article preview must not leak in.
+        assert "квантовых" not in enriched.abstract
+        assert "Смотрите также" not in enriched.abstract
+        # The author line precedes the title and must not be collected.
+        assert "Михайлова" not in enriched.abstract
+        # Keyword lines must be skipped, not appear in the abstract.
+        assert "Ключевые слова" not in enriched.abstract
+        assert "Keywords" not in enriched.abstract
+        # The numbered reference must end the run, not be collected.
+        assert "отсутствует алгоритм" not in enriched.abstract
+        assert "1)" not in enriched.abstract
+        # The journal citation must not leak in.
+        assert "Том 13" not in enriched.abstract
+
+    def test_affiliation_line_after_title_is_skipped(self, monkeypatch) -> None:
+        from apps.ingestion.connectors.base import RawArticle
+
+        conn = CyberLeninkaConnector()
+        monkeypatch.setattr(
+            conn,
+            "_request_text",
+            lambda _url, **_kwargs: self._ARTICLE_HTML_AFFILIATION,
+        )
+        raw = RawArticle(
+            source_key="cyberleninka",
+            title="Особенности применения наноматериалов в строительстве",
+            url="https://cyberleninka.ru/article/n/nanomaterials",
+            abstract="",
+            full_text="",
+            language="ru",
+            year=None,
+            doi="",
+            journal="CL Journal",
+        )
+        enriched = conn.enrich_raw(raw)
+        assert "наноматериалов" in enriched.abstract
+        assert "долговечность" in enriched.abstract
+        # The affiliation line must be skipped, not collected.
+        assert "кафедра" not in enriched.abstract
+        assert "университет" not in enriched.abstract
+        # The journal citation must end the run.
+        assert "Том 8" not in enriched.abstract
+
+    def test_nonempty_api_abstract_skips_fallback(self, monkeypatch) -> None:
+        from apps.ingestion.connectors.base import RawArticle
+
+        conn = CyberLeninkaConnector()
+        # The inherited ``enrich_raw`` always fetches the landing page once
+        # (base.py), so the stub must return real body HTML rather than raise.
+        # The contract under test is narrower: the *fallback* extraction must
+        # not run — i.e. it must not overwrite the API abstract with body prose.
+        monkeypatch.setattr(
+            conn,
+            "_request_text",
+            lambda _url, **_kwargs: self._ARTICLE_HTML,
+        )
+        raw = RawArticle(
+            source_key="cyberleninka",
+            title="A real article with a full abstract already",
+            url="https://cyberleninka.ru/article/n/has-abstract",
+            abstract="A genuine abstract already provided by the search API.",
+            full_text="",
+            language="ru",
+            year=None,
+            doi="",
+            journal="CL Journal",
+        )
+        enriched = conn.enrich_raw(raw)
+        # The API abstract is preserved verbatim (normalised); the fallback
+        # body extraction never overwrites a real abstract.
+        assert (
+            enriched.abstract
+            == "A genuine abstract already provided by the search API."
+        )
+        # Body prose the fallback would have extracted is absent, proving the
+        # fallback path was not taken even though the page carries it.
+        assert "вычислительной" not in enriched.abstract
+
+    def test_no_ocr_block_leaves_abstract_empty(self, monkeypatch) -> None:
+        from apps.ingestion.connectors.base import RawArticle
+
+        conn = CyberLeninkaConnector()
+        monkeypatch.setattr(
+            conn,
+            "_request_text",
+            lambda _url, **_kwargs: self._ARTICLE_HTML_NO_OCR,
+        )
+        raw = RawArticle(
+            source_key="cyberleninka",
+            title="Some article whose landing page lacks the body block",
+            url="https://cyberleninka.ru/article/n/no-body",
+            abstract="",
+            full_text="",
+            language="ru",
+            year=None,
+            doi="",
+            journal="CL Journal",
+        )
+        enriched = conn.enrich_raw(raw)
+        assert enriched.abstract == ""
+
+    def test_request_failure_leaves_abstract_empty(self, monkeypatch) -> None:
+        from apps.ingestion.connectors.base import RawArticle
+
+        conn = CyberLeninkaConnector()
+
+        def _raise(_url: str, **_kwargs: object) -> str:
+            raise RuntimeError("sidecar 502")
+
+        monkeypatch.setattr(conn, "_request_text", _raise)
+        raw = RawArticle(
+            source_key="cyberleninka",
+            title="Some article whose landing page request fails",
+            url="https://cyberleninka.ru/article/n/fails",
+            abstract="",
+            full_text="",
+            language="ru",
+            year=None,
+            doi="",
+            journal="CL Journal",
+        )
+        enriched = conn.enrich_raw(raw)
+        # A failed fallback fetch must degrade to the raw (empty) abstract,
+        # not abort enrichment.
+        assert enriched.abstract == ""
+
+    def test_common_russian_prose_not_truncated(self, monkeypatch) -> None:
+        from apps.ingestion.connectors.base import RawArticle
+
+        conn = CyberLeninkaConnector()
+        monkeypatch.setattr(
+            conn,
+            "_request_text",
+            lambda _url, **_kwargs: self._ARTICLE_HTML_PROSE,
+        )
+        raw = RawArticle(
+            source_key="cyberleninka",
+            title="Машинное обучение в задачах классификации",
+            url="https://cyberleninka.ru/article/n/prose",
+            abstract="",
+            full_text="",
+            language="ru",
+            year=None,
+            doi="",
+            journal="CL Journal",
+        )
+        enriched = conn.enrich_raw(raw)
+        # Ordinary Russian prose tokens (in-such-cases, i.e., etc.,
+        # in-one-or-another, since) must not truncate the abstract run.
+        assert "в том числе" in enriched.abstract
+        assert "композиции моделей" in enriched.abstract
+        assert "метод сходится" in enriched.abstract
+        # The journal citation line still ends the run.
+        assert "Том 13" not in enriched.abstract
+        assert "Вестник" not in enriched.abstract
+
+    def test_related_preview_not_matched_as_title(self, monkeypatch) -> None:
+        from apps.ingestion.connectors.base import RawArticle
+
+        conn = CyberLeninkaConnector()
+        monkeypatch.setattr(
+            conn,
+            "_request_text",
+            lambda _url, **_kwargs: self._ARTICLE_HTML_RELATED_PREVIEW,
+        )
+        raw = RawArticle(
+            source_key="cyberleninka",
+            title="Машинное обучение в диагностике заболеваний",
+            url="https://cyberleninka.ru/article/n/related-preview",
+            abstract="",
+            full_text="",
+            language="ru",
+            year=None,
+            doi="",
+            journal="CL Journal",
+        )
+        enriched = conn.enrich_raw(raw)
+        # The related-article preview must not be matched as the title, so
+        # its content and the title/keyword lines must not leak into the
+        # abstract.
+        assert "применяется к диагностике" in enriched.abstract
+        assert "Смотрите также" not in enriched.abstract
+        assert "глубокое" not in enriched.abstract
+        assert "Ключевые слова" not in enriched.abstract
+        assert "Том 5" not in enriched.abstract
+
+    def test_unlisted_preview_prefix_rejected(self, monkeypatch) -> None:
+        from apps.ingestion.connectors.base import RawArticle
+
+        conn = CyberLeninkaConnector()
+        monkeypatch.setattr(
+            conn,
+            "_request_text",
+            lambda _url, **_kwargs: self._ARTICLE_HTML_PREVIEW_VARIANT,
+        )
+        raw = RawArticle(
+            source_key="cyberleninka",
+            title="Методы оптимизации в логистике",
+            url="https://cyberleninka.ru/article/n/preview-variant",
+            abstract="",
+            full_text="",
+            language="ru",
+            year=None,
+            doi="",
+            journal="CL Journal",
+        )
+        enriched = conn.enrich_raw(raw)
+        # The unlisted preview prefix must be rejected, so its content and the
+        # title line must not leak into the abstract; only the real abstract
+        # run is collected.
+        assert "маршрутов доставки" in enriched.abstract
+        assert "Также в этом номере" not in enriched.abstract
+        assert "предприятия" not in enriched.abstract
+        assert "Том 7" not in enriched.abstract
+
+    def test_square_bracket_refs_and_author_line_stopped(self, monkeypatch) -> None:
+        from apps.ingestion.connectors.base import RawArticle
+
+        conn = CyberLeninkaConnector()
+        monkeypatch.setattr(
+            conn,
+            "_request_text",
+            lambda _url, **_kwargs: self._ARTICLE_HTML_SQUARE_REFS,
+        )
+        raw = RawArticle(
+            source_key="cyberleninka",
+            title="Методы оптимизации в логистике",
+            url="https://cyberleninka.ru/article/n/square-refs",
+            abstract="",
+            full_text="",
+            language="ru",
+            year=None,
+            doi="",
+            journal="CL Journal",
+        )
+        enriched = conn.enrich_raw(raw)
+        # The bare author line must be skipped, not collected.
+        assert "Иванов" not in enriched.abstract
+        assert "Петров" not in enriched.abstract
+        # The abstract prose run is collected.
+        assert "маршрутов доставки" in enriched.abstract
+        assert "снижение издержек" in enriched.abstract
+        # The bibliography heading variant must end the run, not be collected.
+        assert "Список использованной" not in enriched.abstract
+        # Square-bracket references must not bleed in.
+        assert "Смирнов" not in enriched.abstract
+        assert "Козлов" not in enriched.abstract
+        assert "[1]" not in enriched.abstract
+
+    def test_short_ocr_title_matched_via_fold(self, monkeypatch) -> None:
+        from apps.ingestion.connectors.base import RawArticle
+
+        conn = CyberLeninkaConnector()
+        monkeypatch.setattr(
+            conn,
+            "_request_text",
+            lambda _url, **_kwargs: self._ARTICLE_HTML_SHORT_OCR_TITLE,
+        )
+        raw = RawArticle(
+            source_key="cyberleninka",
+            title="Нейросети",
+            url="https://cyberleninka.ru/article/n/short-ocr",
+            abstract="",
+            full_text="",
+            language="ru",
+            year=None,
+            doi="",
+            journal="CL Journal",
+        )
+        enriched = conn.enrich_raw(raw)
+        # A short single-token OCR-flattened title is only rescued by the
+        # й↔и fold; without it the title would not match and the abstract
+        # would be empty.
+        assert "Нейросетевые модели" in enriched.abstract
+        assert "в данной работе" in enriched.abstract
+        assert "Том 3" not in enriched.abstract
+
+    def test_vypusk_preview_not_matched_as_title(self, monkeypatch) -> None:
+        from apps.ingestion.connectors.base import RawArticle
+
+        conn = CyberLeninkaConnector()
+        monkeypatch.setattr(
+            conn,
+            "_request_text",
+            lambda _url, **_kwargs: self._ARTICLE_HTML_PREVIEW_VYPUSK,
+        )
+        raw = RawArticle(
+            source_key="cyberleninka",
+            title="Методы оптимизации в логистике",
+            url="https://cyberleninka.ru/article/n/vypusk-preview",
+            abstract="",
+            full_text="",
+            language="ru",
+            year=None,
+            doi="",
+            journal="CL Journal",
+        )
+        enriched = conn.enrich_raw(raw)
+        # The "в этом выпуске" preview embeds the title as a substring, so
+        # without the prefix guard the substring branch would match the
+        # preview as the title; the preview content and the real title must
+        # not leak into the abstract.
+        assert "маршрутов доставки" in enriched.abstract
+        assert "В этом выпуске" not in enriched.abstract  # noqa: RUF001
+        assert "предприятия" not in enriched.abstract
+        assert "Том 7" not in enriched.abstract
+
+    _ARTICLE_HTML_UNIVERSITY_OPENER = (
+        "<html><body>"
+        '<div class="ocr" itemprop="articleBody">'
+        # An abstract opener that mentions a university and a finite-verb
+        # stem ("предложен") -- without the verb-stem guard the affiliation
+        # skip would drop it as an affiliation line, losing the whole run.
+        "<p>Особенности применения наноматериалов в строительстве</p>"
+        "<p>В Томском государственном университете предложен новый метод "  # noqa: RUF001
+        "повышения долговечности конструкций.</p>"
+        "<p>Вестник строительных наук. 2023. Том 7. № 2.</p>"
+        "</div></body></html>"
+    )
+
+    _ARTICLE_HTML_INLINE_ISSUE = (
+        "<html><body>"
+        '<div class="ocr" itemprop="articleBody">'
+        "<p>Методы оптимизации в логистике</p>"
+        "<p>В работе предложен метод оптимизации маршрутов доставки.</p>"  # noqa: RUF001
+        # A prose sentence mentioning an inline "в таблице № 3" must not be
+        # truncated by a bare issue-sign guard; only short header-like lines
+        # carrying "№ N" are treated as a stop.
+        "<p>Метод апробирован на данных из таблицы № 3 и показал "
+        "эффективность 15 процентов.</p>"
+        "<p>Результаты подтвердили результат эксперимента.</p>"
+        "<p>Вестник логистики. 2023. Том 7. № 2.</p>"
+        "</div></body></html>"
+    )
+
+    _ARTICLE_HTML_UNLISTED_LONG_PREVIEW = (
+        "<html><body>"
+        '<div class="ocr" itemprop="articleBody">'
+        # An unlisted preview prefix ("в новом выпуске" is not in the prefix
+        # set) that embeds the title as a substring and is much longer than
+        # the title. Without the loose substring branch and the overlap
+        # length cap, this preview would be matched as the title.
+        "<p>В новом выпуске журнала: машинное обучение в медицине "  # noqa: RUF001
+        "и смежные области</p>"
+        "<p>Машинное обучение в медицине</p>"
+        "<p>В работе машинное обучение применяется к диагностике "  # noqa: RUF001
+        "заболеваний на ранних стадиях.</p>"
+        "<p>Том 5. № 1.</p>"
+        "</div></body></html>"
+    )
+
+    def test_opener_mentioning_university_is_kept(self, monkeypatch) -> None:
+        from apps.ingestion.connectors.base import RawArticle
+
+        conn = CyberLeninkaConnector()
+        monkeypatch.setattr(
+            conn,
+            "_request_text",
+            lambda _url, **_kwargs: self._ARTICLE_HTML_UNIVERSITY_OPENER,
+        )
+        raw = RawArticle(
+            source_key="cyberleninka",
+            title="Особенности применения наноматериалов в строительстве",
+            url="https://cyberleninka.ru/article/n/university-opener",
+            abstract="",
+            full_text="",
+            language="ru",
+            year=None,
+            doi="",
+            journal="CL Journal",
+        )
+        enriched = conn.enrich_raw(raw)
+        # The university opener carries a finite-verb stem, so it must be
+        # kept as prose rather than skipped as an affiliation line.
+        assert "предложен новый метод" in enriched.abstract
+        assert "университете" in enriched.abstract
+        assert "долговечности" in enriched.abstract
+        assert "Том 7" not in enriched.abstract
+
+    def test_prose_with_inline_issue_sign_not_truncated(self, monkeypatch) -> None:
+        from apps.ingestion.connectors.base import RawArticle
+
+        conn = CyberLeninkaConnector()
+        monkeypatch.setattr(
+            conn,
+            "_request_text",
+            lambda _url, **_kwargs: self._ARTICLE_HTML_INLINE_ISSUE,
+        )
+        raw = RawArticle(
+            source_key="cyberleninka",
+            title="Методы оптимизации в логистике",
+            url="https://cyberleninka.ru/article/n/inline-issue",
+            abstract="",
+            full_text="",
+            language="ru",
+            year=None,
+            doi="",
+            journal="CL Journal",
+        )
+        enriched = conn.enrich_raw(raw)
+        # The inline "в таблице № 3" sits in a long prose sentence, so it
+        # must not truncate the run; the surrounding sentences are kept.
+        assert "таблицы" in enriched.abstract
+        assert "эффективность" in enriched.abstract
+        assert "подтвердили результат" in enriched.abstract
+        assert "Том 7" not in enriched.abstract
+
+    def test_unlisted_long_preview_not_matched_as_title(self, monkeypatch) -> None:
+        from apps.ingestion.connectors.base import RawArticle
+
+        conn = CyberLeninkaConnector()
+        monkeypatch.setattr(
+            conn,
+            "_request_text",
+            lambda _url, **_kwargs: self._ARTICLE_HTML_UNLISTED_LONG_PREVIEW,
+        )
+        raw = RawArticle(
+            source_key="cyberleninka",
+            title="Машинное обучение в медицине",
+            url="https://cyberleninka.ru/article/n/unlisted-long-preview",
+            abstract="",
+            full_text="",
+            language="ru",
+            year=None,
+            doi="",
+            journal="CL Journal",
+        )
+        enriched = conn.enrich_raw(raw)
+        # The unlisted long preview embeds the title as a substring but is too
+        # long for the overlap cap, so it is not matched as the title and its
+        # content does not leak into the abstract.
+        assert "применяется к диагностике" in enriched.abstract
+        assert "в новом выпуске" not in enriched.abstract
+        assert "смежные области" not in enriched.abstract
+        assert "Том 5" not in enriched.abstract
+
+    _ARTICLE_HTML_PROVEDEN_OPENER = (
+        "<html><body>"
+        '<div class="ocr" itemprop="articleBody">'
+        # An opener with a stem ("проведён") added in round-5 -- before the
+        # addition it was wrongly skipped as an affiliation line.
+        "<p>Анализ геномных данных</p>"
+        "<p>В Новосибирском государственном университете проведён анализ "  # noqa: RUF001
+        "геномных данных различных популяций.</p>"
+        "<p>Вестник геномики. 2024. Том 3. № 1.</p>"
+        "</div></body></html>"
+    )
+
+    _ARTICLE_HTML_ISSUE_ONLY_CITATION = (
+        "<html><body>"
+        '<div class="ocr" itemprop="articleBody">'
+        "<p>Новые методы в биоинформатике</p>"
+        "<p>В работе проведён анализ последовательностей ДНК.</p>"  # noqa: RUF001
+        # An issue-only citation (no volume/ISSN/UDC/DOI) longer than the old
+        # 40-char cap -- must still stop via the terminal issue-sign guard.
+        "<p>Известия высших учебных заведений. Поволжский регион. № 3.</p>"
+        "</div></body></html>"
+    )
+
+    _ARTICLE_HTML_ISSUE_THEN_YEAR = (
+        "<html><body>"
+        '<div class="ocr" itemprop="articleBody">'
+        "<p>Квантовые вычисления</p>"
+        "<p>В работе исследованы алгоритмы квантовой оптимизации.</p>"  # noqa: RUF001
+        # A citation ending in "№ N. <year>" -- the trailing year after the
+        # issue sign must still count as terminal.
+        "<p>Успехи физических наук. № 12. 2023.</p>"
+        "</div></body></html>"
+    )
+
+    def test_proven_opener_with_university_is_kept(self, monkeypatch) -> None:
+        from apps.ingestion.connectors.base import RawArticle
+
+        conn = CyberLeninkaConnector()
+        monkeypatch.setattr(
+            conn,
+            "_request_text",
+            lambda _url, **_kwargs: self._ARTICLE_HTML_PROVEDEN_OPENER,
+        )
+        raw = RawArticle(
+            source_key="cyberleninka",
+            title="Анализ геномных данных",
+            url="https://cyberleninka.ru/article/n/proven-opener",
+            abstract="",
+            full_text="",
+            language="ru",
+            year=None,
+            doi="",
+            journal="CL Journal",
+        )
+        enriched = conn.enrich_raw(raw)
+        # The "проведён" stem (added in round-5) keeps the university opener
+        # as prose instead of skipping it as an affiliation line.
+        assert "проведён анализ" in enriched.abstract
+        assert "Новосибирском" in enriched.abstract
+        assert "геномных данных различных" in enriched.abstract
+        assert "Том 3" not in enriched.abstract
+
+    def test_issue_only_long_citation_still_stops(self, monkeypatch) -> None:
+        from apps.ingestion.connectors.base import RawArticle
+
+        conn = CyberLeninkaConnector()
+        monkeypatch.setattr(
+            conn,
+            "_request_text",
+            lambda _url, **_kwargs: self._ARTICLE_HTML_ISSUE_ONLY_CITATION,
+        )
+        raw = RawArticle(
+            source_key="cyberleninka",
+            title="Новые методы в биоинформатике",
+            url="https://cyberleninka.ru/article/n/issue-only-citation",
+            abstract="",
+            full_text="",
+            language="ru",
+            year=None,
+            doi="",
+            journal="CL Journal",
+        )
+        enriched = conn.enrich_raw(raw)
+        # The prose run is collected; the issue-only citation line (longer
+        # than the old 40-char cap, with no volume marker) still stops via
+        # the terminal issue-sign guard and does not leak.
+        assert "проведён анализ" in enriched.abstract
+        assert "последовательностей" in enriched.abstract
+        assert "Известия" not in enriched.abstract
+        assert "Поволжский регион" not in enriched.abstract
+
+    def test_issue_sign_followed_by_year_stops(self, monkeypatch) -> None:
+        from apps.ingestion.connectors.base import RawArticle
+
+        conn = CyberLeninkaConnector()
+        monkeypatch.setattr(
+            conn,
+            "_request_text",
+            lambda _url, **_kwargs: self._ARTICLE_HTML_ISSUE_THEN_YEAR,
+        )
+        raw = RawArticle(
+            source_key="cyberleninka",
+            title="Квантовые вычисления",
+            url="https://cyberleninka.ru/article/n/issue-then-year",
+            abstract="",
+            full_text="",
+            language="ru",
+            year=None,
+            doi="",
+            journal="CL Journal",
+        )
+        enriched = conn.enrich_raw(raw)
+        # A citation whose issue sign is followed by a trailing year still
+        # counts as terminal and stops the run.
+        assert "исследованы алгоритмы" in enriched.abstract
+        assert "квантовой оптимизации" in enriched.abstract
+        assert "Успехи физических" not in enriched.abstract
+        assert "Том" not in enriched.abstract
+
+    _ARTICLE_HTML_AFFILIATION_THEN_PROSE = (
+        "<html><body>"
+        '<div class="ocr" itemprop="articleBody">'
+        "<p>Название исследования</p>"
+        # A pre-abstract affiliation line ending in a terminal issue sign: the
+        # affiliation skip runs BEFORE the terminal-issue stop, so the line is
+        # skipped rather than ending the run with an empty abstract.
+        "<p>Кафедра физики № 7.</p>"
+        "<p>В работе исследованы новые материалы.</p>"  # noqa: RUF001
+        "</div></body></html>"
+    )
+
+    _ARTICLE_HTML_PAGE_RANGE_CITATION = (
+        "<html><body>"
+        '<div class="ocr" itemprop="articleBody">'
+        "<p>Анализ численных методов</p>"
+        "<p>В работе проведён анализ численных методов.</p>"  # noqa: RUF001
+        # An issue-only citation whose tail is a page range ("15-30") must
+        # still count as terminal after the page/year markers are stripped.
+        "<p>Журнал прикладной математики. № 12. 15-30.</p>"
+        "</div></body></html>"
+    )
+
+    _ARTICLE_HTML_PAGES_PREFIX_CITATION = (
+        "<html><body>"
+        '<div class="ocr" itemprop="articleBody">'
+        "<p>Изучение полимеров</p>"
+        "<p>В статье изучены свойства полимеров.</p>"  # noqa: RUF001
+        # A Russian page-letter marker before the page range must be stripped
+        # so the remaining "5-15" still counts as a bibliographic tail.
+        "<p>Физика твёрдого тела. № 12. С. 5-15.</p>"  # noqa: RUF001
+        "</div></body></html>"
+    )
+
+    _ARTICLE_HTML_YEAR_SUFFIX_CITATION = (
+        "<html><body>"
+        '<div class="ocr" itemprop="articleBody">'
+        "<p>Наноструктуры материалов</p>"
+        "<p>В работе исследованы наноструктуры.</p>"  # noqa: RUF001
+        # A trailing Russian year-letter marker after the issue sign must be
+        # stripped so the remaining year still counts as a bibliographic tail.
+        "<p>Нанотехнологии в России. № 12. 2023 г.</p>"  # noqa: RUF001
+        "</div></body></html>"
+    )
+
+    _ARTICLE_HTML_PROSE_FINAL_ISSUE = (
+        "<html><body>"
+        '<div class="ocr" itemprop="articleBody">'
+        "<p>Анализ экспериментальных данных</p>"
+        # A prose sentence ending with an inline issue reference ("в таблицу
+        # № 5") glued to a preceding word must NOT be truncated: the sign does
+        # not open the line or follow a period, so it is not terminal.
+        "<p>В работе исследованы данные и помещены в таблицу № 5. Результаты "  # noqa: RUF001
+        "подтвердили гипотезу.</p>"
+        "</div></body></html>"
+    )
+
+    _ARTICLE_HTML_INLINE_THEN_TRAILING_CITATION = (
+        "<html><body>"
+        '<div class="ocr" itemprop="articleBody">'
+        "<p>Анализ новых материалов</p>"
+        "<p>В работе исследованы свойства материалов.</p>"  # noqa: RUF001
+        # An inline "№ 3" glued to "таблице" followed by a trailing citation
+        # "Вестник. № 12. 2023.": the LAST issue sign is considered, so the
+        # trailing citation stops the run instead of latching onto the inline
+        # sign and leaking.
+        "<p>В таблице № 3 показаны итоги. Вестник. № 12. 2023.</p>"  # noqa: RUF001
+        "</div></body></html>"
+    )
+
+    def test_affiliation_ending_in_terminal_issue_is_skipped(self, monkeypatch) -> None:
+        from apps.ingestion.connectors.base import RawArticle
+
+        conn = CyberLeninkaConnector()
+        monkeypatch.setattr(
+            conn,
+            "_request_text",
+            lambda _url, **_kwargs: self._ARTICLE_HTML_AFFILIATION_THEN_PROSE,
+        )
+        raw = RawArticle(
+            source_key="cyberleninka",
+            title="Название исследования",
+            url="https://cyberleninka.ru/article/n/affiliation-issue",
+            abstract="",
+            full_text="",
+            language="ru",
+            year=None,
+            doi="",
+            journal="CL Journal",
+        )
+        enriched = conn.enrich_raw(raw)
+        # The affiliation line ending in a terminal "№ 7" is skipped (the
+        # affiliation skip runs before the terminal-issue stop), so the run
+        # does not end empty and the following prose is collected.
+        assert "исследованы" in enriched.abstract
+        assert "Кафедра" not in enriched.abstract
+        assert enriched.abstract
+
+    def test_citation_tail_page_range_stops(self, monkeypatch) -> None:
+        from apps.ingestion.connectors.base import RawArticle
+
+        conn = CyberLeninkaConnector()
+        monkeypatch.setattr(
+            conn,
+            "_request_text",
+            lambda _url, **_kwargs: self._ARTICLE_HTML_PAGE_RANGE_CITATION,
+        )
+        raw = RawArticle(
+            source_key="cyberleninka",
+            title="Анализ численных методов",
+            url="https://cyberleninka.ru/article/n/page-range",
+            abstract="",
+            full_text="",
+            language="ru",
+            year=None,
+            doi="",
+            journal="CL Journal",
+        )
+        enriched = conn.enrich_raw(raw)
+        # The page-range tail "15-30" after the issue sign is a bibliographic
+        # tail, so the citation stops and does not leak into the abstract.
+        assert "проведён анализ" in enriched.abstract
+        assert "Журнал" not in enriched.abstract
+        assert "15-30" not in enriched.abstract
+
+    def test_citation_tail_pages_prefix_stops(self, monkeypatch) -> None:
+        from apps.ingestion.connectors.base import RawArticle
+
+        conn = CyberLeninkaConnector()
+        monkeypatch.setattr(
+            conn,
+            "_request_text",
+            lambda _url, **_kwargs: self._ARTICLE_HTML_PAGES_PREFIX_CITATION,
+        )
+        raw = RawArticle(
+            source_key="cyberleninka",
+            title="Изучение полимеров",
+            url="https://cyberleninka.ru/article/n/pages-prefix",
+            abstract="",
+            full_text="",
+            language="ru",
+            year=None,
+            doi="",
+            journal="CL Journal",
+        )
+        enriched = conn.enrich_raw(raw)
+        # The page-letter marker is stripped, leaving the "5-15" range as a
+        # bibliographic tail, so the citation stops and does not leak.
+        assert "изучены" in enriched.abstract
+        assert "Физика" not in enriched.abstract
+        assert "5-15" not in enriched.abstract
+
+    def test_citation_tail_year_marker_stops(self, monkeypatch) -> None:
+        from apps.ingestion.connectors.base import RawArticle
+
+        conn = CyberLeninkaConnector()
+        monkeypatch.setattr(
+            conn,
+            "_request_text",
+            lambda _url, **_kwargs: self._ARTICLE_HTML_YEAR_SUFFIX_CITATION,
+        )
+        raw = RawArticle(
+            source_key="cyberleninka",
+            title="Наноструктуры материалов",
+            url="https://cyberleninka.ru/article/n/year-suffix",
+            abstract="",
+            full_text="",
+            language="ru",
+            year=None,
+            doi="",
+            journal="CL Journal",
+        )
+        enriched = conn.enrich_raw(raw)
+        # The trailing year-letter marker is stripped, leaving "2023" as a
+        # bibliographic tail, so the citation stops and does not leak.
+        assert "работе" in enriched.abstract
+        assert "2023" not in enriched.abstract
+        assert "№ 12" not in enriched.abstract
+
+    def test_prose_final_inline_issue_not_truncated(self, monkeypatch) -> None:
+        from apps.ingestion.connectors.base import RawArticle
+
+        conn = CyberLeninkaConnector()
+        monkeypatch.setattr(
+            conn,
+            "_request_text",
+            lambda _url, **_kwargs: self._ARTICLE_HTML_PROSE_FINAL_ISSUE,
+        )
+        raw = RawArticle(
+            source_key="cyberleninka",
+            title="Анализ экспериментальных данных",
+            url="https://cyberleninka.ru/article/n/prose-final-issue",
+            abstract="",
+            full_text="",
+            language="ru",
+            year=None,
+            doi="",
+            journal="CL Journal",
+        )
+        enriched = conn.enrich_raw(raw)
+        # The inline "в таблицу № 5" is glued to a preceding word (no period
+        # before the sign), so it is not terminal and the sentence is kept in
+        # full, including the text after the issue sign.
+        assert "таблицу" in enriched.abstract
+        assert "Результаты" in enriched.abstract
+        assert "подтвердили" in enriched.abstract
+
+    def test_inline_then_trailing_citation_stops_at_tail(self, monkeypatch) -> None:
+        from apps.ingestion.connectors.base import RawArticle
+
+        conn = CyberLeninkaConnector()
+        monkeypatch.setattr(
+            conn,
+            "_request_text",
+            lambda _url, **_kwargs: self._ARTICLE_HTML_INLINE_THEN_TRAILING_CITATION,
+        )
+        raw = RawArticle(
+            source_key="cyberleninka",
+            title="Анализ новых материалов",
+            url="https://cyberleninka.ru/article/n/inline-then-trailing",
+            abstract="",
+            full_text="",
+            language="ru",
+            year=None,
+            doi="",
+            journal="CL Journal",
+        )
+        enriched = conn.enrich_raw(raw)
+        # The LAST issue sign (the trailing "№ 12") is considered, so the
+        # trailing citation stops the run; the inline "№ 3" does not let the
+        # "Вестник. № 12. 2023." citation leak into the abstract.
+        assert "материалов" in enriched.abstract
+        assert "2023" not in enriched.abstract
+        assert "№ 12" not in enriched.abstract
+
+    _ARTICLE_HTML_COMMA_BEFORE_ISSUE = (
+        "<html><body>"
+        '<div class="ocr" itemprop="articleBody">'
+        "<p>Методы оптимизации систем</p>"
+        "<p>В работе исследованы методы оптимизации.</p>"  # noqa: RUF001
+        # A comma before the issue sign (``Серия 5, № 4``) is a citation
+        # separator, so the sign is terminal and the citation stops the run;
+        # the year in the tail must not leak into the abstract.
+        "<p>Вестник. Серия 5, № 4. 2023.</p>"
+        "</div></body></html>"
+    )
+
+    _ARTICLE_HTML_PAREN_YEAR_CITATION = (
+        "<html><body>"
+        '<div class="ocr" itemprop="articleBody">'
+        "<p>Моделирование процессов</p>"
+        "<p>В статье построены модели процессов.</p>"  # noqa: RUF001
+        # A parenthesized year after the issue sign is a bibliographic tail
+        # (parentheses are stripped), so the citation stops and does not leak.
+        "<p>Вестник. № 4 (2023).</p>"
+        "</div></body></html>"
+    )
+
+    _ARTICLE_HTML_ABBREV_ISSUE_PROSE = (
+        "<html><body>"
+        '<div class="ocr" itemprop="articleBody">'
+        "<p>Анализ экспериментальных данных</p>"
+        "<p>В работе исследованы данные и сведены в таблицу.</p>"  # noqa: RUF001
+        # A short prose abbreviation (``табл.``) ending in a period right before
+        # the issue sign is a reference, not a citation separator, so the sign
+        # is NOT terminal and the sentence is kept as abstract prose.
+        "<p>Данные представлены в табл. № 3.</p>"
+        "</div></body></html>"
+    )
+
+    _ARTICLE_HTML_EMDASH_YEAR_CITATION = (
+        "<html><body>"
+        '<div class="ocr" itemprop="articleBody">'
+        "<p>Новые композиционные материалы</p>"
+        "<p>В работе изучены новые материалы.</p>"  # noqa: RUF001
+        # An em dash before the trailing year is a citation separator, and the
+        # year after it is a bibliographic tail, so the citation stops.
+        "<p>Вестник. № 12 — 2023.</p>"
+        "</div></body></html>"
+    )
+
+    _ARTICLE_HTML_STR_MARKER_CITATION = (
+        "<html><body>"
+        '<div class="ocr" itemprop="articleBody">'
+        "<p>Численные методы анализа</p>"
+        "<p>В работе описаны численные методы.</p>"  # noqa: RUF001
+        # A lowercase Russian page marker (``стр.``) before the page range is
+        # stripped, leaving "15-30" as a bibliographic tail, so the citation
+        # stops and the range does not leak.
+        "<p>Журнал вычислительной математики. № 12. стр. 15-30.</p>"
+        "</div></body></html>"
+    )
+
+    _ARTICLE_HTML_PREABSTRACT_TERMINAL_ISSUE = (
+        "<html><body>"
+        '<div class="ocr" itemprop="articleBody">'
+        "<p>Исследование сложных систем</p>"
+        # A bare terminal issue sign as the first body paragraph (before any
+        # prose) is a pre-abstract metadata line, not the citation that ends
+        # the abstract: it is skipped so the run reaches the following prose.
+        "<p>№ 12. 2023.</p>"
+        "<p>В работе исследованы сложные системы.</p>"  # noqa: RUF001
+        "</div></body></html>"
+    )
+
+    _ARTICLE_HTML_ABBREV_DASH_ISSUE = (
+        "<html><body>"
+        '<div class="ocr" itemprop="articleBody">'
+        "<p>Данные измерений</p>"
+        "<p>В работе обработаны данные.</p>"  # noqa: RUF001
+        # An em dash between the ``табл.`` abbreviation and the issue sign must
+        # not erase the abbreviation: the trailing separator is stripped before
+        # the token split, so ``табл`` stays the last token, the denylist fires,
+        # and the sentence is kept as prose (not truncated at ``№ 3``).
+        "<p>Данные в табл. — № 3.</p>"
+        "</div></body></html>"
+    )
+
+    _ARTICLE_HTML_ALLSEP_ISSUE = (
+        "<html><body>"
+        '<div class="ocr" itemprop="articleBody">'
+        "<p>Результаты эксперимента</p>"
+        "<p>В работе получены новые данные.</p>"  # noqa: RUF001
+        # An OCR-degenerate paragraph that is only a separator then an issue
+        # sign (``— № 3``) makes ``before`` all-separator: the rsplit guard
+        # skips the denylist and the separator check treats it as a terminal
+        # citation, so the prior prose is kept and the discriminator must NOT
+        # raise (``"".rsplit(maxsplit=1)`` is ``[]``).
+        "<p>— № 3.</p>"
+        "</div></body></html>"
+    )
+
+    def test_citation_comma_before_issue_stops(self, monkeypatch) -> None:
+        from apps.ingestion.connectors.base import RawArticle
+
+        conn = CyberLeninkaConnector()
+        monkeypatch.setattr(
+            conn,
+            "_request_text",
+            lambda _url, **_kwargs: self._ARTICLE_HTML_COMMA_BEFORE_ISSUE,
+        )
+        raw = RawArticle(
+            source_key="cyberleninka",
+            title="Методы оптимизации систем",
+            url="https://cyberleninka.ru/article/n/comma-before-issue",
+            abstract="",
+            full_text="",
+            language="ru",
+            year=None,
+            doi="",
+            journal="CL Journal",
+        )
+        enriched = conn.enrich_raw(raw)
+        # The comma before ``№ 4`` is a citation separator, so the citation is
+        # terminal and stops; the year and series must not leak.
+        assert "оптимизации" in enriched.abstract
+        assert "Серия" not in enriched.abstract
+        assert "2023" not in enriched.abstract
+
+    def test_citation_paren_year_stops(self, monkeypatch) -> None:
+        from apps.ingestion.connectors.base import RawArticle
+
+        conn = CyberLeninkaConnector()
+        monkeypatch.setattr(
+            conn,
+            "_request_text",
+            lambda _url, **_kwargs: self._ARTICLE_HTML_PAREN_YEAR_CITATION,
+        )
+        raw = RawArticle(
+            source_key="cyberleninka",
+            title="Моделирование процессов",
+            url="https://cyberleninka.ru/article/n/paren-year",
+            abstract="",
+            full_text="",
+            language="ru",
+            year=None,
+            doi="",
+            journal="CL Journal",
+        )
+        enriched = conn.enrich_raw(raw)
+        # The parenthesized year is a bibliographic tail, so the citation
+        # stops and the year does not leak.
+        assert "построены" in enriched.abstract
+        assert "2023" not in enriched.abstract
+        assert "(2023)" not in enriched.abstract
+
+    def test_abbrev_issue_prose_kept(self, monkeypatch) -> None:
+        from apps.ingestion.connectors.base import RawArticle
+
+        conn = CyberLeninkaConnector()
+        monkeypatch.setattr(
+            conn,
+            "_request_text",
+            lambda _url, **_kwargs: self._ARTICLE_HTML_ABBREV_ISSUE_PROSE,
+        )
+        raw = RawArticle(
+            source_key="cyberleninka",
+            title="Анализ экспериментальных данных",
+            url="https://cyberleninka.ru/article/n/abbrev-issue-prose",
+            abstract="",
+            full_text="",
+            language="ru",
+            year=None,
+            doi="",
+            journal="CL Journal",
+        )
+        enriched = conn.enrich_raw(raw)
+        # The ``табл.`` abbreviation before ``№ 3`` is a reference, not a
+        # citation separator, so the sentence is kept as abstract prose and
+        # not truncated at the issue sign.
+        assert "представлены" in enriched.abstract
+        assert "табл" in enriched.abstract
+
+    def test_citation_emdash_year_stops(self, monkeypatch) -> None:
+        from apps.ingestion.connectors.base import RawArticle
+
+        conn = CyberLeninkaConnector()
+        monkeypatch.setattr(
+            conn,
+            "_request_text",
+            lambda _url, **_kwargs: self._ARTICLE_HTML_EMDASH_YEAR_CITATION,
+        )
+        raw = RawArticle(
+            source_key="cyberleninka",
+            title="Новые композиционные материалы",
+            url="https://cyberleninka.ru/article/n/emdash-year",
+            abstract="",
+            full_text="",
+            language="ru",
+            year=None,
+            doi="",
+            journal="CL Journal",
+        )
+        enriched = conn.enrich_raw(raw)
+        # The em dash before the year is a citation separator and the year is
+        # a bibliographic tail, so the citation stops and the year does not leak.
+        assert "изучены" in enriched.abstract
+        assert "2023" not in enriched.abstract
+
+    def test_citation_str_marker_stops(self, monkeypatch) -> None:
+        from apps.ingestion.connectors.base import RawArticle
+
+        conn = CyberLeninkaConnector()
+        monkeypatch.setattr(
+            conn,
+            "_request_text",
+            lambda _url, **_kwargs: self._ARTICLE_HTML_STR_MARKER_CITATION,
+        )
+        raw = RawArticle(
+            source_key="cyberleninka",
+            title="Численные методы анализа",
+            url="https://cyberleninka.ru/article/n/str-marker",
+            abstract="",
+            full_text="",
+            language="ru",
+            year=None,
+            doi="",
+            journal="CL Journal",
+        )
+        enriched = conn.enrich_raw(raw)
+        # The lowercase ``стр.`` marker is stripped, leaving "15-30" as a
+        # bibliographic tail, so the citation stops and the range does not leak.
+        assert "описаны" in enriched.abstract
+        assert "стр" not in enriched.abstract
+        assert "15-30" not in enriched.abstract
+
+    def test_abbrev_dash_issue_prose_kept(self, monkeypatch) -> None:
+        from apps.ingestion.connectors.base import RawArticle
+
+        conn = CyberLeninkaConnector()
+        monkeypatch.setattr(
+            conn,
+            "_request_text",
+            lambda _url, **_kwargs: self._ARTICLE_HTML_ABBREV_DASH_ISSUE,
+        )
+        raw = RawArticle(
+            source_key="cyberleninka",
+            title="Данные измерений",
+            url="https://cyberleninka.ru/article/n/abbrev-dash-issue",
+            abstract="",
+            full_text="",
+            language="ru",
+            year=None,
+            doi="",
+            journal="CL Journal",
+        )
+        enriched = conn.enrich_raw(raw)
+        # The em dash separating ``табл.`` from ``№ 3`` must not let the denylist
+        # miss the abbreviation: the sentence is kept as prose, not truncated.
+        assert "обработаны" in enriched.abstract
+        assert "табл" in enriched.abstract
+
+    def test_allsep_issue_does_not_crash(self, monkeypatch) -> None:
+        from apps.ingestion.connectors.base import RawArticle
+
+        conn = CyberLeninkaConnector()
+        monkeypatch.setattr(
+            conn,
+            "_request_text",
+            lambda _url, **_kwargs: self._ARTICLE_HTML_ALLSEP_ISSUE,
+        )
+        raw = RawArticle(
+            source_key="cyberleninka",
+            title="Результаты эксперимента",
+            url="https://cyberleninka.ru/article/n/allsep-issue",
+            abstract="",
+            full_text="",
+            language="ru",
+            year=None,
+            doi="",
+            journal="CL Journal",
+        )
+        # Must not raise IndexError when ``before`` is all separator chars.
+        enriched = conn.enrich_raw(raw)
+        # The prior prose is kept; the degenerate ``— № 3`` line is terminal
+        # and excluded, so the issue sign does not leak into the abstract.
+        assert "получены" in enriched.abstract
+        assert "№ 3" not in enriched.abstract
+
+    def test_preabstract_terminal_issue_is_skipped(self, monkeypatch) -> None:
+        from apps.ingestion.connectors.base import RawArticle
+
+        conn = CyberLeninkaConnector()
+        monkeypatch.setattr(
+            conn,
+            "_request_text",
+            lambda _url, **_kwargs: self._ARTICLE_HTML_PREABSTRACT_TERMINAL_ISSUE,
+        )
+        raw = RawArticle(
+            source_key="cyberleninka",
+            title="Исследование сложных систем",
+            url="https://cyberleninka.ru/article/n/preabstract-terminal-issue",
+            abstract="",
+            full_text="",
+            language="ru",
+            year=None,
+            doi="",
+            journal="CL Journal",
+        )
+        enriched = conn.enrich_raw(raw)
+        # The bare terminal ``№ 12`` before any prose is a pre-abstract
+        # metadata line and is skipped, so the run reaches the following prose
+        # instead of ending with an empty abstract.
+        assert enriched.abstract
+        assert "исследованы" in enriched.abstract
+        assert "2023" not in enriched.abstract
+
+
 class TestHALJournal:
     """HALConnector should extract journal from journalTitle_s."""
 

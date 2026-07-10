@@ -36,6 +36,285 @@ from .base import (
 
 _HTTP_BAD_REQUEST = 400
 _MIN_TITLE_LENGTH = 14
+# CyberLeninka article-body container: holds the article text with a
+# recommended/related article preview prepended and the bibliography
+# interleaved, so the abstract must be located relative to the article's
+# own title paragraph, not the first paragraph.
+_CYBERLENINKA_ABSTRACT_MAX = 1500
+# A journal-citation / volume marker requires a following number, so ordinary
+# Russian prose (e.g. "in such cases", "etc.", "i.e.", "since") does not end
+# the abstract run prematurely.
+_CYBERLENINKA_CITATION_RE = re.compile(
+    r"\b(?:Том\s+\d{1,4}|Т\.\s*\d{1,4}|вып\.?\s*\d{1,4}|"  # noqa: RUF001
+    r"issn[\s:]*\d|udk[\s:]*\d|удк[\s:]*\d|"
+    r"doi[\s:]*10\.\d{4,}|10\.\d{4,})",
+    re.IGNORECASE,
+)
+# A bare issue sign ``№ N`` also marks a citation line, but it appears inside
+# prose too ("в таблице № 3", "на рис. № 1"), so it only ends the abstract run
+# when the whole paragraph is short enough to be a citation marker rather than
+# a sentence (see ``_classify_cyberleninka_paragraph``).
+_CYBERLENINKA_ISSUE_RE = re.compile(r"№\s*\d+", re.IGNORECASE)
+_CYBERLENINKA_CODE_RE = re.compile(
+    r"^\s*(?:from\s+\w|import\s+\w|>>>|#|def\s+\w|class\s+\w|\.{3})",
+    re.IGNORECASE,
+)
+# A numbered reference line starts either with ``1.``/``1)`` (followed by a
+# space, so a decimal sentence such as ``1.5 method`` is not matched) or with
+# a square-bracketed index ``[1]`` (with optional trailing dot/space).
+_CYBERLENINKA_REF_RE = re.compile(r"^\s*(?:\d+[\.\)]\s|\[\d+\][\s\.]+)")
+_CYBERLENINKA_AFFILIATION_RE = re.compile(
+    r"(?:университет|институт|росси[яй]|научный\s+руководитель|кафедра|"
+    r"студент|аспирант|доцент|профессор|лаборатор)",
+    re.IGNORECASE,
+)
+# A bare author line such as ``Иванов И.И., Петров П.П.`` (Russian surname with
+# two initials) is skipped before the abstract run starts; the two-initial
+# pattern is specific enough to avoid ordinary prose abbreviations.
+_CYBERLENINKA_AUTHOR_RE = re.compile(r"\b[А-ЯЁA-Z]\.\s*[А-ЯЁA-Z]\.")  # noqa: RUF001
+# Russian past-participle / finite-verb stems that mark a sentence (an
+# abstract opener mentioning a university and continuing into prose)
+# rather than a standalone affiliation/author noun phrase. Matched as a
+# word prefix so gender/number endings of each stem all hit; a noun sharing
+# a stem also matches. The guard biases toward keeping prose: a real
+# affiliation line that happens to contain one of these participles (e.g.
+# an institution "основан в 1755") is then kept too, but such phrasings are
+# rare while openers carrying these verbs are common, so the trade-off
+# favours keeping. Both ``yo`` and ``e`` forms are listed so OCR flattening
+# of the dotted letter does not defeat the guard.
+_CYBERLENINKA_VERB_STEMS_RE = re.compile(
+    r"\b(?:предложен|разработан|рассмотрен|изучен|исследован|показан|"
+    r"применён|применен|описан|представлен|обоснован|проанализирован|"
+    r"получен|найден|определён|определен|установлен|доказан|вычислен|"
+    r"построен|основан|направлен|реализован|апробирован|посвящён|посвящен|"
+    r"проведён|проведен|сделан|выполнен|выявлен|обнаружен|сформулирован|"
+    r"оценён|оценен|выбран|синтезирован|измерён|измерен|"
+    r"рассматривается|исследуется|применяется|описывается|строится)\w*",
+    re.IGNORECASE,
+)
+# Unambiguous bibliography/list headings: a paragraph that starts with these
+# prefixes always ends the abstract run.
+_CYBERLENINKA_STOP_HEADER_PREFIXES = frozenset(
+    {"список ", "библиограф", "references"},
+)
+# Single-word heading stems (``Литература``, ``Источники``) that also appear in
+# prose, so they are only treated as a stop header when the paragraph is short
+# enough to be a heading rather than an abstract sentence.
+_CYBERLENINKA_STOP_HEADER_STEMS = frozenset({"литература", "источники"})
+_CYBERLENINKA_HEADER_MAX = 40
+_CYBERLENINKA_SKIP_HEADERS = frozenset({"ключевые слова", "keywords"})
+# Related-article preview prefixes that the body block prepends before the
+# article's own title; normalized (alphanumeric-only, lowercased) so the
+# matching against ``_cyberleninka_normalize`` output is direct.
+_CYBERLENINKA_PREVIEW_PREFIXES = frozenset(
+    {
+        "смотрите также",
+        "читайте также",
+        "см также",
+        "также см",
+        "также читайте",
+        "также смотрите",
+        "также в этом номере",
+        "читайте в номере",
+        "смотрите в номере",
+        "см в номере",
+        "также в этом выпуске",
+        "читайте в выпуске",
+        "смотрите в выпуске",
+        "см в выпуске",
+        "читайте также в выпуске",
+        "в этом номере",
+        "в этом выпуске",
+    },
+)
+_CYBERLENINKA_AFFILIATION_MAX = 200
+_CYBERLENINKA_TITLE_FUZZ = 80
+_CYBERLENINKA_TITLE_TOKEN_MIN = 0.6
+_CYBERLENINKA_TITLE_OVERLAP_SLACK = 20
+
+
+def _cyberleninka_normalize(text: str) -> str:
+    """Lowercase, fold OCR variants, and collapse non-alphanumeric runs.
+
+    The landing page sometimes renders the title with OCR variants (``й``
+    flattened to ``и``, ``ё`` to ``e``), so both the raw title and the body
+    paragraph are folded to the flattened form before matching. Used to
+    fuzzy-match the article's title paragraph inside the body block
+    regardless of punctuation or case differences.
+    """
+    folded = text.lower().replace("й", "и").replace("ё", "е")  # noqa: RUF001
+    collapsed = re.sub(r"[^a-zа-я0-9]+", " ", folded)  # noqa: RUF001
+    return re.sub(r"\s+", " ", collapsed).strip()
+
+
+def _find_cyberleninka_title(paragraphs: list[str], norm_title: str) -> int:
+    """Return the index of the paragraph matching the article title, or -1.
+
+    The landing page sometimes renders the title with OCR variants (e.g. ``й``
+    flattened to ``и``), so beyond an exact prefix match we also accept a short
+    paragraph whose token overlap with the title clears
+    ``_CYBERLENINKA_TITLE_TOKEN_MIN``. A related-article preview prepended to
+    the body block can share topic words with the title, so paragraphs that
+    begin with a preview prefix (``_CYBERLENINKA_PREVIEW_PREFIXES``) are never
+    matched as the title; the overlap match is additionally capped at
+    ``_CYBERLENINKA_TITLE_OVERLAP_SLACK`` beyond the title length, because a
+    preview prepends a lead that makes it noticeably longer than the title.
+    """
+    title_tokens = frozenset(norm_title.split())
+    for idx, para in enumerate(paragraphs):
+        norm_para = _cyberleninka_normalize(para)
+        if not norm_para:
+            continue
+        if any(
+            norm_para.startswith(prefix) for prefix in _CYBERLENINKA_PREVIEW_PREFIXES
+        ):
+            continue
+        if norm_para.startswith(norm_title):
+            return idx
+        if len(norm_para) > len(norm_title) + _CYBERLENINKA_TITLE_FUZZ:
+            continue
+        if (
+            title_tokens
+            and len(norm_para) <= len(norm_title) + _CYBERLENINKA_TITLE_OVERLAP_SLACK
+            and _title_token_overlap(norm_para, title_tokens)
+        ):
+            return idx
+    return -1
+
+
+def _title_token_overlap(norm_para: str, title_tokens: frozenset[str]) -> bool:
+    """Return True if the paragraph shares enough title tokens."""
+    overlap = len(title_tokens & frozenset(norm_para.split()))
+    return overlap / len(title_tokens) >= _CYBERLENINKA_TITLE_TOKEN_MIN
+
+
+_CYBERLENINKA_BIBLIO_TAIL_CHARS = frozenset("0123456789-/")
+# A bare issue sign may open the line or follow a citation separator -- a
+# sentence period, a comma/semicolon (``Series 5, № 4``), or an em/en dash --
+# but not a Cyrillic word glued with no separator (``в таблице № 3``), which
+# is prose.
+_CYBERLENINKA_ISSUE_SEP_CHARS = frozenset(".,;") | frozenset("\u2014\u2013")
+# Short Russian prose abbreviations that may end in a period right before a
+# bare issue sign (table, figure, see, page) are references, not citation
+# separators, so a paragraph ending in one is kept rather than truncated.
+_CYBERLENINKA_PROSE_ABBREV_PREFIXES = frozenset({"табл", "рис", "см", "стр"})
+
+
+def _cyberleninka_issue_is_terminal(text: str) -> bool:
+    """Return True when an issue-number token sits at the end of a citation.
+
+    A journal citation that numbers by issue only -- without a volume,
+    issue-word, ISSN, UDC, or DOI marker -- is not caught by
+    ``_CYBERLENINKA_CITATION_RE``, so the bare issue sign is the only stop
+    signal. Three rules keep prose out while still catching issue-only
+    citations:
+
+    1. The LAST issue sign is considered. An inline reference (``в таблице
+       № 3``) followed later in the same paragraph by a trailing citation
+       (``Вестник. № 12. 2023.``) would otherwise latch onto the inline sign
+       and let the citation leak.
+    2. The sign must open the line or follow a citation separator (period,
+       comma, semicolon, or dash) -- not a glued word. A short prose
+       abbreviation (``табл. № 3``) is a reference, so it is treated as prose.
+    3. After the sign, only a bibliographic tail may follow: digits with
+       ``-``/``/`` separators, an optional Russian page-number marker, an
+       optional Russian year marker, and optional parentheses or a dash
+       around the year. A sentence continuing past the sign is prose.
+    """
+    matches = list(_CYBERLENINKA_ISSUE_RE.finditer(text))
+    if not matches:
+        return False
+    match = matches[-1]
+    before = text[: match.start()].rstrip()
+    if before:
+        # Strip trailing citation separators *before* splitting so a prose
+        # abbreviation stays the last token even when a dash/comma/period
+        # separates it from the issue sign (``табл. \u2014 № 3``). Otherwise
+        # the separator itself is the last token and the denylist misses the
+        # reference, falsely marking prose as a terminal citation.
+        stripped = before.rstrip(".,;:-\u2014\u2013")
+        if stripped:
+            last_token = (
+                stripped.rsplit(maxsplit=1)[-1].rstrip(".,;:-\u2014\u2013").lower()
+            )
+            if last_token in _CYBERLENINKA_PROSE_ABBREV_PREFIXES:
+                return False
+        # The char immediately before the issue sign must be a citation
+        # separator. ``stripped`` is empty only when ``before`` is all
+        # separators (e.g. an OCR-degenerate ``— № 3``), so ``before[-1]`` is
+        # itself a separator and this passes — matching pre-fix behavior. The
+        # rsplit above is guarded because ``"".rsplit(maxsplit=1)`` is ``[]``.
+        if before[-1] not in _CYBERLENINKA_ISSUE_SEP_CHARS:
+            return False
+    tail = re.sub(
+        r"^[.,;:()\s\u2014\u2013]+|[.,;:()\s\u2014\u2013]+$",
+        "",
+        text[match.end() :],
+    )
+    if not tail:
+        return True
+    tail = re.sub(r"(?i)^(?:[Сс]\.|стр\.?)\s*", "", tail)  # noqa: RUF001
+    tail = re.sub(r"(?i)\s*г\.?\s*$", "", tail)  # noqa: RUF001
+    tail = re.sub(r"[\s.,;:()]+", "", tail)
+    tail = tail.replace("\u2014", "-").replace("\u2013", "-")
+    return bool(tail) and set(tail) <= _CYBERLENINKA_BIBLIO_TAIL_CHARS
+
+
+def _classify_cyberleninka_paragraph(text: str, *, started: bool) -> str:
+    """Classify a body paragraph relative to the abstract run.
+
+    Returns ``"stop"`` when the paragraph ends the abstract (a journal
+    citation, code snippet, numbered reference, or bibliography header),
+    ``"skip"`` when it should be ignored without ending the run (blank line,
+    keyword list, or a leading author/affiliation line), and ``"keep"`` when
+    it is abstract prose to collect. A bare ``№ N`` token only ends the run
+    when it is terminal (``_cyberleninka_issue_is_terminal``), so a prose
+    sentence that happens to mention ``в таблице № 3`` is kept while an
+    issue-only citation line still stops. Before any prose is collected, a
+    terminal ``№ N`` is a pre-abstract metadata line (a numbered faculty or
+    a UDC-less journal stamp) and is skipped rather than ending the run with
+    an empty abstract; once prose has started it is the citation that stops
+    the run. The affiliation skip runs BEFORE the terminal-issue stop so a
+    pre-abstract affiliation line that happens to end in a terminal ``№ N``
+    is skipped rather than stopping. The affiliation skip is suppressed when
+    the line contains a finite-verb stem, so an abstract opener mentioning a
+    university is kept rather than dropped as an affiliation.
+    """
+    if not text:
+        return "skip"
+    lowered = text.lower()
+    if any(
+        lowered.startswith(prefix) for prefix in _CYBERLENINKA_STOP_HEADER_PREFIXES
+    ) or (
+        len(text) <= _CYBERLENINKA_HEADER_MAX
+        and any(lowered.startswith(stem) for stem in _CYBERLENINKA_STOP_HEADER_STEMS)
+    ):
+        return "stop"
+    if any(lowered.startswith(header) for header in _CYBERLENINKA_SKIP_HEADERS):
+        return "skip"
+    if (
+        _CYBERLENINKA_CODE_RE.match(text)
+        or _CYBERLENINKA_REF_RE.match(text)
+        or _CYBERLENINKA_CITATION_RE.search(text)
+    ):
+        return "stop"
+    if (
+        not started
+        and len(text) < _CYBERLENINKA_AFFILIATION_MAX
+        and not _CYBERLENINKA_VERB_STEMS_RE.search(text)
+        and (
+            _CYBERLENINKA_AFFILIATION_RE.search(text)
+            or _CYBERLENINKA_AUTHOR_RE.search(text)
+        )
+    ):
+        return "skip"
+    # A terminal issue sign before any prose is a pre-abstract metadata line
+    # (a numbered faculty, a UDC-less journal stamp) rather than the citation
+    # that ends the abstract, so the run continues instead of ending with an
+    # empty abstract; once prose has started it stops.
+    terminal = _cyberleninka_issue_is_terminal(text)
+    return ("stop" if started else "skip") if terminal else "keep"
+
 
 logger = structlog.get_logger(__name__)
 
@@ -498,6 +777,85 @@ class CyberLeninkaConnector(BaseConnector):
         if json_ld_items:
             return json_ld_items
         return super()._extract_from_html(query, soup, limit)
+
+    def enrich_raw(self, raw: RawArticle) -> RawArticle:
+        """Enrich a CyberLeninka raw article, backfilling an empty abstract.
+
+        The search API returns an ``annotation`` for most articles, but a
+        minority come back with an empty one, and the article landing page
+        carries no ``description``/``citation_abstract`` meta tag, so the
+        inherited ``enrich_raw`` leaves ``abstract`` empty. The page does
+        render the article body inside ``div.ocr[itemprop="articleBody"]``,
+        but that block is prepended with a recommended/related article preview
+        and interleaved with the bibliography, so the abstract is the run of
+        paragraphs that follows the article's *own* title paragraph (matched
+        against ``raw.title``) and precedes the journal citation / code /
+        reference block. Only when the API + meta abstracts are both empty
+        is this fallback extraction run; it never overwrites a real abstract.
+        """
+        enriched = super().enrich_raw(raw)
+        if enriched.abstract.strip():
+            return enriched
+        if not raw.url.startswith("http") or not raw.title.strip():
+            return enriched
+        try:
+            html = self._request_text(
+                raw.url,
+                ocr_language=self._ocr_language(raw.language),
+            )
+            soup = self._sanitize_html_soup(BeautifulSoup(html, "lxml"))
+        except (
+            ValueError,
+            RuntimeError,
+            ConnectionError,
+            TimeoutError,
+            ConnectorFetchError,
+        ):
+            logger.warning(
+                "cyberleninka: abstract-fallback request failed for %s",
+                raw.url,
+                exc_info=True,
+            )
+            return enriched
+        abstract = self._extract_cyberleninka_abstract(soup, raw.title)
+        if not abstract:
+            return enriched
+        return replace(enriched, abstract=abstract[:8000])
+
+    @staticmethod
+    def _extract_cyberleninka_abstract(soup: BeautifulSoup, title: str) -> str:
+        """Locate the abstract paragraphs inside the article-body block.
+
+        The ``div.ocr`` block leads with a related-article preview, so the
+        article's own paragraphs are found by matching the title against each
+        paragraph, then collecting the prose that follows (after the
+        author/affiliation line) until a journal citation, code snippet,
+        numbered reference, or section header ends the abstract run.
+        """
+        ocr = soup.select_one('div.ocr[itemprop="articleBody"]')
+        if ocr is None:
+            return ""
+        paragraphs = [p.get_text(" ", strip=True) for p in ocr.find_all("p")]
+        norm_title = _cyberleninka_normalize(title)
+        if not norm_title:
+            return ""
+        title_idx = _find_cyberleninka_title(paragraphs, norm_title)
+        if title_idx < 0:
+            return ""
+        collected: list[str] = []
+        total = 0
+        for para in paragraphs[title_idx + 1 :]:
+            text = para.strip()
+            action = _classify_cyberleninka_paragraph(text, started=bool(collected))
+            if action == "stop":
+                break
+            if action == "skip":
+                continue
+            collected.append(text)
+            total += len(text)
+            if total >= _CYBERLENINKA_ABSTRACT_MAX:
+                break
+        return normalize_scholarly_text(" ".join(collected), max_length=2000)
 
 
 class MathNetConnector(BaseConnector):
