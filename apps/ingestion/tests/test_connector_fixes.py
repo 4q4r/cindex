@@ -1991,6 +1991,14 @@ class TestOpenAlexAbstract:
         assert len(items) == 4
         assert all(it.abstract for it in items)
 
+    def test_api_url_overfetches_by_factor(self) -> None:
+        """``_api_url`` must request a page larger than ``limit`` so that
+        filtering null-abstract works still yields ``limit`` real articles."""
+        conn = OpenAlexConnector()
+        url = conn._api_url("machine learning", 3)
+        assert "per_page=9" in url
+        assert "search=machine+learning" in url
+
 
 class TestBrowserTransport:
     """``BrowserTransport`` proxies fetches to the cloakbrowser sidecar.
