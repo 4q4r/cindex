@@ -55,21 +55,44 @@ _CYBERLENINKA_CODE_RE = re.compile(
     r"^\s*(?:from\s+\w|import\s+\w|>>>|#|def\s+\w|class\s+\w|\.{3})",
     re.IGNORECASE,
 )
-_CYBERLENINKA_REF_RE = re.compile(r"^\s*\d+[\.\)]\s")
+# A numbered reference line starts either with ``1.``/``1)`` (followed by a
+# space, so a decimal sentence such as ``1.5 method`` is not matched) or with
+# a square-bracketed index ``[1]`` (with optional trailing dot/space).
+_CYBERLENINKA_REF_RE = re.compile(r"^\s*(?:\d+[\.\)]\s|\[\d+\][\s\.]*)")
 _CYBERLENINKA_AFFILIATION_RE = re.compile(
     r"(?:университет|институт|росси[яй]|научный\s+руководитель|кафедра|"
     r"студент|аспирант|доцент|профессор|лаборатор)",
     re.IGNORECASE,
 )
-_CYBERLENINKA_STOP_HEADERS = frozenset(
-    {"литература", "список литературы", "references", "библиография"},
+# A bare author line such as ``Иванов И.И., Петров П.П.`` (Russian surname with
+# two initials) is skipped before the abstract run starts; the two-initial
+# pattern is specific enough to avoid ordinary prose abbreviations.
+_CYBERLENINKA_AUTHOR_RE = re.compile(r"\b[А-ЯЁA-Z]\.\s*[А-ЯЁA-Z]\.")  # noqa: RUF001
+# Unambiguous bibliography/list headings: a paragraph that starts with these
+# prefixes always ends the abstract run.
+_CYBERLENINKA_STOP_HEADER_PREFIXES = frozenset(
+    {"список ", "библиограф", "references"},
 )
+# Single-word heading stems (``Литература``, ``Источники``) that also appear in
+# prose, so they are only treated as a stop header when the paragraph is short
+# enough to be a heading rather than an abstract sentence.
+_CYBERLENINKA_STOP_HEADER_STEMS = frozenset({"литература", "источники"})
+_CYBERLENINKA_HEADER_MAX = 40
 _CYBERLENINKA_SKIP_HEADERS = frozenset({"ключевые слова", "keywords"})
 # Related-article preview prefixes that the body block prepends before the
 # article's own title; normalized (alphanumeric-only, lowercased) so the
 # matching against ``_cyberleninka_normalize`` output is direct.
 _CYBERLENINKA_PREVIEW_PREFIXES = frozenset(
-    {"смотрите также", "читайте также", "см также", "также см"},
+    {
+        "смотрите также",
+        "читайте также",
+        "см также",
+        "также см",
+        "также в этом номере",
+        "читайте в номере",
+        "смотрите в номере",
+        "см в номере",
+    },
 )
 _CYBERLENINKA_AFFILIATION_MAX = 200
 _CYBERLENINKA_TITLE_FUZZ = 80
@@ -77,12 +100,16 @@ _CYBERLENINKA_TITLE_TOKEN_MIN = 0.6
 
 
 def _cyberleninka_normalize(text: str) -> str:
-    """Lowercase and collapse non-alphanumeric runs to single spaces.
+    """Lowercase, fold OCR variants, and collapse non-alphanumeric runs.
 
-    Used to fuzzy-match the article's title paragraph inside the body block
+    The landing page sometimes renders the title with OCR variants (``й``
+    flattened to ``и``, ``ё`` to ``e``), so both the raw title and the body
+    paragraph are folded to the flattened form before matching. Used to
+    fuzzy-match the article's title paragraph inside the body block
     regardless of punctuation or case differences.
     """
-    collapsed = re.sub(r"[^a-zа-яё0-9]+", " ", text.lower())  # noqa: RUF001
+    folded = text.lower().replace("й", "и").replace("ё", "е")  # noqa: RUF001
+    collapsed = re.sub(r"[^a-zа-я0-9]+", " ", folded)  # noqa: RUF001
     return re.sub(r"\s+", " ", collapsed).strip()
 
 
@@ -135,7 +162,12 @@ def _classify_cyberleninka_paragraph(text: str, *, started: bool) -> str:
     if not text:
         return "skip"
     lowered = text.lower()
-    if any(lowered.startswith(header) for header in _CYBERLENINKA_STOP_HEADERS):
+    if any(
+        lowered.startswith(prefix) for prefix in _CYBERLENINKA_STOP_HEADER_PREFIXES
+    ) or (
+        len(text) <= _CYBERLENINKA_HEADER_MAX
+        and any(lowered.startswith(stem) for stem in _CYBERLENINKA_STOP_HEADER_STEMS)
+    ):
         return "stop"
     if any(lowered.startswith(header) for header in _CYBERLENINKA_SKIP_HEADERS):
         return "skip"
@@ -147,8 +179,11 @@ def _classify_cyberleninka_paragraph(text: str, *, started: bool) -> str:
         return "stop"
     if (
         not started
-        and _CYBERLENINKA_AFFILIATION_RE.search(text)
         and len(text) < _CYBERLENINKA_AFFILIATION_MAX
+        and (
+            _CYBERLENINKA_AFFILIATION_RE.search(text)
+            or _CYBERLENINKA_AUTHOR_RE.search(text)
+        )
     ):
         return "skip"
     return "keep"

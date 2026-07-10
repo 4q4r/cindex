@@ -429,6 +429,47 @@ class TestCyberLeninkaAbstractFallback:
         "</div></body></html>"
     )
 
+    _ARTICLE_HTML_PREVIEW_VARIANT = (
+        "<html><body>"
+        '<div class="ocr" itemprop="articleBody">'
+        # An unlisted preview prefix sharing ≥60% of the title's tokens — must
+        # be rejected via the expanded preview-prefix guard.
+        "<p>Также в этом номере: методы оптимизации в логистике предприятия"
+        "</p>"
+        "<p>Методы оптимизации в логистике</p>"
+        "<p>В работе предложен метод оптимизации маршрутов доставки.</p>"  # noqa: RUF001
+        "<p>Том 7. № 2.</p>"
+        "</div></body></html>"
+    )
+
+    _ARTICLE_HTML_SQUARE_REFS = (
+        "<html><body>"
+        '<div class="ocr" itemprop="articleBody">'
+        "<p>Методы оптимизации в логистике</p>"
+        # Bare author line (surname + two initials, no institution) before the
+        # abstract run — must be skipped via the author-initial guard.
+        "<p>Иванов И.И., Петров П.П.</p>"
+        "<p>В работе предложен метод оптимизации маршрутов доставки.</p>"  # noqa: RUF001
+        "<p>Эксперименты показали снижение издержек на 15 процентов.</p>"
+        # Bibliography heading variant — must end the abstract run.
+        "<p>Список использованной литературы</p>"
+        # Square-bracket references after the header must not be collected.
+        "<p>[1] Смирнов А.А. Логистика. М.: Наука, 2020.</p>"  # noqa: RUF001
+        "<p>[2] Козлов В.В. Оптимизация. СПб.: Питер, 2019.</p>"  # noqa: RUF001
+        "</div></body></html>"
+    )
+
+    _ARTICLE_HTML_SHORT_OCR_TITLE = (
+        "<html><body>"
+        '<div class="ocr" itemprop="articleBody">'
+        # Body title OCR-flattened (й→и); a short single-token title whose only
+        # differing token is the й-bearing one — only the й↔и fold rescues it.
+        "<p>Неиросети</p>"
+        "<p>Нейросетевые модели описаны кратко в данной работе.</p>"
+        "<p>Том 3. № 1.</p>"
+        "</div></body></html>"
+    )
+
     def test_abstract_extracted_from_body_after_ocr_title(self, monkeypatch) -> None:
         from apps.ingestion.connectors.base import RawArticle
 
@@ -637,6 +678,97 @@ class TestCyberLeninkaAbstractFallback:
         assert "глубокое" not in enriched.abstract
         assert "Ключевые слова" not in enriched.abstract
         assert "Том 5" not in enriched.abstract
+
+    def test_unlisted_preview_prefix_rejected(self, monkeypatch) -> None:
+        from apps.ingestion.connectors.base import RawArticle
+
+        conn = CyberLeninkaConnector()
+        monkeypatch.setattr(
+            conn,
+            "_request_text",
+            lambda _url, **_kwargs: self._ARTICLE_HTML_PREVIEW_VARIANT,
+        )
+        raw = RawArticle(
+            source_key="cyberleninka",
+            title="Методы оптимизации в логистике",
+            url="https://cyberleninka.ru/article/n/preview-variant",
+            abstract="",
+            full_text="",
+            language="ru",
+            year=None,
+            doi="",
+            journal="CL Journal",
+        )
+        enriched = conn.enrich_raw(raw)
+        # The unlisted preview prefix must be rejected, so its content and the
+        # title line must not leak into the abstract; only the real abstract
+        # run is collected.
+        assert "маршрутов доставки" in enriched.abstract
+        assert "Также в этом номере" not in enriched.abstract
+        assert "предприятия" not in enriched.abstract
+        assert "Том 7" not in enriched.abstract
+
+    def test_square_bracket_refs_and_author_line_stopped(self, monkeypatch) -> None:
+        from apps.ingestion.connectors.base import RawArticle
+
+        conn = CyberLeninkaConnector()
+        monkeypatch.setattr(
+            conn,
+            "_request_text",
+            lambda _url, **_kwargs: self._ARTICLE_HTML_SQUARE_REFS,
+        )
+        raw = RawArticle(
+            source_key="cyberleninka",
+            title="Методы оптимизации в логистике",
+            url="https://cyberleninka.ru/article/n/square-refs",
+            abstract="",
+            full_text="",
+            language="ru",
+            year=None,
+            doi="",
+            journal="CL Journal",
+        )
+        enriched = conn.enrich_raw(raw)
+        # The bare author line must be skipped, not collected.
+        assert "Иванов" not in enriched.abstract
+        assert "Петров" not in enriched.abstract
+        # The abstract prose run is collected.
+        assert "маршрутов доставки" in enriched.abstract
+        assert "снижение издержек" in enriched.abstract
+        # The bibliography heading variant must end the run, not be collected.
+        assert "Список использованной" not in enriched.abstract
+        # Square-bracket references must not bleed in.
+        assert "Смирнов" not in enriched.abstract
+        assert "Козлов" not in enriched.abstract
+        assert "[1]" not in enriched.abstract
+
+    def test_short_ocr_title_matched_via_fold(self, monkeypatch) -> None:
+        from apps.ingestion.connectors.base import RawArticle
+
+        conn = CyberLeninkaConnector()
+        monkeypatch.setattr(
+            conn,
+            "_request_text",
+            lambda _url, **_kwargs: self._ARTICLE_HTML_SHORT_OCR_TITLE,
+        )
+        raw = RawArticle(
+            source_key="cyberleninka",
+            title="Нейросети",
+            url="https://cyberleninka.ru/article/n/short-ocr",
+            abstract="",
+            full_text="",
+            language="ru",
+            year=None,
+            doi="",
+            journal="CL Journal",
+        )
+        enriched = conn.enrich_raw(raw)
+        # A short single-token OCR-flattened title is only rescued by the
+        # й↔и fold; without it the title would not match and the abstract
+        # would be empty.
+        assert "Нейросетевые модели" in enriched.abstract
+        assert "в данной работе" in enriched.abstract
+        assert "Том 3" not in enriched.abstract
 
 
 class TestHALJournal:
