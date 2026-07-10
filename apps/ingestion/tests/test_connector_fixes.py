@@ -1380,6 +1380,20 @@ class TestCyberLeninkaAbstractFallback:
         "</div></body></html>"
     )
 
+    _ARTICLE_HTML_ALLSEP_ISSUE = (
+        "<html><body>"
+        '<div class="ocr" itemprop="articleBody">'
+        "<p>Результаты эксперимента</p>"
+        "<p>В работе получены новые данные.</p>"  # noqa: RUF001
+        # An OCR-degenerate paragraph that is only a separator then an issue
+        # sign (``— № 3``) makes ``before`` all-separator: the rsplit guard
+        # skips the denylist and the separator check treats it as a terminal
+        # citation, so the prior prose is kept and the discriminator must NOT
+        # raise (``"".rsplit(maxsplit=1)`` is ``[]``).
+        "<p>— № 3.</p>"
+        "</div></body></html>"
+    )
+
     def test_citation_comma_before_issue_stops(self, monkeypatch) -> None:
         from apps.ingestion.connectors.base import RawArticle
 
@@ -1539,6 +1553,33 @@ class TestCyberLeninkaAbstractFallback:
         # miss the abbreviation: the sentence is kept as prose, not truncated.
         assert "обработаны" in enriched.abstract
         assert "табл" in enriched.abstract
+
+    def test_allsep_issue_does_not_crash(self, monkeypatch) -> None:
+        from apps.ingestion.connectors.base import RawArticle
+
+        conn = CyberLeninkaConnector()
+        monkeypatch.setattr(
+            conn,
+            "_request_text",
+            lambda _url, **_kwargs: self._ARTICLE_HTML_ALLSEP_ISSUE,
+        )
+        raw = RawArticle(
+            source_key="cyberleninka",
+            title="Результаты эксперимента",
+            url="https://cyberleninka.ru/article/n/allsep-issue",
+            abstract="",
+            full_text="",
+            language="ru",
+            year=None,
+            doi="",
+            journal="CL Journal",
+        )
+        # Must not raise IndexError when ``before`` is all separator chars.
+        enriched = conn.enrich_raw(raw)
+        # The prior prose is kept; the degenerate ``— № 3`` line is terminal
+        # and excluded, so the issue sign does not leak into the abstract.
+        assert "получены" in enriched.abstract
+        assert "№ 3" not in enriched.abstract
 
     def test_preabstract_terminal_issue_is_skipped(self, monkeypatch) -> None:
         from apps.ingestion.connectors.base import RawArticle
