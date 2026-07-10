@@ -155,8 +155,19 @@ class OpenAlexConnector(AsyncApiConnector):
         language="en",
     )
 
+    # Over-fetch the upstream page: a sizeable share of OpenAlex works carry a
+    # null ``abstract_inverted_index`` (verified live: 6/15 null for
+    # 'medical imaging', including the seminal 'A survey on deep learning in
+    # medical image analysis'). Crossref lacks these abstracts too, so there is
+    # no enrichment fallback — filter them and request a larger page so the
+    # result still reaches ``limit`` articles with a real abstract.
+    _OVERFETCH_FACTOR = 3
+
     def _api_url(self, query: str, limit: int) -> str:
-        return f"{self.profile.search_url}?search={quote_plus(query)}&per_page={limit}"
+        per_page = limit * self._OVERFETCH_FACTOR
+        return (
+            f"{self.profile.search_url}?search={quote_plus(query)}&per_page={per_page}"
+        )
 
     @staticmethod
     def _reconstruct_abstract(inverted_index: dict) -> str:
@@ -198,11 +209,19 @@ class OpenAlexConnector(AsyncApiConnector):
     ) -> list[RawArticle]:
         results = payload.get("results", [])
         items: list[RawArticle] = []
-        for item in results[:limit]:
+        for item in results:
+            if len(items) >= limit:
+                break
             title = item.get("title") or item.get("display_name")
             if not title:
                 continue
             abstract = self._reconstruct_abstract(item.get("abstract_inverted_index"))
+            # OpenAlex genuinely returns ``abstract_inverted_index: null`` for
+            # many works (no reconstruction bug). A null-abstract record is
+            # garbage for the search index, so skip it and rely on the
+            # over-fetched page for the next work with a real abstract.
+            if not abstract:
+                continue
             doi = item.get("doi", "")
             if doi:
                 doi = doi.replace("https://doi.org/", "")
