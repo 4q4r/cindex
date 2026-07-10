@@ -43,14 +43,18 @@ _MIN_TITLE_LENGTH = 14
 _CYBERLENINKA_ABSTRACT_MAX = 1500
 # A journal-citation / volume marker requires a following number, so ordinary
 # Russian prose (e.g. "in such cases", "etc.", "i.e.", "since") does not end
-# the abstract run prematurely. The issue sign carries no word boundary, so it
-# is matched outside the ``\b`` group.
+# the abstract run prematurely.
 _CYBERLENINKA_CITATION_RE = re.compile(
     r"\b(?:Том\s+\d{1,4}|Т\.\s*\d{1,4}|вып\.?\s*\d{1,4}|"  # noqa: RUF001
     r"issn[\s:]*\d|udk[\s:]*\d|удк[\s:]*\d|"
-    r"doi[\s:]*10\.\d{4,}|10\.\d{4,})|№\s*\d",
+    r"doi[\s:]*10\.\d{4,}|10\.\d{4,})",
     re.IGNORECASE,
 )
+# A bare issue sign ``№ N`` also marks a citation line, but it appears inside
+# prose too ("в таблице № 3", "на рис. № 1"), so it only ends the abstract run
+# when the whole paragraph is short enough to be a citation marker rather than
+# a sentence (see ``_classify_cyberleninka_paragraph``).
+_CYBERLENINKA_ISSUE_RE = re.compile(r"№\s*\d", re.IGNORECASE)
 _CYBERLENINKA_CODE_RE = re.compile(
     r"^\s*(?:from\s+\w|import\s+\w|>>>|#|def\s+\w|class\s+\w|\.{3})",
     re.IGNORECASE,
@@ -68,6 +72,22 @@ _CYBERLENINKA_AFFILIATION_RE = re.compile(
 # two initials) is skipped before the abstract run starts; the two-initial
 # pattern is specific enough to avoid ordinary prose abbreviations.
 _CYBERLENINKA_AUTHOR_RE = re.compile(r"\b[А-ЯЁA-Z]\.\s*[А-ЯЁA-Z]\.")  # noqa: RUF001
+# Russian past-participle / finite-verb stems that mark a sentence (an
+# abstract opener mentioning a university and continuing into prose)
+# rather than a standalone affiliation/author noun phrase. Matched as a
+# word prefix so gender/number endings of each stem all hit; a noun sharing
+# a stem also matches, which is harmless -- the guard only ever forces
+# ``keep`` of prose, never skipping a real affiliation line (which has no
+# such verb). Both ``yo`` and ``e`` forms are listed so OCR flattening of
+# the dotted letter does not defeat the guard.
+_CYBERLENINKA_VERB_STEMS_RE = re.compile(
+    r"\b(?:предложен|разработан|рассмотрен|изучен|исследован|показан|"
+    r"применён|применен|описан|представлен|обоснован|проанализирован|"
+    r"получен|найден|определён|определен|установлен|доказан|вычислен|"
+    r"построен|основан|направлен|реализован|апробирован|посвящён|посвящен|"
+    r"рассматривается|исследуется|применяется|описывается|строится)\w*",
+    re.IGNORECASE,
+)
 # Unambiguous bibliography/list headings: a paragraph that starts with these
 # prefixes always ends the abstract run.
 _CYBERLENINKA_STOP_HEADER_PREFIXES = frozenset(
@@ -106,6 +126,7 @@ _CYBERLENINKA_PREVIEW_PREFIXES = frozenset(
 _CYBERLENINKA_AFFILIATION_MAX = 200
 _CYBERLENINKA_TITLE_FUZZ = 80
 _CYBERLENINKA_TITLE_TOKEN_MIN = 0.6
+_CYBERLENINKA_TITLE_OVERLAP_SLACK = 20
 
 
 def _cyberleninka_normalize(text: str) -> str:
@@ -126,12 +147,14 @@ def _find_cyberleninka_title(paragraphs: list[str], norm_title: str) -> int:
     """Return the index of the paragraph matching the article title, or -1.
 
     The landing page sometimes renders the title with OCR variants (e.g. ``й``
-    flattened to ``и``), so beyond an exact prefix/substring match we also
-    accept a short paragraph whose token overlap with the title clears
+    flattened to ``и``), so beyond an exact prefix match we also accept a short
+    paragraph whose token overlap with the title clears
     ``_CYBERLENINKA_TITLE_TOKEN_MIN``. A related-article preview prepended to
     the body block can share topic words with the title, so paragraphs that
     begin with a preview prefix (``_CYBERLENINKA_PREVIEW_PREFIXES``) are never
-    matched as the title.
+    matched as the title; the overlap match is additionally capped at
+    ``_CYBERLENINKA_TITLE_OVERLAP_SLACK`` beyond the title length, because a
+    preview prepends a lead that makes it noticeably longer than the title.
     """
     title_tokens = frozenset(norm_title.split())
     for idx, para in enumerate(paragraphs):
@@ -146,9 +169,11 @@ def _find_cyberleninka_title(paragraphs: list[str], norm_title: str) -> int:
             return idx
         if len(norm_para) > len(norm_title) + _CYBERLENINKA_TITLE_FUZZ:
             continue
-        if norm_title in norm_para:
-            return idx
-        if title_tokens and _title_token_overlap(norm_para, title_tokens):
+        if (
+            title_tokens
+            and len(norm_para) <= len(norm_title) + _CYBERLENINKA_TITLE_OVERLAP_SLACK
+            and _title_token_overlap(norm_para, title_tokens)
+        ):
             return idx
     return -1
 
@@ -166,7 +191,12 @@ def _classify_cyberleninka_paragraph(text: str, *, started: bool) -> str:
     citation, code snippet, numbered reference, or bibliography header),
     ``"skip"`` when it should be ignored without ending the run (blank line,
     keyword list, or a leading author/affiliation line), and ``"keep"`` when
-    it is abstract prose to collect.
+    it is abstract prose to collect. The citation/issue sign guard only treats
+    a ``№ N`` token as a stop when it sits in a short header-like line, so a
+    prose sentence that happens to mention ``в таблице № 3`` is kept; the
+    affiliation skip is suppressed when the line contains a finite-verb stem,
+    so an abstract opener mentioning a university is kept rather than dropped
+    as an affiliation.
     """
     if not text:
         return "skip"
@@ -184,11 +214,16 @@ def _classify_cyberleninka_paragraph(text: str, *, started: bool) -> str:
         _CYBERLENINKA_CODE_RE.match(text)
         or _CYBERLENINKA_REF_RE.match(text)
         or _CYBERLENINKA_CITATION_RE.search(text)
+        or (
+            len(text) <= _CYBERLENINKA_HEADER_MAX
+            and _CYBERLENINKA_ISSUE_RE.search(text)
+        )
     ):
         return "stop"
     if (
         not started
         and len(text) < _CYBERLENINKA_AFFILIATION_MAX
+        and not _CYBERLENINKA_VERB_STEMS_RE.search(text)
         and (
             _CYBERLENINKA_AFFILIATION_RE.search(text)
             or _CYBERLENINKA_AUTHOR_RE.search(text)

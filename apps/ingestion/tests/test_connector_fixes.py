@@ -814,6 +814,135 @@ class TestCyberLeninkaAbstractFallback:
         assert "предприятия" not in enriched.abstract
         assert "Том 7" not in enriched.abstract
 
+    _ARTICLE_HTML_UNIVERSITY_OPENER = (
+        "<html><body>"
+        '<div class="ocr" itemprop="articleBody">'
+        # An abstract opener that mentions a university and a finite-verb
+        # stem ("предложен") -- without the verb-stem guard the affiliation
+        # skip would drop it as an affiliation line, losing the whole run.
+        "<p>Особенности применения наноматериалов в строительстве</p>"
+        "<p>В Томском государственном университете предложен новый метод "  # noqa: RUF001
+        "повышения долговечности конструкций.</p>"
+        "<p>Вестник строительных наук. 2023. Том 7. № 2.</p>"
+        "</div></body></html>"
+    )
+
+    _ARTICLE_HTML_INLINE_ISSUE = (
+        "<html><body>"
+        '<div class="ocr" itemprop="articleBody">'
+        "<p>Методы оптимизации в логистике</p>"
+        "<p>В работе предложен метод оптимизации маршрутов доставки.</p>"  # noqa: RUF001
+        # A prose sentence mentioning an inline "в таблице № 3" must not be
+        # truncated by a bare issue-sign guard; only short header-like lines
+        # carrying "№ N" are treated as a stop.
+        "<p>Метод апробирован на данных из таблицы № 3 и показал "
+        "эффективность 15 процентов.</p>"
+        "<p>Результаты подтвердили результат эксперимента.</p>"
+        "<p>Вестник логистики. 2023. Том 7. № 2.</p>"
+        "</div></body></html>"
+    )
+
+    _ARTICLE_HTML_UNLISTED_LONG_PREVIEW = (
+        "<html><body>"
+        '<div class="ocr" itemprop="articleBody">'
+        # An unlisted preview prefix ("в новом выпуске" is not in the prefix
+        # set) that embeds the title as a substring and is much longer than
+        # the title. Without the loose substring branch and the overlap
+        # length cap, this preview would be matched as the title.
+        "<p>В новом выпуске журнала: машинное обучение в медицине "  # noqa: RUF001
+        "и смежные области</p>"
+        "<p>Машинное обучение в медицине</p>"
+        "<p>В работе машинное обучение применяется к диагностике "  # noqa: RUF001
+        "заболеваний на ранних стадиях.</p>"
+        "<p>Том 5. № 1.</p>"
+        "</div></body></html>"
+    )
+
+    def test_opener_mentioning_university_is_kept(self, monkeypatch) -> None:
+        from apps.ingestion.connectors.base import RawArticle
+
+        conn = CyberLeninkaConnector()
+        monkeypatch.setattr(
+            conn,
+            "_request_text",
+            lambda _url, **_kwargs: self._ARTICLE_HTML_UNIVERSITY_OPENER,
+        )
+        raw = RawArticle(
+            source_key="cyberleninka",
+            title="Особенности применения наноматериалов в строительстве",
+            url="https://cyberleninka.ru/article/n/university-opener",
+            abstract="",
+            full_text="",
+            language="ru",
+            year=None,
+            doi="",
+            journal="CL Journal",
+        )
+        enriched = conn.enrich_raw(raw)
+        # The university opener carries a finite-verb stem, so it must be
+        # kept as prose rather than skipped as an affiliation line.
+        assert "предложен новый метод" in enriched.abstract
+        assert "университете" in enriched.abstract
+        assert "долговечности" in enriched.abstract
+        assert "Том 7" not in enriched.abstract
+
+    def test_prose_with_inline_issue_sign_not_truncated(self, monkeypatch) -> None:
+        from apps.ingestion.connectors.base import RawArticle
+
+        conn = CyberLeninkaConnector()
+        monkeypatch.setattr(
+            conn,
+            "_request_text",
+            lambda _url, **_kwargs: self._ARTICLE_HTML_INLINE_ISSUE,
+        )
+        raw = RawArticle(
+            source_key="cyberleninka",
+            title="Методы оптимизации в логистике",
+            url="https://cyberleninka.ru/article/n/inline-issue",
+            abstract="",
+            full_text="",
+            language="ru",
+            year=None,
+            doi="",
+            journal="CL Journal",
+        )
+        enriched = conn.enrich_raw(raw)
+        # The inline "в таблице № 3" sits in a long prose sentence, so it
+        # must not truncate the run; the surrounding sentences are kept.
+        assert "таблицы" in enriched.abstract
+        assert "эффективность" in enriched.abstract
+        assert "подтвердили результат" in enriched.abstract
+        assert "Том 7" not in enriched.abstract
+
+    def test_unlisted_long_preview_not_matched_as_title(self, monkeypatch) -> None:
+        from apps.ingestion.connectors.base import RawArticle
+
+        conn = CyberLeninkaConnector()
+        monkeypatch.setattr(
+            conn,
+            "_request_text",
+            lambda _url, **_kwargs: self._ARTICLE_HTML_UNLISTED_LONG_PREVIEW,
+        )
+        raw = RawArticle(
+            source_key="cyberleninka",
+            title="Машинное обучение в медицине",
+            url="https://cyberleninka.ru/article/n/unlisted-long-preview",
+            abstract="",
+            full_text="",
+            language="ru",
+            year=None,
+            doi="",
+            journal="CL Journal",
+        )
+        enriched = conn.enrich_raw(raw)
+        # The unlisted long preview embeds the title as a substring but is too
+        # long for the overlap cap, so it is not matched as the title and its
+        # content does not leak into the abstract.
+        assert "применяется к диагностике" in enriched.abstract
+        assert "в новом выпуске" not in enriched.abstract
+        assert "смежные области" not in enriched.abstract
+        assert "Том 5" not in enriched.abstract
+
 
 class TestHALJournal:
     """HALConnector should extract journal from journalTitle_s."""
