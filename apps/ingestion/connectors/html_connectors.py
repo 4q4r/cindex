@@ -227,7 +227,17 @@ def _cyberleninka_issue_is_terminal(text: str) -> bool:
     match = matches[-1]
     before = text[: match.start()].rstrip()
     if before:
-        last_token = before.rsplit(maxsplit=1)[-1].rstrip(".,;:-\u2014\u2013").lower()
+        # Strip trailing citation separators *before* splitting so a prose
+        # abbreviation stays the last token even when a dash/comma/period
+        # separates it from the issue sign (``табл. \u2014 № 3``). Otherwise
+        # the separator itself is the last token and the denylist misses the
+        # reference, falsely marking prose as a terminal citation.
+        last_token = (
+            before.rstrip(".,;:-\u2014\u2013")
+            .rsplit(maxsplit=1)[-1]
+            .rstrip(".,;:-\u2014\u2013")
+            .lower()
+        )
         if last_token in _CYBERLENINKA_PROSE_ABBREV_PREFIXES:
             return False
         if before[-1] not in _CYBERLENINKA_ISSUE_SEP_CHARS:

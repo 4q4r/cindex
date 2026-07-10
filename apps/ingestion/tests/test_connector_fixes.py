@@ -1367,6 +1367,19 @@ class TestCyberLeninkaAbstractFallback:
         "</div></body></html>"
     )
 
+    _ARTICLE_HTML_ABBREV_DASH_ISSUE = (
+        "<html><body>"
+        '<div class="ocr" itemprop="articleBody">'
+        "<p>Данные измерений</p>"
+        "<p>В работе обработаны данные.</p>"  # noqa: RUF001
+        # An em dash between the ``табл.`` abbreviation and the issue sign must
+        # not erase the abbreviation: the trailing separator is stripped before
+        # the token split, so ``табл`` stays the last token, the denylist fires,
+        # and the sentence is kept as prose (not truncated at ``№ 3``).
+        "<p>Данные в табл. — № 3.</p>"
+        "</div></body></html>"
+    )
+
     def test_citation_comma_before_issue_stops(self, monkeypatch) -> None:
         from apps.ingestion.connectors.base import RawArticle
 
@@ -1500,6 +1513,32 @@ class TestCyberLeninkaAbstractFallback:
         assert "описаны" in enriched.abstract
         assert "стр" not in enriched.abstract
         assert "15-30" not in enriched.abstract
+
+    def test_abbrev_dash_issue_prose_kept(self, monkeypatch) -> None:
+        from apps.ingestion.connectors.base import RawArticle
+
+        conn = CyberLeninkaConnector()
+        monkeypatch.setattr(
+            conn,
+            "_request_text",
+            lambda _url, **_kwargs: self._ARTICLE_HTML_ABBREV_DASH_ISSUE,
+        )
+        raw = RawArticle(
+            source_key="cyberleninka",
+            title="Данные измерений",
+            url="https://cyberleninka.ru/article/n/abbrev-dash-issue",
+            abstract="",
+            full_text="",
+            language="ru",
+            year=None,
+            doi="",
+            journal="CL Journal",
+        )
+        enriched = conn.enrich_raw(raw)
+        # The em dash separating ``табл.`` from ``№ 3`` must not let the denylist
+        # miss the abbreviation: the sentence is kept as prose, not truncated.
+        assert "обработаны" in enriched.abstract
+        assert "табл" in enriched.abstract
 
     def test_preabstract_terminal_issue_is_skipped(self, monkeypatch) -> None:
         from apps.ingestion.connectors.base import RawArticle
