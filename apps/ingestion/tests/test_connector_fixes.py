@@ -347,6 +347,209 @@ class TestCyberLeninkaAuthors:
         assert items[0].authors == ()
 
 
+class TestCyberLeninkaAbstractFallback:
+    """CyberLeninka ``enrich_raw`` backfills an empty abstract from the body.
+
+    The search API leaves ``annotation`` empty for a minority of articles, and
+    the landing page carries no abstract meta tag, so the inherited
+    ``enrich_raw`` cannot recover it. The page renders the body inside
+    ``div.ocr[itemprop="articleBody"]``, but that block is prepended with a
+    recommended-article preview and interleaved with the bibliography, so the
+    abstract must be located relative to the article's *own* title paragraph
+    (matched fuzzily, since the page sometimes OCR-flattens ``й`` to ``и``),
+    skipping keyword/affiliation lines, and stopping at the first numbered
+    reference or journal citation.
+    """
+
+    _ARTICLE_HTML = (
+        "<html><body>"
+        '<div class="ocr" itemprop="articleBody">'
+        # Recommended-article preview with an unrelated title — must not be
+        # matched as this article's title.
+        "<p>Смотрите также: совершенно иная статья о квантовых вычислениях</p>"  # noqa: RUF001
+        # Author line before the title.
+        "<p>Михайлова М. В.</p>"  # noqa: RUF001
+        # The article's own title, OCR-flattened (НЕИРО- instead of НЕЙРО-).
+        "<p>НЕИРОМАТЕМАТИКА В МАШИННОМ ОБУЧЕНИИ</p>"  # noqa: RUF001
+        # Keyword lines precede the abstract and must be skipped, not stop.
+        "<p>Ключевые слова: нейроматематика, машинное обучение, граф</p>"
+        "<p>Keywords: neuromathematics, machine learning, graph</p>"
+        # The abstract prose run.
+        "<p>К нейроматематике принято относить раздел вычислительной "  # noqa: RUF001
+        "математики, связанный с разработкой методов решения задач.</p>"  # noqa: RUF001
+        "<p>Если рассматривать нейрокомпьютеры как устройства переработки "
+        "информации, возникают вопросы о применимости таких систем.</p>"  # noqa: RUF001
+        # Numbered reference list ends the run.
+        "<p>1)\tу рассматриваемой задачи отсутствует алгоритм решения</p>"  # noqa: RUF001
+        # Journal citation would also end the run if reached.
+        "<p>Вестник медицинского института. 2023. Том 13. № 2.</p>"
+        "</div></body></html>"
+    )
+
+    _ARTICLE_HTML_AFFILIATION = (
+        "<html><body>"
+        '<div class="ocr" itemprop="articleBody">'
+        "<p>Особенности применения наноматериалов в строительстве</p>"
+        # Affiliation line right after the title — short and must be skipped.
+        "<p>Московский государственный университет, кафедра физики</p>"
+        "<p>В работе рассмотрены особенности применения наноматериалов "  # noqa: RUF001
+        "в современных строительных конструкциях и их долговечность.</p>"
+        "<p>Вестник строительных наук. 2022. Том 8. № 1.</p>"
+        "</div></body></html>"
+    )
+
+    _ARTICLE_HTML_NO_OCR = "<html><body><p>no article body block here</p></body></html>"
+
+    def test_abstract_extracted_from_body_after_ocr_title(self, monkeypatch) -> None:
+        from apps.ingestion.connectors.base import RawArticle
+
+        conn = CyberLeninkaConnector()
+        monkeypatch.setattr(
+            conn,
+            "_request_text",
+            lambda _url, **_kwargs: self._ARTICLE_HTML,
+        )
+        raw = RawArticle(
+            source_key="cyberleninka",
+            title="Нейроматематика в машинном обучении",
+            url="https://cyberleninka.ru/article/n/neyromatematika",
+            abstract="",
+            full_text="",
+            language="ru",
+            year=None,
+            doi="",
+            journal="CL Journal",
+        )
+        enriched = conn.enrich_raw(raw)
+        assert "вычислительной математики" in enriched.abstract
+        assert "нейрокомпьютеры" in enriched.abstract
+        # The recommended-article preview must not leak in.
+        assert "квантовых" not in enriched.abstract
+        assert "Смотрите также" not in enriched.abstract
+        # The author line precedes the title and must not be collected.
+        assert "Михайлова" not in enriched.abstract
+        # Keyword lines must be skipped, not appear in the abstract.
+        assert "Ключевые слова" not in enriched.abstract
+        assert "Keywords" not in enriched.abstract
+        # The numbered reference must end the run, not be collected.
+        assert "отсутствует алгоритм" not in enriched.abstract
+        assert "1)" not in enriched.abstract
+        # The journal citation must not leak in.
+        assert "Том 13" not in enriched.abstract
+
+    def test_affiliation_line_after_title_is_skipped(self, monkeypatch) -> None:
+        from apps.ingestion.connectors.base import RawArticle
+
+        conn = CyberLeninkaConnector()
+        monkeypatch.setattr(
+            conn,
+            "_request_text",
+            lambda _url, **_kwargs: self._ARTICLE_HTML_AFFILIATION,
+        )
+        raw = RawArticle(
+            source_key="cyberleninka",
+            title="Особенности применения наноматериалов в строительстве",
+            url="https://cyberleninka.ru/article/n/nanomaterials",
+            abstract="",
+            full_text="",
+            language="ru",
+            year=None,
+            doi="",
+            journal="CL Journal",
+        )
+        enriched = conn.enrich_raw(raw)
+        assert "наноматериалов" in enriched.abstract
+        assert "долговечность" in enriched.abstract
+        # The affiliation line must be skipped, not collected.
+        assert "кафедра" not in enriched.abstract
+        assert "университет" not in enriched.abstract
+        # The journal citation must end the run.
+        assert "Том 8" not in enriched.abstract
+
+    def test_nonempty_api_abstract_skips_fallback(self, monkeypatch) -> None:
+        from apps.ingestion.connectors.base import RawArticle
+
+        conn = CyberLeninkaConnector()
+        # The inherited ``enrich_raw`` always fetches the landing page once
+        # (base.py), so the stub must return real body HTML rather than raise.
+        # The contract under test is narrower: the *fallback* extraction must
+        # not run — i.e. it must not overwrite the API abstract with body prose.
+        monkeypatch.setattr(
+            conn,
+            "_request_text",
+            lambda _url, **_kwargs: self._ARTICLE_HTML,
+        )
+        raw = RawArticle(
+            source_key="cyberleninka",
+            title="A real article with a full abstract already",
+            url="https://cyberleninka.ru/article/n/has-abstract",
+            abstract="A genuine abstract already provided by the search API.",
+            full_text="",
+            language="ru",
+            year=None,
+            doi="",
+            journal="CL Journal",
+        )
+        enriched = conn.enrich_raw(raw)
+        # The API abstract is preserved verbatim (normalised); the fallback
+        # body extraction never overwrites a real abstract.
+        assert (
+            enriched.abstract
+            == "A genuine abstract already provided by the search API."
+        )
+        # Body prose the fallback would have extracted is absent, proving the
+        # fallback path was not taken even though the page carries it.
+        assert "вычислительной" not in enriched.abstract
+
+    def test_no_ocr_block_leaves_abstract_empty(self, monkeypatch) -> None:
+        from apps.ingestion.connectors.base import RawArticle
+
+        conn = CyberLeninkaConnector()
+        monkeypatch.setattr(
+            conn,
+            "_request_text",
+            lambda _url, **_kwargs: self._ARTICLE_HTML_NO_OCR,
+        )
+        raw = RawArticle(
+            source_key="cyberleninka",
+            title="Some article whose landing page lacks the body block",
+            url="https://cyberleninka.ru/article/n/no-body",
+            abstract="",
+            full_text="",
+            language="ru",
+            year=None,
+            doi="",
+            journal="CL Journal",
+        )
+        enriched = conn.enrich_raw(raw)
+        assert enriched.abstract == ""
+
+    def test_request_failure_leaves_abstract_empty(self, monkeypatch) -> None:
+        from apps.ingestion.connectors.base import RawArticle
+
+        conn = CyberLeninkaConnector()
+
+        def _raise(_url: str, **_kwargs: object) -> str:
+            raise RuntimeError("sidecar 502")
+
+        monkeypatch.setattr(conn, "_request_text", _raise)
+        raw = RawArticle(
+            source_key="cyberleninka",
+            title="Some article whose landing page request fails",
+            url="https://cyberleninka.ru/article/n/fails",
+            abstract="",
+            full_text="",
+            language="ru",
+            year=None,
+            doi="",
+            journal="CL Journal",
+        )
+        enriched = conn.enrich_raw(raw)
+        # A failed fallback fetch must degrade to the raw (empty) abstract,
+        # not abort enrichment.
+        assert enriched.abstract == ""
+
+
 class TestHALJournal:
     """HALConnector should extract journal from journalTitle_s."""
 

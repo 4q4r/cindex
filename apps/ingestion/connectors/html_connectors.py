@@ -36,6 +36,104 @@ from .base import (
 
 _HTTP_BAD_REQUEST = 400
 _MIN_TITLE_LENGTH = 14
+# CyberLeninka article-body container: holds the article text with a
+# recommended/related article preview prepended and the bibliography
+# interleaved, so the abstract must be located relative to the article's
+# own title paragraph, not the first paragraph.
+_CYBERLENINKA_ABSTRACT_MAX = 1500
+_CYBERLENINKA_CITATION_RE = re.compile(
+    r"\b(?:Том|Т\.|вып\.?|issn|udk|удк|doi|10\.\d{4,})\b",  # noqa: RUF001
+    re.IGNORECASE,
+)
+_CYBERLENINKA_CODE_RE = re.compile(
+    r"^\s*(?:from\s+\w|import\s+\w|>>>|#|def\s+\w|class\s+\w|\.{3})",
+    re.IGNORECASE,
+)
+_CYBERLENINKA_REF_RE = re.compile(r"^\s*\d+[\.\)]\s")
+_CYBERLENINKA_AFFILIATION_RE = re.compile(
+    r"(?:университет|институт|росси[яй]|научный\s+руководитель|кафедра|"
+    r"студент|аспирант|доцент|профессор|лаборатор)",
+    re.IGNORECASE,
+)
+_CYBERLENINKA_STOP_HEADERS = frozenset(
+    {"литература", "список литературы", "references", "библиография"},
+)
+_CYBERLENINKA_SKIP_HEADERS = frozenset({"ключевые слова", "keywords"})
+_CYBERLENINKA_AFFILIATION_MAX = 200
+_CYBERLENINKA_TITLE_FUZZ = 80
+_CYBERLENINKA_TITLE_TOKEN_MIN = 0.6
+
+
+def _cyberleninka_normalize(text: str) -> str:
+    """Lowercase and collapse non-alphanumeric runs to single spaces.
+
+    Used to fuzzy-match the article's title paragraph inside the body block
+    regardless of punctuation or case differences.
+    """
+    collapsed = re.sub(r"[^a-zа-яё0-9]+", " ", text.lower())  # noqa: RUF001
+    return re.sub(r"\s+", " ", collapsed).strip()
+
+
+def _find_cyberleninka_title(paragraphs: list[str], norm_title: str) -> int:
+    """Return the index of the paragraph matching the article title, or -1.
+
+    The landing page sometimes renders the title with OCR variants (e.g. ``й``
+    flattened to ``и``), so beyond an exact prefix/substring match we also
+    accept a short paragraph whose token overlap with the title clears
+    ``_CYBERLENINKA_TITLE_TOKEN_MIN``.
+    """
+    title_tokens = frozenset(norm_title.split())
+    for idx, para in enumerate(paragraphs):
+        norm_para = _cyberleninka_normalize(para)
+        if not norm_para:
+            continue
+        if norm_para.startswith(norm_title):
+            return idx
+        if len(norm_para) > len(norm_title) + _CYBERLENINKA_TITLE_FUZZ:
+            continue
+        if norm_title in norm_para:
+            return idx
+        if title_tokens and _title_token_overlap(norm_para, title_tokens):
+            return idx
+    return -1
+
+
+def _title_token_overlap(norm_para: str, title_tokens: frozenset[str]) -> bool:
+    """Return True if the paragraph shares enough title tokens."""
+    overlap = len(title_tokens & frozenset(norm_para.split()))
+    return overlap / len(title_tokens) >= _CYBERLENINKA_TITLE_TOKEN_MIN
+
+
+def _classify_cyberleninka_paragraph(text: str, *, started: bool) -> str:
+    """Classify a body paragraph relative to the abstract run.
+
+    Returns ``"stop"`` when the paragraph ends the abstract (a journal
+    citation, code snippet, numbered reference, or bibliography header),
+    ``"skip"`` when it should be ignored without ending the run (blank line,
+    keyword list, or a leading author/affiliation line), and ``"keep"`` when
+    it is abstract prose to collect.
+    """
+    if not text:
+        return "skip"
+    lowered = text.lower()
+    if any(lowered.startswith(header) for header in _CYBERLENINKA_STOP_HEADERS):
+        return "stop"
+    if any(lowered.startswith(header) for header in _CYBERLENINKA_SKIP_HEADERS):
+        return "skip"
+    if (
+        _CYBERLENINKA_CODE_RE.match(text)
+        or _CYBERLENINKA_REF_RE.match(text)
+        or _CYBERLENINKA_CITATION_RE.search(text)
+    ):
+        return "stop"
+    if (
+        not started
+        and _CYBERLENINKA_AFFILIATION_RE.search(text)
+        and len(text) < _CYBERLENINKA_AFFILIATION_MAX
+    ):
+        return "skip"
+    return "keep"
+
 
 logger = structlog.get_logger(__name__)
 
@@ -498,6 +596,79 @@ class CyberLeninkaConnector(BaseConnector):
         if json_ld_items:
             return json_ld_items
         return super()._extract_from_html(query, soup, limit)
+
+    def enrich_raw(self, raw: RawArticle) -> RawArticle:
+        """Enrich a CyberLeninka raw article, backfilling an empty abstract.
+
+        The search API returns an ``annotation`` for most articles, but a
+        minority come back with an empty one, and the article landing page
+        carries no ``description``/``citation_abstract`` meta tag, so the
+        inherited ``enrich_raw`` leaves ``abstract`` empty. The page does
+        render the article body inside ``div.ocr[itemprop="articleBody"]``,
+        but that block is prepended with a recommended/related article preview
+        and interleaved with the bibliography, so the abstract is the run of
+        paragraphs that follows the article's *own* title paragraph (matched
+        against ``raw.title``) and precedes the journal citation / code /
+        reference block. Only when the API + meta abstracts are both empty
+        is this fallback extraction run; it never overwrites a real abstract.
+        """
+        enriched = super().enrich_raw(raw)
+        if enriched.abstract.strip():
+            return enriched
+        if not raw.url.startswith("http") or not raw.title.strip():
+            return enriched
+        try:
+            html = self._request_text(
+                raw.url,
+                ocr_language=self._ocr_language(raw.language),
+            )
+            soup = self._sanitize_html_soup(BeautifulSoup(html, "lxml"))
+        except (ValueError, RuntimeError, ConnectionError, TimeoutError):
+            logger.warning(
+                "cyberleninka: abstract-fallback request failed for %s",
+                raw.url,
+                exc_info=True,
+            )
+            return enriched
+        abstract = self._extract_cyberleninka_abstract(soup, raw.title)
+        if not abstract:
+            return enriched
+        return replace(enriched, abstract=abstract[:8000])
+
+    @staticmethod
+    def _extract_cyberleninka_abstract(soup: BeautifulSoup, title: str) -> str:
+        """Locate the abstract paragraphs inside the article-body block.
+
+        The ``div.ocr`` block leads with a related-article preview, so the
+        article's own paragraphs are found by matching the title against each
+        paragraph, then collecting the prose that follows (after the
+        author/affiliation line) until a journal citation, code snippet,
+        numbered reference, or section header ends the abstract run.
+        """
+        ocr = soup.select_one('div.ocr[itemprop="articleBody"]')
+        if ocr is None:
+            return ""
+        paragraphs = [p.get_text(" ", strip=True) for p in ocr.find_all("p")]
+        norm_title = _cyberleninka_normalize(title)
+        if not norm_title:
+            return ""
+        title_idx = _find_cyberleninka_title(paragraphs, norm_title)
+        if title_idx < 0:
+            return ""
+        collected: list[str] = []
+        total = 0
+        for para in paragraphs[title_idx + 1 :]:
+            text = para.strip()
+            action = _classify_cyberleninka_paragraph(text, started=bool(collected))
+            if action == "stop":
+                break
+            if action == "skip":
+                continue
+            collected.append(text)
+            total += len(text)
+            if total >= _CYBERLENINKA_ABSTRACT_MAX:
+                break
+        return normalize_scholarly_text(" ".join(collected), max_length=2000)
 
 
 class MathNetConnector(BaseConnector):
