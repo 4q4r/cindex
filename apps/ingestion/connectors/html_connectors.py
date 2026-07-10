@@ -189,6 +189,15 @@ def _title_token_overlap(norm_para: str, title_tokens: frozenset[str]) -> bool:
 
 
 _CYBERLENINKA_BIBLIO_TAIL_CHARS = frozenset("0123456789-/")
+# A bare issue sign may open the line or follow a citation separator -- a
+# sentence period, a comma/semicolon (``Series 5, № 4``), or an em/en dash --
+# but not a Cyrillic word glued with no separator (``в таблице № 3``), which
+# is prose.
+_CYBERLENINKA_ISSUE_SEP_CHARS = frozenset(".,;") | frozenset("\u2014\u2013")
+# Short Russian prose abbreviations that may end in a period right before a
+# bare issue sign (table, figure, see, page) are references, not citation
+# separators, so a paragraph ending in one is kept rather than truncated.
+_CYBERLENINKA_PROSE_ABBREV_PREFIXES = frozenset({"табл", "рис", "см", "стр"})
 
 
 def _cyberleninka_issue_is_terminal(text: str) -> bool:
@@ -204,28 +213,36 @@ def _cyberleninka_issue_is_terminal(text: str) -> bool:
        № 3``) followed later in the same paragraph by a trailing citation
        (``Вестник. № 12. 2023.``) would otherwise latch onto the inline sign
        and let the citation leak.
-    2. The sign must open the line or follow a period. A citation breaks as
-       ``Journal. № N`` or stands alone as ``№ N``; an inline reference is
-       glued to a preceding word (``в таблице № N``), so the latter is prose
-       and must not end the run.
+    2. The sign must open the line or follow a citation separator (period,
+       comma, semicolon, or dash) -- not a glued word. A short prose
+       abbreviation (``табл. № 3``) is a reference, so it is treated as prose.
     3. After the sign, only a bibliographic tail may follow: digits with
-       ``-``/``/`` separators, an optional Russian page-number marker, and an
-       optional Russian year marker. A sentence continuing past the sign
-       (``... и показал ...``) is prose.
+       ``-``/``/`` separators, an optional Russian page-number marker, an
+       optional Russian year marker, and optional parentheses or a dash
+       around the year. A sentence continuing past the sign is prose.
     """
     matches = list(_CYBERLENINKA_ISSUE_RE.finditer(text))
     if not matches:
         return False
     match = matches[-1]
     before = text[: match.start()].rstrip()
-    if before and not before.endswith("."):
-        return False
-    tail = re.sub(r"^[.,;:)\s]+|[.,;:)\s]+$", "", text[match.end() :])
+    if before:
+        last_token = before.rsplit(maxsplit=1)[-1].rstrip(".,;:-\u2014\u2013").lower()
+        if last_token in _CYBERLENINKA_PROSE_ABBREV_PREFIXES:
+            return False
+        if before[-1] not in _CYBERLENINKA_ISSUE_SEP_CHARS:
+            return False
+    tail = re.sub(
+        r"^[.,;:()\s\u2014\u2013]+|[.,;:()\s\u2014\u2013]+$",
+        "",
+        text[match.end() :],
+    )
     if not tail:
         return True
-    tail = re.sub(r"(?i)^[Сс]\.\s*", "", tail)  # noqa: RUF001
+    tail = re.sub(r"(?i)^(?:[Сс]\.|стр\.?)\s*", "", tail)  # noqa: RUF001
     tail = re.sub(r"(?i)\s*г\.?\s*$", "", tail)  # noqa: RUF001
-    tail = re.sub(r"[\s.,;:]+", "", tail)
+    tail = re.sub(r"[\s.,;:()]+", "", tail)
+    tail = tail.replace("\u2014", "-").replace("\u2013", "-")
     return bool(tail) and set(tail) <= _CYBERLENINKA_BIBLIO_TAIL_CHARS
 
 
@@ -239,13 +256,15 @@ def _classify_cyberleninka_paragraph(text: str, *, started: bool) -> str:
     it is abstract prose to collect. A bare ``№ N`` token only ends the run
     when it is terminal (``_cyberleninka_issue_is_terminal``), so a prose
     sentence that happens to mention ``в таблице № 3`` is kept while an
-    issue-only citation line still stops; the affiliation skip runs BEFORE
-    the terminal-issue stop so a pre-abstract affiliation line that happens
-    to end in a terminal ``№ N`` (e.g. a numbered faculty) is skipped rather
-    than ending the run with an empty abstract. The affiliation skip is
-    suppressed when the line contains a finite-verb stem, so an abstract
-    opener mentioning a university is kept rather than dropped as an
-    affiliation.
+    issue-only citation line still stops. Before any prose is collected, a
+    terminal ``№ N`` is a pre-abstract metadata line (a numbered faculty or
+    a UDC-less journal stamp) and is skipped rather than ending the run with
+    an empty abstract; once prose has started it is the citation that stops
+    the run. The affiliation skip runs BEFORE the terminal-issue stop so a
+    pre-abstract affiliation line that happens to end in a terminal ``№ N``
+    is skipped rather than stopping. The affiliation skip is suppressed when
+    the line contains a finite-verb stem, so an abstract opener mentioning a
+    university is kept rather than dropped as an affiliation.
     """
     if not text:
         return "skip"
@@ -275,7 +294,12 @@ def _classify_cyberleninka_paragraph(text: str, *, started: bool) -> str:
         )
     ):
         return "skip"
-    return "stop" if _cyberleninka_issue_is_terminal(text) else "keep"
+    # A terminal issue sign before any prose is a pre-abstract metadata line
+    # (a numbered faculty, a UDC-less journal stamp) rather than the citation
+    # that ends the abstract, so the run continues instead of ending with an
+    # empty abstract; once prose has started it stops.
+    terminal = _cyberleninka_issue_is_terminal(text)
+    return ("stop" if started else "skip") if terminal else "keep"
 
 
 logger = structlog.get_logger(__name__)

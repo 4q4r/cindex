@@ -1297,6 +1297,238 @@ class TestCyberLeninkaAbstractFallback:
         assert "2023" not in enriched.abstract
         assert "№ 12" not in enriched.abstract
 
+    _ARTICLE_HTML_COMMA_BEFORE_ISSUE = (
+        "<html><body>"
+        '<div class="ocr" itemprop="articleBody">'
+        "<p>Методы оптимизации систем</p>"
+        "<p>В работе исследованы методы оптимизации.</p>"  # noqa: RUF001
+        # A comma before the issue sign (``Серия 5, № 4``) is a citation
+        # separator, so the sign is terminal and the citation stops the run;
+        # the year in the tail must not leak into the abstract.
+        "<p>Вестник. Серия 5, № 4. 2023.</p>"
+        "</div></body></html>"
+    )
+
+    _ARTICLE_HTML_PAREN_YEAR_CITATION = (
+        "<html><body>"
+        '<div class="ocr" itemprop="articleBody">'
+        "<p>Моделирование процессов</p>"
+        "<p>В статье построены модели процессов.</p>"  # noqa: RUF001
+        # A parenthesized year after the issue sign is a bibliographic tail
+        # (parentheses are stripped), so the citation stops and does not leak.
+        "<p>Вестник. № 4 (2023).</p>"
+        "</div></body></html>"
+    )
+
+    _ARTICLE_HTML_ABBREV_ISSUE_PROSE = (
+        "<html><body>"
+        '<div class="ocr" itemprop="articleBody">'
+        "<p>Анализ экспериментальных данных</p>"
+        "<p>В работе исследованы данные и сведены в таблицу.</p>"  # noqa: RUF001
+        # A short prose abbreviation (``табл.``) ending in a period right before
+        # the issue sign is a reference, not a citation separator, so the sign
+        # is NOT terminal and the sentence is kept as abstract prose.
+        "<p>Данные представлены в табл. № 3.</p>"
+        "</div></body></html>"
+    )
+
+    _ARTICLE_HTML_EMDASH_YEAR_CITATION = (
+        "<html><body>"
+        '<div class="ocr" itemprop="articleBody">'
+        "<p>Новые композиционные материалы</p>"
+        "<p>В работе изучены новые материалы.</p>"  # noqa: RUF001
+        # An em dash before the trailing year is a citation separator, and the
+        # year after it is a bibliographic tail, so the citation stops.
+        "<p>Вестник. № 12 — 2023.</p>"
+        "</div></body></html>"
+    )
+
+    _ARTICLE_HTML_STR_MARKER_CITATION = (
+        "<html><body>"
+        '<div class="ocr" itemprop="articleBody">'
+        "<p>Численные методы анализа</p>"
+        "<p>В работе описаны численные методы.</p>"  # noqa: RUF001
+        # A lowercase Russian page marker (``стр.``) before the page range is
+        # stripped, leaving "15-30" as a bibliographic tail, so the citation
+        # stops and the range does not leak.
+        "<p>Журнал вычислительной математики. № 12. стр. 15-30.</p>"
+        "</div></body></html>"
+    )
+
+    _ARTICLE_HTML_PREABSTRACT_TERMINAL_ISSUE = (
+        "<html><body>"
+        '<div class="ocr" itemprop="articleBody">'
+        "<p>Исследование сложных систем</p>"
+        # A bare terminal issue sign as the first body paragraph (before any
+        # prose) is a pre-abstract metadata line, not the citation that ends
+        # the abstract: it is skipped so the run reaches the following prose.
+        "<p>№ 12. 2023.</p>"
+        "<p>В работе исследованы сложные системы.</p>"  # noqa: RUF001
+        "</div></body></html>"
+    )
+
+    def test_citation_comma_before_issue_stops(self, monkeypatch) -> None:
+        from apps.ingestion.connectors.base import RawArticle
+
+        conn = CyberLeninkaConnector()
+        monkeypatch.setattr(
+            conn,
+            "_request_text",
+            lambda _url, **_kwargs: self._ARTICLE_HTML_COMMA_BEFORE_ISSUE,
+        )
+        raw = RawArticle(
+            source_key="cyberleninka",
+            title="Методы оптимизации систем",
+            url="https://cyberleninka.ru/article/n/comma-before-issue",
+            abstract="",
+            full_text="",
+            language="ru",
+            year=None,
+            doi="",
+            journal="CL Journal",
+        )
+        enriched = conn.enrich_raw(raw)
+        # The comma before ``№ 4`` is a citation separator, so the citation is
+        # terminal and stops; the year and series must not leak.
+        assert "оптимизации" in enriched.abstract
+        assert "Серия" not in enriched.abstract
+        assert "2023" not in enriched.abstract
+
+    def test_citation_paren_year_stops(self, monkeypatch) -> None:
+        from apps.ingestion.connectors.base import RawArticle
+
+        conn = CyberLeninkaConnector()
+        monkeypatch.setattr(
+            conn,
+            "_request_text",
+            lambda _url, **_kwargs: self._ARTICLE_HTML_PAREN_YEAR_CITATION,
+        )
+        raw = RawArticle(
+            source_key="cyberleninka",
+            title="Моделирование процессов",
+            url="https://cyberleninka.ru/article/n/paren-year",
+            abstract="",
+            full_text="",
+            language="ru",
+            year=None,
+            doi="",
+            journal="CL Journal",
+        )
+        enriched = conn.enrich_raw(raw)
+        # The parenthesized year is a bibliographic tail, so the citation
+        # stops and the year does not leak.
+        assert "построены" in enriched.abstract
+        assert "2023" not in enriched.abstract
+        assert "(2023)" not in enriched.abstract
+
+    def test_abbrev_issue_prose_kept(self, monkeypatch) -> None:
+        from apps.ingestion.connectors.base import RawArticle
+
+        conn = CyberLeninkaConnector()
+        monkeypatch.setattr(
+            conn,
+            "_request_text",
+            lambda _url, **_kwargs: self._ARTICLE_HTML_ABBREV_ISSUE_PROSE,
+        )
+        raw = RawArticle(
+            source_key="cyberleninka",
+            title="Анализ экспериментальных данных",
+            url="https://cyberleninka.ru/article/n/abbrev-issue-prose",
+            abstract="",
+            full_text="",
+            language="ru",
+            year=None,
+            doi="",
+            journal="CL Journal",
+        )
+        enriched = conn.enrich_raw(raw)
+        # The ``табл.`` abbreviation before ``№ 3`` is a reference, not a
+        # citation separator, so the sentence is kept as abstract prose and
+        # not truncated at the issue sign.
+        assert "представлены" in enriched.abstract
+        assert "табл" in enriched.abstract
+
+    def test_citation_emdash_year_stops(self, monkeypatch) -> None:
+        from apps.ingestion.connectors.base import RawArticle
+
+        conn = CyberLeninkaConnector()
+        monkeypatch.setattr(
+            conn,
+            "_request_text",
+            lambda _url, **_kwargs: self._ARTICLE_HTML_EMDASH_YEAR_CITATION,
+        )
+        raw = RawArticle(
+            source_key="cyberleninka",
+            title="Новые композиционные материалы",
+            url="https://cyberleninka.ru/article/n/emdash-year",
+            abstract="",
+            full_text="",
+            language="ru",
+            year=None,
+            doi="",
+            journal="CL Journal",
+        )
+        enriched = conn.enrich_raw(raw)
+        # The em dash before the year is a citation separator and the year is
+        # a bibliographic tail, so the citation stops and the year does not leak.
+        assert "изучены" in enriched.abstract
+        assert "2023" not in enriched.abstract
+
+    def test_citation_str_marker_stops(self, monkeypatch) -> None:
+        from apps.ingestion.connectors.base import RawArticle
+
+        conn = CyberLeninkaConnector()
+        monkeypatch.setattr(
+            conn,
+            "_request_text",
+            lambda _url, **_kwargs: self._ARTICLE_HTML_STR_MARKER_CITATION,
+        )
+        raw = RawArticle(
+            source_key="cyberleninka",
+            title="Численные методы анализа",
+            url="https://cyberleninka.ru/article/n/str-marker",
+            abstract="",
+            full_text="",
+            language="ru",
+            year=None,
+            doi="",
+            journal="CL Journal",
+        )
+        enriched = conn.enrich_raw(raw)
+        # The lowercase ``стр.`` marker is stripped, leaving "15-30" as a
+        # bibliographic tail, so the citation stops and the range does not leak.
+        assert "описаны" in enriched.abstract
+        assert "стр" not in enriched.abstract
+        assert "15-30" not in enriched.abstract
+
+    def test_preabstract_terminal_issue_is_skipped(self, monkeypatch) -> None:
+        from apps.ingestion.connectors.base import RawArticle
+
+        conn = CyberLeninkaConnector()
+        monkeypatch.setattr(
+            conn,
+            "_request_text",
+            lambda _url, **_kwargs: self._ARTICLE_HTML_PREABSTRACT_TERMINAL_ISSUE,
+        )
+        raw = RawArticle(
+            source_key="cyberleninka",
+            title="Исследование сложных систем",
+            url="https://cyberleninka.ru/article/n/preabstract-terminal-issue",
+            abstract="",
+            full_text="",
+            language="ru",
+            year=None,
+            doi="",
+            journal="CL Journal",
+        )
+        enriched = conn.enrich_raw(raw)
+        # The bare terminal ``№ 12`` before any prose is a pre-abstract
+        # metadata line and is skipped, so the run reaches the following prose
+        # instead of ending with an empty abstract.
+        assert enriched.abstract
+        assert "исследованы" in enriched.abstract
+        assert "2023" not in enriched.abstract
+
 
 class TestHALJournal:
     """HALConnector should extract journal from journalTitle_s."""
