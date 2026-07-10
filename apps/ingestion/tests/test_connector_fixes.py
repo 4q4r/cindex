@@ -1683,6 +1683,51 @@ class TestHALJournal:
         assert len(items) == 1
         assert items[0].journal == "HAL"
 
+    def test_language_from_field(self) -> None:
+        """language_s (ISO code) must override the "fr" profile default.
+
+        HAL is a French repository but indexes many English-language works;
+        the per-record ``language_s`` Solr field carries the true language.
+        """
+        payload = {
+            "response": {
+                "docs": [
+                    {
+                        "halId_s": "hal-en",
+                        "title_s": ["English HAL Article"],
+                        "abstract_s": ["Abstract"],
+                        "doiId_s": "",
+                        "publicationDateY_i": 2024,
+                        "uri_s": "https://hal.archives-ouvertes.fr/hal-en",
+                        "authFullName_s": ["Alice Smith"],
+                        "language_s": ["en"],
+                    },
+                    {
+                        "halId_s": "hal-fr",
+                        "title_s": ["Article HAL en français"],
+                        "abstract_s": ["Résumé"],
+                        "doiId_s": "",
+                        "publicationDateY_i": 2024,
+                        "uri_s": "https://hal.archives-ouvertes.fr/hal-fr",
+                        "authFullName_s": ["Bob Martin"],
+                        "language_s": ["fr"],
+                    },
+                    {
+                        "halId_s": "hal-none",
+                        "title_s": ["Missing Language"],
+                        "abstract_s": ["Abstract"],
+                        "doiId_s": "",
+                        "publicationDateY_i": 2024,
+                        "uri_s": "https://hal.archives-ouvertes.fr/hal-none",
+                        "authFullName_s": ["Carol Lee"],
+                    },
+                ],
+            },
+        }
+        conn = HALConnector()
+        items = conn._extract_from_payload("test", payload, 5)
+        assert [it.language for it in items] == ["en", "fr", "fr"]
+
 
 class TestPubMedEfetch:
     """PubMedConnector._parse_efetch_abstracts should parse XML."""
