@@ -470,6 +470,20 @@ class TestCyberLeninkaAbstractFallback:
         "</div></body></html>"
     )
 
+    _ARTICLE_HTML_PREVIEW_VYPUSK = (
+        "<html><body>"
+        '<div class="ocr" itemprop="articleBody">'
+        # An "in this issue" preview whose normalized text embeds the title as
+        # a substring — without the "в этом выпуске" prefix guard the substring
+        # branch of _find_cyberleninka_title would match the preview as the
+        # title, so the real title would be collected as the abstract opener.
+        "<p>В этом выпуске: методы оптимизации в логистике предприятия</p>"  # noqa: RUF001
+        "<p>Методы оптимизации в логистике</p>"
+        "<p>В работе предложен метод оптимизации маршрутов доставки.</p>"  # noqa: RUF001
+        "<p>Том 7. № 2.</p>"
+        "</div></body></html>"
+    )
+
     def test_abstract_extracted_from_body_after_ocr_title(self, monkeypatch) -> None:
         from apps.ingestion.connectors.base import RawArticle
 
@@ -769,6 +783,36 @@ class TestCyberLeninkaAbstractFallback:
         assert "Нейросетевые модели" in enriched.abstract
         assert "в данной работе" in enriched.abstract
         assert "Том 3" not in enriched.abstract
+
+    def test_vypusk_preview_not_matched_as_title(self, monkeypatch) -> None:
+        from apps.ingestion.connectors.base import RawArticle
+
+        conn = CyberLeninkaConnector()
+        monkeypatch.setattr(
+            conn,
+            "_request_text",
+            lambda _url, **_kwargs: self._ARTICLE_HTML_PREVIEW_VYPUSK,
+        )
+        raw = RawArticle(
+            source_key="cyberleninka",
+            title="Методы оптимизации в логистике",
+            url="https://cyberleninka.ru/article/n/vypusk-preview",
+            abstract="",
+            full_text="",
+            language="ru",
+            year=None,
+            doi="",
+            journal="CL Journal",
+        )
+        enriched = conn.enrich_raw(raw)
+        # The "в этом выпуске" preview embeds the title as a substring, so
+        # without the prefix guard the substring branch would match the
+        # preview as the title; the preview content and the real title must
+        # not leak into the abstract.
+        assert "маршрутов доставки" in enriched.abstract
+        assert "В этом выпуске" not in enriched.abstract  # noqa: RUF001
+        assert "предприятия" not in enriched.abstract
+        assert "Том 7" not in enriched.abstract
 
 
 class TestHALJournal:

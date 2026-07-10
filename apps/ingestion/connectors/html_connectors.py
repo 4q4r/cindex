@@ -58,7 +58,7 @@ _CYBERLENINKA_CODE_RE = re.compile(
 # A numbered reference line starts either with ``1.``/``1)`` (followed by a
 # space, so a decimal sentence such as ``1.5 method`` is not matched) or with
 # a square-bracketed index ``[1]`` (with optional trailing dot/space).
-_CYBERLENINKA_REF_RE = re.compile(r"^\s*(?:\d+[\.\)]\s|\[\d+\][\s\.]*)")
+_CYBERLENINKA_REF_RE = re.compile(r"^\s*(?:\d+[\.\)]\s|\[\d+\][\s\.]+)")
 _CYBERLENINKA_AFFILIATION_RE = re.compile(
     r"(?:университет|институт|росси[яй]|научный\s+руководитель|кафедра|"
     r"студент|аспирант|доцент|профессор|лаборатор)",
@@ -88,10 +88,19 @@ _CYBERLENINKA_PREVIEW_PREFIXES = frozenset(
         "читайте также",
         "см также",
         "также см",
+        "также читайте",
+        "также смотрите",
         "также в этом номере",
         "читайте в номере",
         "смотрите в номере",
         "см в номере",
+        "также в этом выпуске",
+        "читайте в выпуске",
+        "смотрите в выпуске",
+        "см в выпуске",
+        "читайте также в выпуске",
+        "в этом номере",
+        "в этом выпуске",
     },
 )
 _CYBERLENINKA_AFFILIATION_MAX = 200
