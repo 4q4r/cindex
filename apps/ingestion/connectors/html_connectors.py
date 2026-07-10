@@ -54,7 +54,7 @@ _CYBERLENINKA_CITATION_RE = re.compile(
 # prose too ("в таблице № 3", "на рис. № 1"), so it only ends the abstract run
 # when the whole paragraph is short enough to be a citation marker rather than
 # a sentence (see ``_classify_cyberleninka_paragraph``).
-_CYBERLENINKA_ISSUE_RE = re.compile(r"№\s*\d", re.IGNORECASE)
+_CYBERLENINKA_ISSUE_RE = re.compile(r"№\s*\d+", re.IGNORECASE)
 _CYBERLENINKA_CODE_RE = re.compile(
     r"^\s*(?:from\s+\w|import\s+\w|>>>|#|def\s+\w|class\s+\w|\.{3})",
     re.IGNORECASE,
@@ -76,15 +76,19 @@ _CYBERLENINKA_AUTHOR_RE = re.compile(r"\b[А-ЯЁA-Z]\.\s*[А-ЯЁA-Z]\.")  # no
 # abstract opener mentioning a university and continuing into prose)
 # rather than a standalone affiliation/author noun phrase. Matched as a
 # word prefix so gender/number endings of each stem all hit; a noun sharing
-# a stem also matches, which is harmless -- the guard only ever forces
-# ``keep`` of prose, never skipping a real affiliation line (which has no
-# such verb). Both ``yo`` and ``e`` forms are listed so OCR flattening of
-# the dotted letter does not defeat the guard.
+# a stem also matches. The guard biases toward keeping prose: a real
+# affiliation line that happens to contain one of these participles (e.g.
+# an institution "основан в 1755") is then kept too, but such phrasings are
+# rare while openers carrying these verbs are common, so the trade-off
+# favours keeping. Both ``yo`` and ``e`` forms are listed so OCR flattening
+# of the dotted letter does not defeat the guard.
 _CYBERLENINKA_VERB_STEMS_RE = re.compile(
     r"\b(?:предложен|разработан|рассмотрен|изучен|исследован|показан|"
     r"применён|применен|описан|представлен|обоснован|проанализирован|"
     r"получен|найден|определён|определен|установлен|доказан|вычислен|"
     r"построен|основан|направлен|реализован|апробирован|посвящён|посвящен|"
+    r"проведён|проведен|сделан|выполнен|выявлен|обнаружен|сформулирован|"
+    r"оценён|оценен|выбран|синтезирован|измерён|измерен|"
     r"рассматривается|исследуется|применяется|описывается|строится)\w*",
     re.IGNORECASE,
 )
@@ -184,6 +188,26 @@ def _title_token_overlap(norm_para: str, title_tokens: frozenset[str]) -> bool:
     return overlap / len(title_tokens) >= _CYBERLENINKA_TITLE_TOKEN_MIN
 
 
+def _cyberleninka_issue_is_terminal(text: str) -> bool:
+    """Return True when an issue-number token sits at the end of the citation.
+
+    A journal citation that numbers by issue only -- without a volume,
+    issue-word, ISSN, UDC, or DOI marker -- is not caught by
+    ``_CYBERLENINKA_CITATION_RE``, so the bare issue sign is the only stop
+    signal. Treating every issue sign as a stop would truncate prose that
+    mentions an inline reference (``в таблице № 3 и показал ...``); a line-
+    length cap (used earlier) still leaked medium citation lines longer than
+    the cap. The terminal-position test instead stops only when nothing but
+    punctuation (and an optional trailing year/pages number) follows the
+    issue sign -- a citation ends there, prose continues past it.
+    """
+    match = _CYBERLENINKA_ISSUE_RE.search(text)
+    if match is None:
+        return False
+    tail = re.sub(r"^[.,;:)\s]+|[.,;:)\s]+$", "", text[match.end() :])
+    return tail == "" or tail.replace("/", "").isdigit()
+
+
 def _classify_cyberleninka_paragraph(text: str, *, started: bool) -> str:
     """Classify a body paragraph relative to the abstract run.
 
@@ -191,12 +215,12 @@ def _classify_cyberleninka_paragraph(text: str, *, started: bool) -> str:
     citation, code snippet, numbered reference, or bibliography header),
     ``"skip"`` when it should be ignored without ending the run (blank line,
     keyword list, or a leading author/affiliation line), and ``"keep"`` when
-    it is abstract prose to collect. The citation/issue sign guard only treats
-    a ``№ N`` token as a stop when it sits in a short header-like line, so a
-    prose sentence that happens to mention ``в таблице № 3`` is kept; the
-    affiliation skip is suppressed when the line contains a finite-verb stem,
-    so an abstract opener mentioning a university is kept rather than dropped
-    as an affiliation.
+    it is abstract prose to collect. A bare ``№ N`` token only ends the run
+    when it is terminal (``_cyberleninka_issue_is_terminal``), so a prose
+    sentence that happens to mention ``в таблице № 3`` is kept while an
+    issue-only citation line still stops; the affiliation skip is suppressed
+    when the line contains a finite-verb stem, so an abstract opener
+    mentioning a university is kept rather than dropped as an affiliation.
     """
     if not text:
         return "skip"
@@ -214,10 +238,7 @@ def _classify_cyberleninka_paragraph(text: str, *, started: bool) -> str:
         _CYBERLENINKA_CODE_RE.match(text)
         or _CYBERLENINKA_REF_RE.match(text)
         or _CYBERLENINKA_CITATION_RE.search(text)
-        or (
-            len(text) <= _CYBERLENINKA_HEADER_MAX
-            and _CYBERLENINKA_ISSUE_RE.search(text)
-        )
+        or _cyberleninka_issue_is_terminal(text)
     ):
         return "stop"
     if (

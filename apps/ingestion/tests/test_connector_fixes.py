@@ -943,6 +943,125 @@ class TestCyberLeninkaAbstractFallback:
         assert "смежные области" not in enriched.abstract
         assert "Том 5" not in enriched.abstract
 
+    _ARTICLE_HTML_PROVEDEN_OPENER = (
+        "<html><body>"
+        '<div class="ocr" itemprop="articleBody">'
+        # An opener with a stem ("проведён") added in round-5 -- before the
+        # addition it was wrongly skipped as an affiliation line.
+        "<p>Анализ геномных данных</p>"
+        "<p>В Новосибирском государственном университете проведён анализ "  # noqa: RUF001
+        "геномных данных различных популяций.</p>"
+        "<p>Вестник геномики. 2024. Том 3. № 1.</p>"
+        "</div></body></html>"
+    )
+
+    _ARTICLE_HTML_ISSUE_ONLY_CITATION = (
+        "<html><body>"
+        '<div class="ocr" itemprop="articleBody">'
+        "<p>Новые методы в биоинформатике</p>"
+        "<p>В работе проведён анализ последовательностей ДНК.</p>"  # noqa: RUF001
+        # An issue-only citation (no volume/ISSN/UDC/DOI) longer than the old
+        # 40-char cap -- must still stop via the terminal issue-sign guard.
+        "<p>Известия высших учебных заведений. Поволжский регион. № 3.</p>"
+        "</div></body></html>"
+    )
+
+    _ARTICLE_HTML_ISSUE_THEN_YEAR = (
+        "<html><body>"
+        '<div class="ocr" itemprop="articleBody">'
+        "<p>Квантовые вычисления</p>"
+        "<p>В работе исследованы алгоритмы квантовой оптимизации.</p>"  # noqa: RUF001
+        # A citation ending in "№ N. <year>" -- the trailing year after the
+        # issue sign must still count as terminal.
+        "<p>Успехи физических наук. № 12. 2023.</p>"
+        "</div></body></html>"
+    )
+
+    def test_proven_opener_with_university_is_kept(self, monkeypatch) -> None:
+        from apps.ingestion.connectors.base import RawArticle
+
+        conn = CyberLeninkaConnector()
+        monkeypatch.setattr(
+            conn,
+            "_request_text",
+            lambda _url, **_kwargs: self._ARTICLE_HTML_PROVEDEN_OPENER,
+        )
+        raw = RawArticle(
+            source_key="cyberleninka",
+            title="Анализ геномных данных",
+            url="https://cyberleninka.ru/article/n/proven-opener",
+            abstract="",
+            full_text="",
+            language="ru",
+            year=None,
+            doi="",
+            journal="CL Journal",
+        )
+        enriched = conn.enrich_raw(raw)
+        # The "проведён" stem (added in round-5) keeps the university opener
+        # as prose instead of skipping it as an affiliation line.
+        assert "проведён анализ" in enriched.abstract
+        assert "Новосибирском" in enriched.abstract
+        assert "геномных данных различных" in enriched.abstract
+        assert "Том 3" not in enriched.abstract
+
+    def test_issue_only_long_citation_still_stops(self, monkeypatch) -> None:
+        from apps.ingestion.connectors.base import RawArticle
+
+        conn = CyberLeninkaConnector()
+        monkeypatch.setattr(
+            conn,
+            "_request_text",
+            lambda _url, **_kwargs: self._ARTICLE_HTML_ISSUE_ONLY_CITATION,
+        )
+        raw = RawArticle(
+            source_key="cyberleninka",
+            title="Новые методы в биоинформатике",
+            url="https://cyberleninka.ru/article/n/issue-only-citation",
+            abstract="",
+            full_text="",
+            language="ru",
+            year=None,
+            doi="",
+            journal="CL Journal",
+        )
+        enriched = conn.enrich_raw(raw)
+        # The prose run is collected; the issue-only citation line (longer
+        # than the old 40-char cap, with no volume marker) still stops via
+        # the terminal issue-sign guard and does not leak.
+        assert "проведён анализ" in enriched.abstract
+        assert "последовательностей" in enriched.abstract
+        assert "Известия" not in enriched.abstract
+        assert "Поволжский регион" not in enriched.abstract
+
+    def test_issue_sign_followed_by_year_stops(self, monkeypatch) -> None:
+        from apps.ingestion.connectors.base import RawArticle
+
+        conn = CyberLeninkaConnector()
+        monkeypatch.setattr(
+            conn,
+            "_request_text",
+            lambda _url, **_kwargs: self._ARTICLE_HTML_ISSUE_THEN_YEAR,
+        )
+        raw = RawArticle(
+            source_key="cyberleninka",
+            title="Квантовые вычисления",
+            url="https://cyberleninka.ru/article/n/issue-then-year",
+            abstract="",
+            full_text="",
+            language="ru",
+            year=None,
+            doi="",
+            journal="CL Journal",
+        )
+        enriched = conn.enrich_raw(raw)
+        # A citation whose issue sign is followed by a trailing year still
+        # counts as terminal and stops the run.
+        assert "исследованы алгоритмы" in enriched.abstract
+        assert "квантовой оптимизации" in enriched.abstract
+        assert "Успехи физических" not in enriched.abstract
+        assert "Том" not in enriched.abstract
+
 
 class TestHALJournal:
     """HALConnector should extract journal from journalTitle_s."""
