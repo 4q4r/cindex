@@ -213,6 +213,70 @@ class TestEuropePMCJournal:
         assert items[0].journal == "The Lancet"
 
 
+class TestEuropePMCAbstract:
+    """EuropePMCConnector must drop records with a null/empty abstract.
+
+    EuropePMC returns ``abstractText: null`` (a present-but-null key, not a
+    missing key) for editorials, letters and comments. ``rec.get("abstractText",
+    "")`` returns None for that shape, which both injects "None" into full_text
+    and surfaces an empty-abstract record as garbage. Such editorials also
+    broad-match many medical queries (the same Lancet Global Health editorial
+    surfaced for both 'diabetes' and 'cancer' in the live audit).
+    """
+
+    def _rec(self, title: str, abstract: object, doi: str) -> dict:
+        return {
+            "title": title,
+            "abstractText": abstract,
+            "doi": doi,
+            "pubYear": "2024",
+            "fullTextUrlList": {"fullTextUrl": [{"url": "https://example.org/x"}]},
+        }
+
+    def test_null_abstract_is_dropped(self) -> None:
+        payload = {
+            "resultList": {
+                "result": [
+                    self._rec("Editorial", None, "10.1/ed"),
+                    self._rec("Real Article", "A real abstract.", "10.1/a"),
+                ],
+            },
+        }
+        conn = EuropePMCConnector()
+        items = conn._extract_from_payload("test", payload, 5)
+        assert len(items) == 1
+        assert items[0].title == "Real Article"
+        assert items[0].abstract == "A real abstract."
+
+    def test_empty_and_whitespace_abstract_is_dropped(self) -> None:
+        payload = {
+            "resultList": {
+                "result": [
+                    self._rec("Empty", "", "10.1/e"),
+                    self._rec("Whitespace", "   ", "10.1/w"),
+                    self._rec("Kept", "Kept abstract.", "10.1/k"),
+                ],
+            },
+        }
+        conn = EuropePMCConnector()
+        items = conn._extract_from_payload("test", payload, 5)
+        assert [it.title for it in items] == ["Kept"]
+
+    def test_overfetch_keeps_limit_after_filtering(self) -> None:
+        """Filtering null-abstract records must not shrink the result below
+        ``limit`` when the over-fetched page contains enough real abstracts."""
+        results = [
+            self._rec(f"Editorial {i}", None, f"10.1/ed{i}") for i in range(3)
+        ] + [
+            self._rec(f"Article {i}", f"Abstract {i}.", f"10.1/a{i}") for i in range(5)
+        ]
+        payload = {"resultList": {"result": results}}
+        conn = EuropePMCConnector()
+        items = conn._extract_from_payload("test", payload, 4)
+        assert len(items) == 4
+        assert all(it.abstract for it in items)
+
+
 class TestPMCJournal:
     """PMCConnector shares the EuropePMC API and the same journal bug."""
 
