@@ -41,8 +41,14 @@ _MIN_TITLE_LENGTH = 14
 # interleaved, so the abstract must be located relative to the article's
 # own title paragraph, not the first paragraph.
 _CYBERLENINKA_ABSTRACT_MAX = 1500
+# A journal-citation / volume marker requires a following number, so ordinary
+# Russian prose (e.g. "in such cases", "etc.", "i.e.", "since") does not end
+# the abstract run prematurely. The issue sign carries no word boundary, so it
+# is matched outside the ``\b`` group.
 _CYBERLENINKA_CITATION_RE = re.compile(
-    r"\b(?:Том|Т\.|вып\.?|issn|udk|удк|doi|10\.\d{4,})\b",  # noqa: RUF001
+    r"\b(?:Том\s+\d{1,4}|Т\.\s*\d{1,4}|вып\.?\s*\d{1,4}|"  # noqa: RUF001
+    r"issn[\s:]*\d|udk[\s:]*\d|удк[\s:]*\d|"
+    r"doi[\s:]*10\.\d{4,}|10\.\d{4,})|№\s*\d",
     re.IGNORECASE,
 )
 _CYBERLENINKA_CODE_RE = re.compile(
@@ -59,6 +65,12 @@ _CYBERLENINKA_STOP_HEADERS = frozenset(
     {"литература", "список литературы", "references", "библиография"},
 )
 _CYBERLENINKA_SKIP_HEADERS = frozenset({"ключевые слова", "keywords"})
+# Related-article preview prefixes that the body block prepends before the
+# article's own title; normalized (alphanumeric-only, lowercased) so the
+# matching against ``_cyberleninka_normalize`` output is direct.
+_CYBERLENINKA_PREVIEW_PREFIXES = frozenset(
+    {"смотрите также", "читайте также", "см также", "также см"},
+)
 _CYBERLENINKA_AFFILIATION_MAX = 200
 _CYBERLENINKA_TITLE_FUZZ = 80
 _CYBERLENINKA_TITLE_TOKEN_MIN = 0.6
@@ -80,12 +92,19 @@ def _find_cyberleninka_title(paragraphs: list[str], norm_title: str) -> int:
     The landing page sometimes renders the title with OCR variants (e.g. ``й``
     flattened to ``и``), so beyond an exact prefix/substring match we also
     accept a short paragraph whose token overlap with the title clears
-    ``_CYBERLENINKA_TITLE_TOKEN_MIN``.
+    ``_CYBERLENINKA_TITLE_TOKEN_MIN``. A related-article preview prepended to
+    the body block can share topic words with the title, so paragraphs that
+    begin with a preview prefix (``_CYBERLENINKA_PREVIEW_PREFIXES``) are never
+    matched as the title.
     """
     title_tokens = frozenset(norm_title.split())
     for idx, para in enumerate(paragraphs):
         norm_para = _cyberleninka_normalize(para)
         if not norm_para:
+            continue
+        if any(
+            norm_para.startswith(prefix) for prefix in _CYBERLENINKA_PREVIEW_PREFIXES
+        ):
             continue
         if norm_para.startswith(norm_title):
             return idx
@@ -623,7 +642,13 @@ class CyberLeninkaConnector(BaseConnector):
                 ocr_language=self._ocr_language(raw.language),
             )
             soup = self._sanitize_html_soup(BeautifulSoup(html, "lxml"))
-        except (ValueError, RuntimeError, ConnectionError, TimeoutError):
+        except (
+            ValueError,
+            RuntimeError,
+            ConnectionError,
+            TimeoutError,
+            ConnectorFetchError,
+        ):
             logger.warning(
                 "cyberleninka: abstract-fallback request failed for %s",
                 raw.url,

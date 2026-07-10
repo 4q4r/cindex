@@ -400,6 +400,35 @@ class TestCyberLeninkaAbstractFallback:
 
     _ARTICLE_HTML_NO_OCR = "<html><body><p>no article body block here</p></body></html>"
 
+    _ARTICLE_HTML_PROSE = (
+        "<html><body>"
+        '<div class="ocr" itemprop="articleBody">'
+        "<p>Машинное обучение в задачах классификации</p>"
+        # Common Russian prose tokens that must NOT end the abstract run:
+        # "in such cases", "i.e.", "etc.", "in one or another", "since".
+        "<p>В работе рассматриваются методы машинного обучения, "  # noqa: RUF001
+        "в том числе ансамблевые подходы, т.е. композиции моделей, "  # noqa: RUF001
+        "и т.д., применяемые т.к. они устойчивы к переобучению.</p>"
+        "<p>Показано, что в том или ином случае метод сходится.</p>"
+        "<p>Вестник информатики. 2023. Том 13. № 2.</p>"
+        "</div></body></html>"
+    )
+
+    _ARTICLE_HTML_RELATED_PREVIEW = (
+        "<html><body>"
+        '<div class="ocr" itemprop="articleBody">'
+        # A related-article preview sharing ≥60% of the title's tokens — must
+        # be rejected as the title via the preview-prefix guard.
+        "<p>Смотрите также: глубокое машинное обучение в медицинских "
+        "задачах</p>"
+        "<p>Машинное обучение в диагностике заболеваний</p>"
+        "<p>Ключевые слова: машинное обучение, диагностика</p>"
+        "<p>В работе машинное обучение применяется к диагностике "  # noqa: RUF001
+        "заболеваний на ранних стадиях.</p>"
+        "<p>Вестник медицинского журнала. 2022. Том 5. № 1.</p>"
+        "</div></body></html>"
+    )
+
     def test_abstract_extracted_from_body_after_ocr_title(self, monkeypatch) -> None:
         from apps.ingestion.connectors.base import RawArticle
 
@@ -548,6 +577,66 @@ class TestCyberLeninkaAbstractFallback:
         # A failed fallback fetch must degrade to the raw (empty) abstract,
         # not abort enrichment.
         assert enriched.abstract == ""
+
+    def test_common_russian_prose_not_truncated(self, monkeypatch) -> None:
+        from apps.ingestion.connectors.base import RawArticle
+
+        conn = CyberLeninkaConnector()
+        monkeypatch.setattr(
+            conn,
+            "_request_text",
+            lambda _url, **_kwargs: self._ARTICLE_HTML_PROSE,
+        )
+        raw = RawArticle(
+            source_key="cyberleninka",
+            title="Машинное обучение в задачах классификации",
+            url="https://cyberleninka.ru/article/n/prose",
+            abstract="",
+            full_text="",
+            language="ru",
+            year=None,
+            doi="",
+            journal="CL Journal",
+        )
+        enriched = conn.enrich_raw(raw)
+        # Ordinary Russian prose tokens (in-such-cases, i.e., etc.,
+        # in-one-or-another, since) must not truncate the abstract run.
+        assert "в том числе" in enriched.abstract
+        assert "композиции моделей" in enriched.abstract
+        assert "метод сходится" in enriched.abstract
+        # The journal citation line still ends the run.
+        assert "Том 13" not in enriched.abstract
+        assert "Вестник" not in enriched.abstract
+
+    def test_related_preview_not_matched_as_title(self, monkeypatch) -> None:
+        from apps.ingestion.connectors.base import RawArticle
+
+        conn = CyberLeninkaConnector()
+        monkeypatch.setattr(
+            conn,
+            "_request_text",
+            lambda _url, **_kwargs: self._ARTICLE_HTML_RELATED_PREVIEW,
+        )
+        raw = RawArticle(
+            source_key="cyberleninka",
+            title="Машинное обучение в диагностике заболеваний",
+            url="https://cyberleninka.ru/article/n/related-preview",
+            abstract="",
+            full_text="",
+            language="ru",
+            year=None,
+            doi="",
+            journal="CL Journal",
+        )
+        enriched = conn.enrich_raw(raw)
+        # The related-article preview must not be matched as the title, so
+        # its content and the title/keyword lines must not leak into the
+        # abstract.
+        assert "применяется к диагностике" in enriched.abstract
+        assert "Смотрите также" not in enriched.abstract
+        assert "глубокое" not in enriched.abstract
+        assert "Ключевые слова" not in enriched.abstract
+        assert "Том 5" not in enriched.abstract
 
 
 class TestHALJournal:
