@@ -1062,6 +1062,241 @@ class TestCyberLeninkaAbstractFallback:
         assert "Успехи физических" not in enriched.abstract
         assert "Том" not in enriched.abstract
 
+    _ARTICLE_HTML_AFFILIATION_THEN_PROSE = (
+        "<html><body>"
+        '<div class="ocr" itemprop="articleBody">'
+        "<p>Название исследования</p>"
+        # A pre-abstract affiliation line ending in a terminal issue sign: the
+        # affiliation skip runs BEFORE the terminal-issue stop, so the line is
+        # skipped rather than ending the run with an empty abstract.
+        "<p>Кафедра физики № 7.</p>"
+        "<p>В работе исследованы новые материалы.</p>"  # noqa: RUF001
+        "</div></body></html>"
+    )
+
+    _ARTICLE_HTML_PAGE_RANGE_CITATION = (
+        "<html><body>"
+        '<div class="ocr" itemprop="articleBody">'
+        "<p>Анализ численных методов</p>"
+        "<p>В работе проведён анализ численных методов.</p>"  # noqa: RUF001
+        # An issue-only citation whose tail is a page range ("15-30") must
+        # still count as terminal after the page/year markers are stripped.
+        "<p>Журнал прикладной математики. № 12. 15-30.</p>"
+        "</div></body></html>"
+    )
+
+    _ARTICLE_HTML_PAGES_PREFIX_CITATION = (
+        "<html><body>"
+        '<div class="ocr" itemprop="articleBody">'
+        "<p>Изучение полимеров</p>"
+        "<p>В статье изучены свойства полимеров.</p>"  # noqa: RUF001
+        # A Russian page-letter marker before the page range must be stripped
+        # so the remaining "5-15" still counts as a bibliographic tail.
+        "<p>Физика твёрдого тела. № 12. С. 5-15.</p>"  # noqa: RUF001
+        "</div></body></html>"
+    )
+
+    _ARTICLE_HTML_YEAR_SUFFIX_CITATION = (
+        "<html><body>"
+        '<div class="ocr" itemprop="articleBody">'
+        "<p>Наноструктуры материалов</p>"
+        "<p>В работе исследованы наноструктуры.</p>"  # noqa: RUF001
+        # A trailing Russian year-letter marker after the issue sign must be
+        # stripped so the remaining year still counts as a bibliographic tail.
+        "<p>Нанотехнологии в России. № 12. 2023 г.</p>"  # noqa: RUF001
+        "</div></body></html>"
+    )
+
+    _ARTICLE_HTML_PROSE_FINAL_ISSUE = (
+        "<html><body>"
+        '<div class="ocr" itemprop="articleBody">'
+        "<p>Анализ экспериментальных данных</p>"
+        # A prose sentence ending with an inline issue reference ("в таблицу
+        # № 5") glued to a preceding word must NOT be truncated: the sign does
+        # not open the line or follow a period, so it is not terminal.
+        "<p>В работе исследованы данные и помещены в таблицу № 5. Результаты "  # noqa: RUF001
+        "подтвердили гипотезу.</p>"
+        "</div></body></html>"
+    )
+
+    _ARTICLE_HTML_INLINE_THEN_TRAILING_CITATION = (
+        "<html><body>"
+        '<div class="ocr" itemprop="articleBody">'
+        "<p>Анализ новых материалов</p>"
+        "<p>В работе исследованы свойства материалов.</p>"  # noqa: RUF001
+        # An inline "№ 3" glued to "таблице" followed by a trailing citation
+        # "Вестник. № 12. 2023.": the LAST issue sign is considered, so the
+        # trailing citation stops the run instead of latching onto the inline
+        # sign and leaking.
+        "<p>В таблице № 3 показаны итоги. Вестник. № 12. 2023.</p>"  # noqa: RUF001
+        "</div></body></html>"
+    )
+
+    def test_affiliation_ending_in_terminal_issue_is_skipped(self, monkeypatch) -> None:
+        from apps.ingestion.connectors.base import RawArticle
+
+        conn = CyberLeninkaConnector()
+        monkeypatch.setattr(
+            conn,
+            "_request_text",
+            lambda _url, **_kwargs: self._ARTICLE_HTML_AFFILIATION_THEN_PROSE,
+        )
+        raw = RawArticle(
+            source_key="cyberleninka",
+            title="Название исследования",
+            url="https://cyberleninka.ru/article/n/affiliation-issue",
+            abstract="",
+            full_text="",
+            language="ru",
+            year=None,
+            doi="",
+            journal="CL Journal",
+        )
+        enriched = conn.enrich_raw(raw)
+        # The affiliation line ending in a terminal "№ 7" is skipped (the
+        # affiliation skip runs before the terminal-issue stop), so the run
+        # does not end empty and the following prose is collected.
+        assert "исследованы" in enriched.abstract
+        assert "Кафедра" not in enriched.abstract
+        assert enriched.abstract
+
+    def test_citation_tail_page_range_stops(self, monkeypatch) -> None:
+        from apps.ingestion.connectors.base import RawArticle
+
+        conn = CyberLeninkaConnector()
+        monkeypatch.setattr(
+            conn,
+            "_request_text",
+            lambda _url, **_kwargs: self._ARTICLE_HTML_PAGE_RANGE_CITATION,
+        )
+        raw = RawArticle(
+            source_key="cyberleninka",
+            title="Анализ численных методов",
+            url="https://cyberleninka.ru/article/n/page-range",
+            abstract="",
+            full_text="",
+            language="ru",
+            year=None,
+            doi="",
+            journal="CL Journal",
+        )
+        enriched = conn.enrich_raw(raw)
+        # The page-range tail "15-30" after the issue sign is a bibliographic
+        # tail, so the citation stops and does not leak into the abstract.
+        assert "проведён анализ" in enriched.abstract
+        assert "Журнал" not in enriched.abstract
+        assert "15-30" not in enriched.abstract
+
+    def test_citation_tail_pages_prefix_stops(self, monkeypatch) -> None:
+        from apps.ingestion.connectors.base import RawArticle
+
+        conn = CyberLeninkaConnector()
+        monkeypatch.setattr(
+            conn,
+            "_request_text",
+            lambda _url, **_kwargs: self._ARTICLE_HTML_PAGES_PREFIX_CITATION,
+        )
+        raw = RawArticle(
+            source_key="cyberleninka",
+            title="Изучение полимеров",
+            url="https://cyberleninka.ru/article/n/pages-prefix",
+            abstract="",
+            full_text="",
+            language="ru",
+            year=None,
+            doi="",
+            journal="CL Journal",
+        )
+        enriched = conn.enrich_raw(raw)
+        # The page-letter marker is stripped, leaving the "5-15" range as a
+        # bibliographic tail, so the citation stops and does not leak.
+        assert "изучены" in enriched.abstract
+        assert "Физика" not in enriched.abstract
+        assert "5-15" not in enriched.abstract
+
+    def test_citation_tail_year_marker_stops(self, monkeypatch) -> None:
+        from apps.ingestion.connectors.base import RawArticle
+
+        conn = CyberLeninkaConnector()
+        monkeypatch.setattr(
+            conn,
+            "_request_text",
+            lambda _url, **_kwargs: self._ARTICLE_HTML_YEAR_SUFFIX_CITATION,
+        )
+        raw = RawArticle(
+            source_key="cyberleninka",
+            title="Наноструктуры материалов",
+            url="https://cyberleninka.ru/article/n/year-suffix",
+            abstract="",
+            full_text="",
+            language="ru",
+            year=None,
+            doi="",
+            journal="CL Journal",
+        )
+        enriched = conn.enrich_raw(raw)
+        # The trailing year-letter marker is stripped, leaving "2023" as a
+        # bibliographic tail, so the citation stops and does not leak.
+        assert "работе" in enriched.abstract
+        assert "2023" not in enriched.abstract
+        assert "№ 12" not in enriched.abstract
+
+    def test_prose_final_inline_issue_not_truncated(self, monkeypatch) -> None:
+        from apps.ingestion.connectors.base import RawArticle
+
+        conn = CyberLeninkaConnector()
+        monkeypatch.setattr(
+            conn,
+            "_request_text",
+            lambda _url, **_kwargs: self._ARTICLE_HTML_PROSE_FINAL_ISSUE,
+        )
+        raw = RawArticle(
+            source_key="cyberleninka",
+            title="Анализ экспериментальных данных",
+            url="https://cyberleninka.ru/article/n/prose-final-issue",
+            abstract="",
+            full_text="",
+            language="ru",
+            year=None,
+            doi="",
+            journal="CL Journal",
+        )
+        enriched = conn.enrich_raw(raw)
+        # The inline "в таблицу № 5" is glued to a preceding word (no period
+        # before the sign), so it is not terminal and the sentence is kept in
+        # full, including the text after the issue sign.
+        assert "таблицу" in enriched.abstract
+        assert "Результаты" in enriched.abstract
+        assert "подтвердили" in enriched.abstract
+
+    def test_inline_then_trailing_citation_stops_at_tail(self, monkeypatch) -> None:
+        from apps.ingestion.connectors.base import RawArticle
+
+        conn = CyberLeninkaConnector()
+        monkeypatch.setattr(
+            conn,
+            "_request_text",
+            lambda _url, **_kwargs: self._ARTICLE_HTML_INLINE_THEN_TRAILING_CITATION,
+        )
+        raw = RawArticle(
+            source_key="cyberleninka",
+            title="Анализ новых материалов",
+            url="https://cyberleninka.ru/article/n/inline-then-trailing",
+            abstract="",
+            full_text="",
+            language="ru",
+            year=None,
+            doi="",
+            journal="CL Journal",
+        )
+        enriched = conn.enrich_raw(raw)
+        # The LAST issue sign (the trailing "№ 12") is considered, so the
+        # trailing citation stops the run; the inline "№ 3" does not let the
+        # "Вестник. № 12. 2023." citation leak into the abstract.
+        assert "материалов" in enriched.abstract
+        assert "2023" not in enriched.abstract
+        assert "№ 12" not in enriched.abstract
+
 
 class TestHALJournal:
     """HALConnector should extract journal from journalTitle_s."""

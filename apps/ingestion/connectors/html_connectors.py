@@ -188,24 +188,45 @@ def _title_token_overlap(norm_para: str, title_tokens: frozenset[str]) -> bool:
     return overlap / len(title_tokens) >= _CYBERLENINKA_TITLE_TOKEN_MIN
 
 
+_CYBERLENINKA_BIBLIO_TAIL_CHARS = frozenset("0123456789-/")
+
+
 def _cyberleninka_issue_is_terminal(text: str) -> bool:
-    """Return True when an issue-number token sits at the end of the citation.
+    """Return True when an issue-number token sits at the end of a citation.
 
     A journal citation that numbers by issue only -- without a volume,
     issue-word, ISSN, UDC, or DOI marker -- is not caught by
     ``_CYBERLENINKA_CITATION_RE``, so the bare issue sign is the only stop
-    signal. Treating every issue sign as a stop would truncate prose that
-    mentions an inline reference (``в таблице № 3 и показал ...``); a line-
-    length cap (used earlier) still leaked medium citation lines longer than
-    the cap. The terminal-position test instead stops only when nothing but
-    punctuation (and an optional trailing year/pages number) follows the
-    issue sign -- a citation ends there, prose continues past it.
+    signal. Three rules keep prose out while still catching issue-only
+    citations:
+
+    1. The LAST issue sign is considered. An inline reference (``в таблице
+       № 3``) followed later in the same paragraph by a trailing citation
+       (``Вестник. № 12. 2023.``) would otherwise latch onto the inline sign
+       and let the citation leak.
+    2. The sign must open the line or follow a period. A citation breaks as
+       ``Journal. № N`` or stands alone as ``№ N``; an inline reference is
+       glued to a preceding word (``в таблице № N``), so the latter is prose
+       and must not end the run.
+    3. After the sign, only a bibliographic tail may follow: digits with
+       ``-``/``/`` separators, an optional Russian page-number marker, and an
+       optional Russian year marker. A sentence continuing past the sign
+       (``... и показал ...``) is prose.
     """
-    match = _CYBERLENINKA_ISSUE_RE.search(text)
-    if match is None:
+    matches = list(_CYBERLENINKA_ISSUE_RE.finditer(text))
+    if not matches:
+        return False
+    match = matches[-1]
+    before = text[: match.start()].rstrip()
+    if before and not before.endswith("."):
         return False
     tail = re.sub(r"^[.,;:)\s]+|[.,;:)\s]+$", "", text[match.end() :])
-    return tail == "" or tail.replace("/", "").isdigit()
+    if not tail:
+        return True
+    tail = re.sub(r"(?i)^[Сс]\.\s*", "", tail)  # noqa: RUF001
+    tail = re.sub(r"(?i)\s*г\.?\s*$", "", tail)  # noqa: RUF001
+    tail = re.sub(r"[\s.,;:]+", "", tail)
+    return bool(tail) and set(tail) <= _CYBERLENINKA_BIBLIO_TAIL_CHARS
 
 
 def _classify_cyberleninka_paragraph(text: str, *, started: bool) -> str:
@@ -218,9 +239,13 @@ def _classify_cyberleninka_paragraph(text: str, *, started: bool) -> str:
     it is abstract prose to collect. A bare ``№ N`` token only ends the run
     when it is terminal (``_cyberleninka_issue_is_terminal``), so a prose
     sentence that happens to mention ``в таблице № 3`` is kept while an
-    issue-only citation line still stops; the affiliation skip is suppressed
-    when the line contains a finite-verb stem, so an abstract opener
-    mentioning a university is kept rather than dropped as an affiliation.
+    issue-only citation line still stops; the affiliation skip runs BEFORE
+    the terminal-issue stop so a pre-abstract affiliation line that happens
+    to end in a terminal ``№ N`` (e.g. a numbered faculty) is skipped rather
+    than ending the run with an empty abstract. The affiliation skip is
+    suppressed when the line contains a finite-verb stem, so an abstract
+    opener mentioning a university is kept rather than dropped as an
+    affiliation.
     """
     if not text:
         return "skip"
@@ -238,7 +263,6 @@ def _classify_cyberleninka_paragraph(text: str, *, started: bool) -> str:
         _CYBERLENINKA_CODE_RE.match(text)
         or _CYBERLENINKA_REF_RE.match(text)
         or _CYBERLENINKA_CITATION_RE.search(text)
-        or _cyberleninka_issue_is_terminal(text)
     ):
         return "stop"
     if (
@@ -251,7 +275,7 @@ def _classify_cyberleninka_paragraph(text: str, *, started: bool) -> str:
         )
     ):
         return "skip"
-    return "keep"
+    return "stop" if _cyberleninka_issue_is_terminal(text) else "keep"
 
 
 logger = structlog.get_logger(__name__)
