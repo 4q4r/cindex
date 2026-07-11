@@ -1287,7 +1287,6 @@ class IACRConnector(AsyncApiConnector):
         headers = {
             "Accept": "application/rss+xml,application/xml,text/xml,*/*;q=0.8",
             "Accept-Language": "en-US,en;q=0.9",
-            "User-Agent": "cindex/1.0 (academic-article-search)",
         }
         try:
             async with (
@@ -1381,11 +1380,19 @@ class IACRConnector(AsyncApiConnector):
 
 
 class ExaConnector(AsyncApiConnector):
-    """Exa source connector via REST API (aiohttp transport).
+    """Exa source connector via REST API (async aiohttp transport).
 
-    ``api.exa.ai`` is a documented REST endpoint; per the project transport
-    policy explicit APIs use aiohttp directly. The POST is a JSON request
-    authenticated with ``x-api-key``.
+    ``api.exa.ai`` is a documented REST endpoint authenticated with
+    ``x-api-key``. It sits behind Cloudflare. aiohttp defaults to
+    ``trust_env=False``, which ignores ``https_proxy``/``HTTPS_PROXY`` and
+    connects directly to the origin — Cloudflare 403s that direct IP. The fix
+    is pure aiohttp: ``ClientSession(trust_env=True)`` routes through the
+    configured HTTPS proxy (the same env proxy ``requests`` honours
+    automatically). No custom ``User-Agent`` is sent — aiohttp's library
+    default is used as-is. No sync ``requests`` call, no worker thread, no new
+    dependency. The browser sidecar is not used: ``api.exa.ai`` serves
+    ``Content-Security-Policy: default-src 'none'`` which blocks the sidecar's
+    in-page ``fetch`` to ``/search``.
     """
 
     profile = SourceProfile(
@@ -1394,6 +1401,41 @@ class ExaConnector(AsyncApiConnector):
         mode="api",
         indexing_evidence="exa research paper web search",
         language="en",
+    )
+
+    #: Hosts that ``category: "research paper"`` returns but which are
+    #: non-scholarly explainer/encyclopedia/consumer-health/vendor pages.
+    #: Matched against the URL netloc (``www.`` stripped) in
+    #: :meth:`_is_non_scholarly_domain`, which is the *only* relevance gate
+    #: Exa applies before the shared :meth:`_is_article_like_item`
+    #: ``doi or year`` filter: just these known garbage hosts are dropped and
+    #: every other host (university domains, smaller journals, institutional
+    #: repositories, personal pages) is kept, so a legitimate article that
+    #: carries no extractable DOI in its snippet is not lost. ``nist.gov`` is
+    #: matched exactly so ``nvlpubs.nist.gov`` (real NIST publications) is
+    #: preserved while ``www.nist.gov`` (explainer) is dropped. Empirically
+    #: gathered from live Exa ``research paper`` results.
+    _NON_SCHOLARLY_HOSTS = frozenset(
+        {
+            "developers.google.com",
+            "mayoclinic.org",
+            "merckmanuals.com",
+            "geeksforgeeks.org",
+            "niddk.nih.gov",
+            "ibm.com",
+            "research.ibm.com",
+            "nist.gov",
+            "coursera.org",
+            "mitsloan.mit.edu",
+            "ischoolonline.berkeley.edu",
+            "cancerresearch.org",
+            "cancertherapyadvisor.com",
+            "cancerimmunotherapyconference.org",
+            "quantum.microsoft.com",
+            "q-ctrl.com",
+            "riverlane.com",
+            "quera.com",
+        },
     )
 
     @staticmethod
@@ -1405,33 +1447,63 @@ class ExaConnector(AsyncApiConnector):
         """Exa uses POST with JSON body, not a simple GET URL."""
         return self.profile.search_url
 
+    @classmethod
+    def _is_non_scholarly_domain(cls, url: str) -> bool:
+        """Return whether ``url`` points at a known non-scholarly host.
+
+        Exa's ``research paper`` category still surfaces encyclopedia and
+        consumer-health pages (Wikipedia, Mayo Clinic, Merck Manuals,
+        GeeksforGeeks, NIDDK, IBM think, NIST explainers, Google Developers).
+        They carry a ``publishedDate`` so they pass the shared
+        ``bool(doi or year)`` filter; this guard drops them before that check.
+        Subdomains of ``wikipedia.org`` are matched; other hosts are matched
+        exactly (``www.`` stripped) so e.g. ``nvlpubs.nist.gov`` (real NIST
+        publications) is preserved while ``www.nist.gov`` (explainer site) is
+        dropped.
+        """
+        netloc = urlparse(url).netloc.lower()
+        if not netloc:
+            return False
+        host = netloc.removeprefix("www.")
+        if host == "wikipedia.org" or host.endswith(".wikipedia.org"):
+            return True
+        return host in cls._NON_SCHOLARLY_HOSTS
+
     async def _cs_post_json(
         self,
         url: str,
         headers: dict[str, str],
         payload: dict,
-        timeout: float,  # noqa: ASYNC109  # total aiohttp request timeout
+        timeout: float,  # noqa: ASYNC109  # upstream request timeout
     ) -> dict:
-        """POST JSON to Exa over aiohttp.
+        """POST JSON to Exa via async aiohttp.
 
-        ``api.exa.ai`` is a documented REST endpoint; per the project transport
-        policy explicit APIs use aiohttp directly. Transient transport errors
-        (network, timeout) propagate as ``aiohttp.ClientError`` /
-        ``TimeoutError`` so ``_fetch_single_lang`` can retry them; non-2xx
-        responses and invalid JSON raise ``ConnectorFetchError`` (terminal —
-        retrying a 4xx or a corrupt body will not help).
+        ``ClientSession(trust_env=True)`` makes aiohttp honour
+        ``https_proxy``/``HTTPS_PROXY`` (it ignores them by default) so the
+        request routes through the configured HTTPS proxy and reaches the real
+        ``api.exa.ai`` origin instead of being 403'd by Cloudflare on the
+        direct IP. No ``User-Agent`` override is applied: aiohttp's library
+        default UA is sent as-is. Network and timeout errors propagate
+        unwrapped (aiohttp ``ClientError`` is **not** an ``OSError``
+        subclass, so :meth:`_fetch_single_lang` catches both explicitly) and
+        are retried; an upstream
+        ``status >= HTTP_ERROR_THRESHOLD`` raises :class:`ConnectorFetchError`
+        (terminal — the retry loop stops); invalid JSON or a non-dict payload
+        raise :class:`ConnectorFetchError` here. The caller's ``headers``
+        (including ``x-api-key``) are forwarded verbatim to the upstream
+        request.
         """
         async with (
             aiohttp.ClientSession(
                 timeout=aiohttp.ClientTimeout(total=timeout),
+                trust_env=True,
             ) as session,
-            session.post(url, json=payload, headers=headers) as resp,
+            session.post(url, headers=headers, json=payload) as response,
         ):
-            text = await resp.text()
-            status = resp.status
-        if status >= HTTP_ERROR_THRESHOLD:
-            msg = f"{self.profile.source_key}: HTTP {status} for {url}"
-            raise ConnectorFetchError(msg)
+            if response.status >= HTTP_ERROR_THRESHOLD:
+                msg = f"{self.profile.source_key}: http {response.status} for {url}"
+                raise ConnectorFetchError(msg)
+            text = await response.text()
         try:
             data = json.loads(text)
         except ValueError as exc:
@@ -1452,6 +1524,14 @@ class ExaConnector(AsyncApiConnector):
     ) -> tuple[list[RawArticle], Exception | None]:
         """Fetch results for a single language query with retry logic.
 
+        Transient network/timeout failures are retried with backoff. aiohttp
+        ``ClientError`` (``ClientConnectionError``, ``ClientPayloadError``,
+        ...) is **not** an ``OSError`` subclass, so it is caught explicitly
+        alongside ``OSError`` (which covers ``TimeoutError``/``ServerTimeoutError``);
+        a terminal :class:`ConnectorFetchError` (upstream
+        ``status >= HTTP_ERROR_THRESHOLD``, invalid JSON) stops the loop
+        immediately.
+
         Returns:
             A tuple of (items, last_error) where last_error is None on success.
 
@@ -1467,7 +1547,7 @@ class ExaConnector(AsyncApiConnector):
                 return self._extract_from_payload(lang_query, data, per_lang), None
             except ConnectorFetchError:
                 break
-            except (aiohttp.ClientError, TimeoutError, OSError) as exc:
+            except (aiohttp.ClientError, OSError) as exc:
                 if attempt < self.MAX_ATTEMPTS:
                     await asyncio.sleep(0.6 * attempt)
                 else:
@@ -1498,7 +1578,6 @@ class ExaConnector(AsyncApiConnector):
         headers = {
             "Accept": "application/json",
             "Content-Type": "application/json",
-            "User-Agent": "cindex/1.0",
             "x-api-key": api_key,
         }
         system_prompt = (
@@ -1662,7 +1741,6 @@ class ExaConnector(AsyncApiConnector):
         headers = {
             "Accept": "application/json",
             "Content-Type": "application/json",
-            "User-Agent": "cindex/1.0",
             "x-api-key": api_key,
         }
         payload = self._build_enrichment_payload(urls, query)
@@ -2023,6 +2101,8 @@ class ExaConnector(AsyncApiConnector):
             pages = citation.get("pages", "")
             combined = " ".join([title, text, journal, " ".join(authors)])
             if not title or not url_value:
+                continue
+            if self._is_non_scholarly_domain(url_value):
                 continue
             if not self._is_article_like_item(title, url_value, doi, year):
                 continue

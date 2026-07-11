@@ -61,7 +61,6 @@ def _team_management_headers(api_key: str) -> dict[str, str]:
     return {
         "Accept": "application/json",
         "Content-Type": "application/json",
-        "User-Agent": "cindex/1.0",
         "x-api-key": api_key,
     }
 
