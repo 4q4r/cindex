@@ -343,7 +343,7 @@ class IngestionService:
             enriched_raws: list[RawArticle] = []
             for raw in raws:
                 try:
-                    enriched_raws.append(connector.enrich_raw(raw))
+                    enriched = connector.enrich_raw(raw)
                 except (ValueError, RuntimeError, ConnectorFetchError):
                     # A single article's enrichment must not abort the whole
                     # source: a sidecar 502/403 or a residual challenge page on
@@ -357,7 +357,19 @@ class IngestionService:
                         raw.url,
                         exc_info=True,
                     )
-                    enriched_raws.append(raw)
+                    enriched = raw
+                if enriched is None:
+                    # ``enrich_raw`` returns ``None`` to signal a non-article
+                    # landing page (e.g. an OpenEdition issue / table-of-
+                    # contents page mixed into the RSS feed) that should be
+                    # dropped rather than stored as a garbage article.
+                    logger.info(
+                        "%s: enrich_raw dropped non-article record %s",
+                        source_key,
+                        raw.url,
+                    )
+                    continue
+                enriched_raws.append(enriched)
             enrich_seconds = time.perf_counter() - enrich_started
             cls._mark_success(source)
         except (

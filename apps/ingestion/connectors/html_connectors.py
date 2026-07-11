@@ -2008,6 +2008,17 @@ class OpenEditionConnector(BaseConnector):
     # last value when ``platform`` is repeated, and ``platforms`` (plural)
     # is ignored, so journals and books must be fetched in two requests.
     _SEARCH_PLATFORMS = ("OJ", "OB")
+    # The RSS feed mixes issue / table-of-contents landing pages with real
+    # articles, and both kinds carry a synthetic ``10.4000/<slug>.<id>`` DOI
+    # (see ``_derive_openedition_doi``) so the DOI guard cannot tell them
+    # apart. A true article exposes ``citation_journal_title`` (journals) or
+    # ``citation_inbook_title`` (book chapters); an issue/TOC page exposes
+    # neither, so ``enrich_raw`` drops any landing page missing all three.
+    _NON_ARTICLE_LANDING_META = (
+        "citation_journal_title",
+        "citation_inbook_title",
+        "citation_abstract",
+    )
     _OPENEDITION_HOSTS = frozenset(
         {"journals.openedition.org", "books.openedition.org"},
     )
