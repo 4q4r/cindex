@@ -37,12 +37,16 @@ class FakePage:
         goto_raise_on=None,
         commit_on_raise=True,
         evaluate_delay=0.0,
+        redirect_to=None,
     ):
         self.evaluate_result = evaluate_result
         self.goto_exc = goto_exc
         self.goto_raise_on = goto_raise_on
         self.commit_on_raise = commit_on_raise
         self.evaluate_delay = evaluate_delay
+        # Maps a goto input URL to the final URL the browser lands on after
+        # following a server-side redirect (``page.url`` post-navigation).
+        self.redirect_to = redirect_to or {}
         self.url = "about:blank"
         self.goto_calls = []
         self.evaluate_calls = []
@@ -57,7 +61,7 @@ class FakePage:
             if self.commit_on_raise:
                 self.url = url
             raise self.goto_exc
-        self.url = url
+        self.url = self.redirect_to.get(url, url)
 
     async def evaluate(self, script, arg=None):
         self.evaluate_calls.append((script, arg))
@@ -341,3 +345,63 @@ def test_fetch_helper_decodes_text_via_textdecoder_with_charset():
     # being passed to TextDecoder, otherwise it throws RangeError and silently
     # falls back to UTF-8 — reintroducing the mojibake this path exists to fix.
     assert "replace(/^[\"']|[\"']$/g" in helper
+
+
+async def test_cross_origin_redirect_fetches_final_url(monkeypatch):
+    """A doi.org -> publisher redirect must re-fetch the final, same-origin URL.
+
+    ``page.goto`` follows the redirect, so the page's document lives on the
+    publisher origin. Re-fetching the original ``doi.org`` URL from there is
+    cross-origin and CORS-blocked ("Failed to fetch" -> 502). The pool must
+    feed the post-navigate ``page.url`` (the publisher page) to the in-page
+    fetch so it stays same-origin and returns the real landing body.
+    """
+    doi_url = "https://doi.org/10.1007/s10994-020-05872-w"
+    publisher_url = "https://link.springer.com/article/10.1007/s10994-020-05872-w"
+    page = FakePage(
+        evaluate_result={
+            "status": 200,
+            "body": "<html>springer</html>",
+            "contentType": "text/html; charset=utf-8",
+        },
+        redirect_to={doi_url: publisher_url},
+    )
+    _patch_launch(monkeypatch, page)
+    pool = browser_pool.BrowserPool()
+    resp = await pool.fetch(FetchRequest(url=doi_url, method="GET"))
+    assert resp.status == 200
+    assert resp.body == "<html>springer</html>"
+    assert page.url == publisher_url
+    # The in-page fetch arg is ``[url, headers]`` — url must be the final
+    # publisher URL (same-origin), not the original doi.org URL.
+    fetch_arg = page.evaluate_calls[0][1]
+    assert fetch_arg[0] == publisher_url
+    assert page.closed is True
+
+
+async def test_same_origin_redirect_keeps_original_fetch_url(monkeypatch):
+    """A same-origin redirect keeps fetching the original URL.
+
+    When the redirect stays on the same scheme + host (e.g. a path redirect),
+    the original URL is still same-origin with the page, so the in-page fetch
+    re-issues it (the browser re-follows the redirect inside ``fetch``). Using
+    ``page.url`` here would freeze the redirect at the post-navigation path and
+    drop query params the caller sent — so the pool must keep the original URL
+    in this case. (An ``http`` -> ``https`` upgrade is NOT same-origin here:
+    ``_same_origin`` compares scheme, so it is handled by the cross-origin
+    branch and fetches the upgraded ``page.url`` — which avoids a mixed-content
+    block too.)
+    """
+    original = "https://example.com/article?id=42"
+    redirected = "https://example.com/articles/42"
+    page = FakePage(
+        evaluate_result=_ok_result(),
+        redirect_to={original: redirected},
+    )
+    _patch_launch(monkeypatch, page)
+    pool = browser_pool.BrowserPool()
+    await pool.fetch(FetchRequest(url=original, method="GET"))
+    assert page.url == redirected
+    fetch_arg = page.evaluate_calls[0][1]
+    assert fetch_arg[0] == original
+    assert page.closed is True

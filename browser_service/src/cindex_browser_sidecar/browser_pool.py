@@ -160,10 +160,11 @@ class BrowserPool:
         url = self._build_url(str(request.url), request.params)
         remaining = await self._navigate(page, url, request.timeout)
         headers = self._merge_accept(request.headers, request.accept)
+        fetch_url = self._same_origin_fetch_target(page, url)
         result = await self._evaluate_fetch(
             page,
             _with_helper(_GET_FETCH_SCRIPT),
-            [url, headers],
+            [fetch_url, headers],
             url,
             remaining,
         )
@@ -306,6 +307,41 @@ class BrowserPool:
         """Return ``True`` when two URLs share scheme and host."""
         pa, pb = urlsplit(a), urlsplit(b)
         return pa.scheme == pb.scheme and pa.netloc == pb.netloc
+
+    @classmethod
+    def _same_origin_fetch_target(cls, page: object, url: str) -> str:
+        """Pick the URL for the in-page fetch so it stays same-origin with the page.
+
+        ``page.goto`` follows redirects, so navigating a cross-origin redirect
+        URL (e.g. ``https://doi.org/{doi}`` -> the publisher's article page)
+        leaves the page's document on the *publisher* origin. Re-fetching the
+        original ``doi.org`` URL from there is cross-origin and CORS-blocked
+        ("Failed to fetch" -> 502). When navigation landed on a different
+        http(s) origin, fetch that final URL instead — it is same-origin with
+        the page, the challenge cookies are already warm, and the publisher
+        page is exactly the landing content the caller wants.
+
+        Otherwise keep the original URL. This covers: same-origin redirects
+        (the in-page fetch re-follows them, same-origin), challenge
+        self-reloads (``page.url`` equals the original URL), and the
+        PDF / origin-fallback case where ``_ensure_same_origin`` parked the
+        page on the target origin while ``page.url`` is the bare origin — the
+        original URL is same-origin with that page, so fetching it returns the
+        real resource. ``about:blank`` or any non-http(s) final URL is ignored
+        so the original URL is attempted (and, if still cross-origin, fails
+        loudly as before rather than silently returning a blank body).
+        """
+        try:
+            final_url = page.url  # type: ignore[attr-defined]
+        except Exception:  # noqa: BLE001 - page.url should never raise
+            return url
+        if (
+            final_url
+            and not cls._same_origin(url, final_url)
+            and final_url.startswith(("http://", "https://"))
+        ):
+            return final_url
+        return url
 
     @staticmethod
     def _build_url(url: str, params: Mapping[str, str] | None) -> str:
