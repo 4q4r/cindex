@@ -9,6 +9,7 @@ from apps.ingestion.connectors import (
     BaseConnector,
     CrossrefConnector,
     CyberLeninkaConnector,
+    DergiParkConnector,
     EuropePMCConnector,
     HALConnector,
     HrcakConnector,
@@ -166,6 +167,136 @@ class TestHrcakOaiRecord:
             ),
         )
         enriched = HrcakConnector().enrich_raw(article)
+        assert enriched == article
+        assert enriched.doi == article.doi  # no bogus landing-page DOI injected
+
+
+class TestDergiParkOaiRecord:
+    """DergiParkConnector parses authors/journal/language from OAI oai_dc.
+
+    DergiPark exposes OAI-PMH oai_dc records that carry ``dc:creator`` (authors,
+    whitespace-padded), ``dc:source`` (``"Journal, Vol. X No. Y"``) and
+    ``dc:language`` (ISO 639-1). The connector must surface all three instead
+    of leaving authors empty and using the OAI set name as the journal, and
+    ``enrich_raw`` must return the raw record untouched (the landing pages are
+    rate-limited and add no field the OAI record lacks).
+    """
+
+    _OAI_XML = (
+        '<OAI-PMH xmlns="http://www.openarchives.org/OAI/2.0/">'
+        "<ListRecords>"
+        "<record><header><identifier>oai:dergipark.org.tr:mulkiye:1123518</identifier>"
+        "<datestamp>2024-01-01</datestamp></header><metadata>"
+        '<oai_dc:dc xmlns:oai_dc="http://www.openarchives.org/OAI/2.0/oai_dc/"'
+        ' xmlns:dc="http://purl.org/dc/elements/1.1/">'
+        "<dc:title>Bread quality evaluation across Turkish bakeries</dc:title>"
+        "<dc:creator>\n  Yilmaz, Selim\n  </dc:creator>"
+        "<dc:creator>\n  Gündoğdu, Şenol\n  </dc:creator>"
+        "<dc:creator>\n  Yilmaz, Selim\n  </dc:creator>"
+        "<dc:description>Bread quality in Turkish bakeries.</dc:description>"
+        "<dc:source>\n  Mülkiye Dergisi, Vol. 48 No. 1\n  </dc:source>"
+        "<dc:language>tr</dc:language>"
+        "<dc:date>2024</dc:date>"
+        "<dc:identifier>https://dergipark.org.tr/en/pub/mulkiye/article/1123518</dc:identifier>"
+        "<dc:identifier>https://doi.org/10.25064/mulkiye.1123518</dc:identifier>"
+        "</oai_dc:dc></metadata></record>"
+        "</ListRecords></OAI-PMH>"
+    )
+
+    _SOURCE_TAG = "<dc:source>\n  Mülkiye Dergisi, Vol. 48 No. 1\n  </dc:source>"
+
+    def test_authors_journal_language_parsed(self) -> None:
+        items = DergiParkConnector()._parse_oai_records(
+            self._OAI_XML,
+            "bread",
+            "Mülkiye Dergisi",
+            5,
+        )
+        assert len(items) == 1
+        article = items[0]
+        assert article.authors == (
+            "Yilmaz, Selim",
+            "Gündoğdu, Şenol",
+        )  # deduped, stripped
+        assert article.journal == "Mülkiye Dergisi"  # Vol./No. suffix stripped
+        assert article.language == "tr"  # ISO 639-1 pass-through
+        assert article.year == 2024
+        assert article.url == "https://dergipark.org.tr/en/pub/mulkiye/article/1123518"
+        assert article.doi == "10.25064/mulkiye.1123518"
+
+    def test_language_falls_back_to_profile_when_absent(self) -> None:
+        xml = self._OAI_XML.replace("<dc:language>tr</dc:language>", "")
+        items = DergiParkConnector()._parse_oai_records(
+            xml,
+            "bread",
+            "Mülkiye Dergisi",
+            5,
+        )
+        assert len(items) == 1
+        assert items[0].language == "en"  # profile default
+
+    def test_journal_falls_back_to_set_name_without_source(self) -> None:
+        xml = self._OAI_XML.replace(self._SOURCE_TAG, "")
+        items = DergiParkConnector()._parse_oai_records(
+            xml,
+            "bread",
+            "Mülkiye Meslek",
+            5,
+        )
+        assert len(items) == 1
+        assert items[0].journal == "Mülkiye Meslek"  # OAI set name fallback
+
+    def test_journal_kept_intact_without_volume_suffix(self) -> None:
+        xml = self._OAI_XML.replace(
+            self._SOURCE_TAG,
+            "<dc:source>Mülkiye Dergisi</dc:source>",
+        )
+        items = DergiParkConnector()._parse_oai_records(
+            xml,
+            "bread",
+            "Mülkiye Dergisi",
+            5,
+        )
+        assert len(items) == 1
+        assert items[0].journal == "Mülkiye Dergisi"  # no Vol. suffix to strip
+
+    def test_empty_and_whitespace_creator_entries_skipped(self) -> None:
+        xml = self._OAI_XML.replace(
+            "<dc:creator>\n  Yilmaz, Selim\n  </dc:creator>"
+            "<dc:creator>\n  Gündoğdu, Şenol\n  </dc:creator>"
+            "<dc:creator>\n  Yilmaz, Selim\n  </dc:creator>",
+            "<dc:creator></dc:creator>"
+            "<dc:creator>   </dc:creator>"
+            "<dc:creator>\n  Yilmaz, Selim\n  </dc:creator>",
+        )
+        items = DergiParkConnector()._parse_oai_records(
+            xml,
+            "bread",
+            "Mülkiye Dergisi",
+            5,
+        )
+        assert len(items) == 1
+        assert items[0].authors == ("Yilmaz, Selim",)  # empties skipped, no dup
+
+    def test_enrich_raw_returns_raw_without_landing_page_fetch(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        items = DergiParkConnector()._parse_oai_records(
+            self._OAI_XML,
+            "bread",
+            "Mülkiye Dergisi",
+            5,
+        )
+        article = items[0]
+        monkeypatch.setattr(
+            DergiParkConnector,
+            "_request_text",
+            lambda *args, **kwargs: (_ for _ in ()).throw(
+                AssertionError("enrich_raw must not fetch the landing page"),
+            ),
+        )
+        enriched = DergiParkConnector().enrich_raw(article)
         assert enriched == article
         assert enriched.doi == article.doi  # no bogus landing-page DOI injected
 

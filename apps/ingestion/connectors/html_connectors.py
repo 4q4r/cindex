@@ -2383,6 +2383,20 @@ class DergiParkConnector(BaseConnector):
         self._sets_cache = sets
         return sets
 
+    def enrich_raw(self, raw: RawArticle) -> RawArticle:
+        """Return the OAI record as-is — no landing-page fetch.
+
+        The OAI-PMH oai_dc metadata already carries the authoritative title,
+        abstract (``dc:description``), authors (``dc:creator``), journal
+        (``dc:source``), language (``dc:language``), DOI (``dc:identifier``)
+        and year (``dc:date``), so re-fetching the publisher landing page would
+        only add latency. It is also unreliable in practice: the article
+        landing pages are rate-limited (HTTP 429) and, when reachable, the base
+        ``enrich_raw`` adds no field the OAI record lacks. Returning the raw
+        OAI record avoids both the latency and the spurious failures.
+        """
+        return raw
+
     def _parse_oai_records(
         self,
         xml_text: str,
@@ -2409,58 +2423,111 @@ class DergiParkConnector(BaseConnector):
             metadata = rec.find("oai:metadata", ns)
             if metadata is None:
                 continue
-            title = metadata.findtext(".//dc:title", default="", namespaces=ns).strip()
-            description = metadata.findtext(
-                ".//dc:description",
-                default="",
-                namespaces=ns,
-            ).strip()
-            subjects = [
-                x.text.strip() for x in metadata.findall(".//dc:subject", ns) if x.text
-            ]
-            identifiers = [
-                x.text.strip()
-                for x in metadata.findall(".//dc:identifier", ns)
-                if x.text
-            ]
-            text_blob = " ".join(
-                [
-                    title,
-                    description,
-                    " ".join(subjects),
-                    " ".join(identifiers),
-                    set_name,
-                ],
-            )
-            if not self._matches_query(text_blob, query):
-                continue
-            doi = self._extract_doi(text_blob)
-            year = self._extract_year(
-                metadata.findtext(".//dc:date", default="", namespaces=ns) or text_blob,
-            )
-            url_value = ""
-            for ident in identifiers:
-                if ident.startswith("http"):
-                    url_value = ident
-                    break
-            if not url_value:
-                continue
-            if not self._is_article_like_item(title, url_value, doi, year):
-                continue
-            items.append(
-                self._raw(
-                    title=title,
-                    url=url_value,
-                    abstract=description,
-                    full_text=text_blob,
-                    doi=doi,
-                    year=year,
-                    journal=set_name,
-                ),
-            )
+            article = self._build_oai_record(metadata, query, set_name, ns)
+            if article is not None:
+                items.append(article)
             if len(items) >= remaining:
                 break
         return items
+
+    def _build_oai_record(
+        self,
+        metadata: ET.Element,
+        query: str,
+        set_name: str,
+        ns: dict[str, str],
+    ) -> RawArticle | None:
+        """Build a :class:`RawArticle` from one OAI record, or ``None``.
+
+        Returns ``None`` when the record is off-topic, lacks a usable URL, or
+        fails the article-like sanity check.
+        """
+        title = metadata.findtext(".//dc:title", default="", namespaces=ns).strip()
+        description = metadata.findtext(
+            ".//dc:description",
+            default="",
+            namespaces=ns,
+        ).strip()
+        subjects = [
+            x.text.strip() for x in metadata.findall(".//dc:subject", ns) if x.text
+        ]
+        identifiers = [
+            x.text.strip() for x in metadata.findall(".//dc:identifier", ns) if x.text
+        ]
+        # Authors: dc:creator entries carry surrounding whitespace; dedupe
+        # in order so a repeated name does not appear twice.
+        authors: list[str] = []
+        seen_authors: set[str] = set()
+        for node in metadata.findall(".//dc:creator", ns):
+            name = (node.text or "").strip()
+            if name and name not in seen_authors:
+                authors.append(name)
+                seen_authors.add(name)
+        sources = [
+            (x.text or "").strip()
+            for x in metadata.findall(".//dc:source", ns)
+            if (x.text or "").strip()
+        ]
+        journal = self._dergipark_journal(sources, set_name)
+        # Language: dc:language already uses ISO 639-1 (tr, en ...); pass it
+        # through stripped, letting _raw fall back to the profile default.
+        language = metadata.findtext(
+            ".//dc:language",
+            default="",
+            namespaces=ns,
+        ).strip()
+        # Relevance matching uses the topical fields only (title, abstract,
+        # subjects, identifiers, journal) — NOT authors. Including author
+        # names would let a query token that coincides with a surname surface
+        # off-topic articles, broadening recall into garbage. Authors are
+        # still surfaced on the RawArticle via ``authors=`` below.
+        text_blob = " ".join(
+            [
+                title,
+                description,
+                " ".join(subjects),
+                " ".join(identifiers),
+                journal,
+            ],
+        )
+        if not self._matches_query(text_blob, query):
+            return None
+        doi = self._extract_doi(text_blob)
+        year = self._extract_year(
+            metadata.findtext(".//dc:date", default="", namespaces=ns) or text_blob,
+        )
+        url_value = next(
+            (ident for ident in identifiers if ident.startswith("http")),
+            "",
+        )
+        if not url_value or not self._is_article_like_item(title, url_value, doi, year):
+            return None
+        return self._raw(
+            title=title,
+            url=url_value,
+            abstract=description,
+            full_text=text_blob,
+            doi=doi,
+            year=year,
+            journal=journal,
+            authors=authors,
+            language=language,
+        )
+
+    @staticmethod
+    def _dergipark_journal(sources: list[str], set_name: str) -> str:
+        """Derive the journal title from ``dc:source`` entries.
+
+        DergiPark OAI-PMH ``dc:source`` carries ``"Journal title, Vol. X No. Y"``;
+        strip the volume/issue suffix from the first entry and fall back to the
+        OAI set name (DergiPark sets are per-journal, so it is the journal title
+        when ``dc:source`` is absent).
+        """
+        for source in sources:
+            name = re.split(r",\s*Vol\.", source, flags=re.IGNORECASE)[0].strip()
+            if name:
+                return name
+        return set_name
 
 
 class HrcakConnector(BaseConnector):
