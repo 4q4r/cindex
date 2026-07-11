@@ -1130,14 +1130,25 @@ class BaseConnector:
 
     @staticmethod
     def _extract_meta_content(soup: BeautifulSoup, keys: list[str]) -> str:
-        """Extract meta content."""
-        lowered_keys = {k.lower() for k in keys}
-        for meta in soup.select("meta[name], meta[property]"):
-            name = (meta.get("name") or meta.get("property") or "").strip().lower()
-            if name in lowered_keys:
-                content = (meta.get("content") or "").strip()
-                if content:
-                    return content
+        """Extract the first non-empty meta content, respecting key priority.
+
+        The ``keys`` list is ordered by preference (e.g. ``citation_journal_title``
+        before ``og:site_name``). Iterating keys in list order — not the DOM order
+        of ``<meta>`` tags — ensures the highest-priority field wins even when a
+        lower-priority meta carrying a noisier value (e.g.
+        ``prism.publicationname`` with ``"Machine Learning 2020 109:5"``) appears
+        earlier in the document than the clean ``citation_journal_title`` value.
+        Name matching is case-insensitive; a single-key call behaves identically
+        to a linear scan.
+        """
+        metas = soup.select("meta[name], meta[property]")
+        for target in (k.lower() for k in keys):
+            for meta in metas:
+                name = (meta.get("name") or meta.get("property") or "").strip().lower()
+                if name == target:
+                    content = (meta.get("content") or "").strip()
+                    if content:
+                        return content
         return ""
 
     @classmethod
