@@ -320,11 +320,20 @@ logger = structlog.get_logger(__name__)
 
 
 class CiNiiConnector(BaseConnector):
-    """Ci Nii source connector."""
+    """Ci Nii source connector.
+
+    Queries the OpenSearch ``/articles`` endpoint, not ``/all``: ``/all``
+    mixes journal articles with conference proceedings, books and
+    dissertations, which surfaced as non-article garbage (e.g. ``"31st
+    International Conference on Machine Learning (ICML 2014)"`` with no
+    DOI/language and a 43-character abstract). ``/articles`` returns only
+    journal articles carrying ``prism:publicationName``, ``dc:creator``,
+    ``prism:publicationDate`` and a ``cir:DOI`` identifier.
+    """
 
     profile = SourceProfile(
         source_key="cinii",
-        search_url="https://cir.nii.ac.jp/opensearch/v2/all",
+        search_url="https://cir.nii.ac.jp/opensearch/v2/articles",
         mode="api",
         query_param="q",
         result_selector=".search-result__item, .item, article, li",
@@ -345,7 +354,7 @@ class CiNiiConnector(BaseConnector):
     def _api_url(self, query: str, limit: int) -> str:
         """Return the connector API URL."""
         return (
-            "https://cir.nii.ac.jp/opensearch/v2/all"
+            "https://cir.nii.ac.jp/opensearch/v2/articles"
             f"?format=json&q={quote_plus(query)}&lang=en&count={limit}"
         )
 
