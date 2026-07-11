@@ -416,8 +416,8 @@ class TestExaTransport:
     These tests pin the contract: the session is built with ``trust_env=True``,
     caller headers/payload are forwarded verbatim, upstream
     ``status >= 400`` / invalid JSON / non-dict payloads surface as
-    ``ConnectorFetchError`` (terminal), and transient ``OSError`` (aiohttp
-    ``ClientError``) propagates so ``_fetch_single_lang`` can retry it.
+    ``ConnectorFetchError`` (terminal), and transient ``ClientError`` /
+    ``OSError`` propagates unwrapped so ``_fetch_single_lang`` can retry it.
     """
 
     @staticmethod
@@ -517,9 +517,10 @@ class TestExaTransport:
         self,
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
-        # aiohttp ClientError derives from OSError; _cs_post_json must let it
-        # propagate (not wrap it as ConnectorFetchError) so _fetch_single_lang's
-        # `except OSError` retry branch can act on it.
+        # _cs_post_json must let aiohttp ClientError propagate unwrapped (not
+        # wrap it as ConnectorFetchError) so _fetch_single_lang's retry branch
+        # — which catches ClientError explicitly because it is NOT an OSError
+        # subclass — can act on it.
         self._install_fake(
             monkeypatch,
             _FakeResponse(enter_exc=aiohttp.ClientConnectionError("boom")),
@@ -536,71 +537,16 @@ class TestExaTransport:
             )
 
 
-class TestExaScholarlyHost:
-    """``_is_scholarly_host`` recognises scholarly publication hosts.
-
-    Matched against the URL netloc (``www.`` stripped); exact-match hosts and
-    subdomains (via ``endswith``) both count, so e.g. ``assets.researchsquare.com``
-    and ``pmc.ncbi.nlm.nih.gov`` are accepted.
-    """
-
-    @pytest.mark.parametrize(
-        ("url", "expected"),
-        [
-            ("https://doi.org/10.1234/test", True),
-            ("https://arxiv.org/abs/2401.00001", True),
-            ("https://www.nature.com/articles/s41586-025", True),
-            ("https://link.springer.com/article/10.1007/s00122", True),
-            ("https://assets.researchsquare.com/files/rs-12345", True),
-            ("https://pmc.ncbi.nlm.nih.gov/articles/PMC12345", True),
-            ("https://example.org/articles/ml", False),
-            ("https://en.wikipedia.org/wiki/ML", False),
-            ("not-a-url", False),
-            ("", False),
-        ],
-    )
-    def test_host_classification(self, url: str, expected: bool) -> None:
-        assert ExaConnector._is_scholarly_host(url) is expected
-
-
-class TestExaScholarlyCandidate:
-    """``_is_scholarly_candidate`` is the hybrid DOI-OR-scholarly-host gate.
-
-    Accepts an Exa hit when it has an extracted DOI or lives on a known
-    scholarly host; drops encyclopedia / vendor-explainer / consumer-health
-    pages that carry a ``publishedDate`` but no scholarly signal. A non-
-    scholarly host is dropped even when a DOI is cited in the body text.
-    """
-
-    @pytest.mark.parametrize(
-        ("url", "doi", "expected"),
-        [
-            # DOI present on an unknown host -> accepted (DOI branch).
-            ("https://example.org/paper", "10.1234/test", True),
-            # DOI cited in body text but on a non-scholarly host -> dropped.
-            ("https://en.wikipedia.org/wiki/ML", "10.1234/cited-in-body", False),
-            ("https://www.ibm.com/think/insights", "10.1234/cited", False),
-            # No DOI, but on a scholarly host -> accepted (host branch).
-            ("https://arxiv.org/abs/2401.00001", "", True),
-            ("https://doi.org/10.1234/test", "", True),
-            # No DOI and an unknown host -> dropped.
-            ("https://example.org/blog", "", False),
-            # No DOI and a non-scholarly host -> dropped.
-            ("https://www.mayoclinic.org/x", "", False),
-        ],
-    )
-    def test_candidate_gate(self, url: str, doi: str, expected: bool) -> None:
-        assert ExaConnector._is_scholarly_candidate(url, doi) is expected
-
-
 class TestExaRelevanceFilter:
-    """``_extract_from_payload`` drops non-scholarly Exa hits.
+    """``_extract_from_payload`` drops only known non-scholarly Exa hosts.
 
     Exa's ``research paper`` category mixes real articles with encyclopedia
     and consumer-health pages that carry a ``publishedDate`` (so they would
-    pass the shared ``bool(doi or year)`` filter). The Exa-specific domain
-    guard drops them before that check, without modifying the shared
-    ``_is_article_like_item`` used by OpenAlex.
+    pass the shared ``bool(doi or year)`` filter). The Exa-specific gate is a
+    denylist — only the curated ``_NON_SCHOLARLY_HOSTS`` are dropped; every
+    other host (university domains, smaller journals, repositories) is kept
+    so a legitimate article without an extractable DOI is not lost. The
+    shared ``_is_article_like_item`` used by OpenAlex is not modified.
     """
 
     @staticmethod
@@ -655,3 +601,92 @@ class TestExaRelevanceFilter:
             ],
         )
         assert conn._extract_from_payload("quantum computing", payload, 5) == []
+
+    def test_keeps_unknown_host_without_doi(self) -> None:
+        """A non-denylisted host without a DOI is kept (denylist-only gate).
+
+        University domains, smaller journals, and institutional repositories
+        that carry a ``publishedDate`` but no extractable DOI must survive —
+        only the explicit ``_NON_SCHOLARLY_HOSTS`` blocklist is dropped, not
+        every host that is not on a scholarly allowlist.
+        """
+        conn = ExaConnector()
+        payload = self._payload(
+            [
+                {
+                    "title": "A university preprint on quantum error correction",
+                    "url": "https://example.edu/qec/preprint.pdf",
+                    "publishedDate": "2025-04-10",
+                    "text": "We present a surface code improvement.",
+                },
+            ],
+        )
+        items = conn._extract_from_payload("quantum error correction", payload, 5)
+        assert len(items) == 1
+        assert items[0].url == "https://example.edu/qec/preprint.pdf"
+
+
+class TestExaFetchSingleLangRetry:
+    """``_fetch_single_lang`` retries transient aiohttp ``ClientError``.
+
+    aiohttp ``ClientError`` is **not** an ``OSError`` subclass
+    (``issubclass(aiohttp.ClientError, OSError) is False``), so the retry loop
+    must catch it explicitly alongside ``OSError``. A connection failure on
+    the first attempt followed by a success on the second yields the parsed
+    items with ``last_error is None`` — verifying the regression where the
+    earlier ``except OSError`` alone let ``ClientConnectionError`` escape
+    uncaught and killed the whole source.
+    """
+
+    @staticmethod
+    async def _noop_sleep(_delay: float) -> None:
+        return None
+
+    def test_retries_client_connection_error_then_succeeds(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        from apps.ingestion.connectors import api_connectors
+
+        monkeypatch.setattr(api_connectors.asyncio, "sleep", self._noop_sleep)
+
+        conn = ExaConnector()
+        calls = {"n": 0}
+        payload = {
+            "results": [
+                {
+                    "title": "A Deep Reinforcement Learning Approach to X",
+                    "url": "https://doi.org/10.1234/test.2025",
+                    "publishedDate": "2025-03-01",
+                    "text": "We propose a novel method for X.",
+                },
+            ],
+        }
+
+        async def fake_post(
+            _url: str,
+            _headers: dict[str, str],
+            _payload: dict,
+            _timeout: float,
+        ) -> dict:
+            calls["n"] += 1
+            if calls["n"] == 1:
+                raise aiohttp.ClientConnectionError("transient proxy reset")
+            return payload
+
+        monkeypatch.setattr(conn, "_cs_post_json", fake_post)
+
+        items, err = asyncio.run(
+            conn._fetch_single_lang(
+                "machine learning",
+                "https://api.exa.ai/search",
+                {},
+                {},
+                5,
+            ),
+        )
+
+        assert err is None
+        assert calls["n"] == 2
+        assert len(items) == 1
+        assert items[0].doi == "10.1234/test.2025"

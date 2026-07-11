@@ -1406,12 +1406,15 @@ class ExaConnector(AsyncApiConnector):
     #: Hosts that ``category: "research paper"`` returns but which are
     #: non-scholarly explainer/encyclopedia/consumer-health/vendor pages.
     #: Matched against the URL netloc (``www.`` stripped) in
-    #: :meth:`_is_non_scholarly_domain`. Acts as a defense-in-depth net inside
-    #: :meth:`_is_scholarly_candidate` for garbage that cites a DOI in its
-    #: body text (so it would otherwise pass the ``DOI or scholarly host``
-    #: gate). ``nist.gov`` is matched exactly so ``nvlpubs.nist.gov`` (real
-    #: NIST publications) is preserved while ``www.nist.gov`` (explainer) is
-    #: dropped. Empirically gathered from live Exa ``research paper`` results.
+    #: :meth:`_is_non_scholarly_domain`, which is the *only* relevance gate
+    #: Exa applies before the shared :meth:`_is_article_like_item`
+    #: ``doi or year`` filter: just these known garbage hosts are dropped and
+    #: every other host (university domains, smaller journals, institutional
+    #: repositories, personal pages) is kept, so a legitimate article that
+    #: carries no extractable DOI in its snippet is not lost. ``nist.gov`` is
+    #: matched exactly so ``nvlpubs.nist.gov`` (real NIST publications) is
+    #: preserved while ``www.nist.gov`` (explainer) is dropped. Empirically
+    #: gathered from live Exa ``research paper`` results.
     _NON_SCHOLARLY_HOSTS = frozenset(
         {
             "developers.google.com",
@@ -1432,67 +1435,6 @@ class ExaConnector(AsyncApiConnector):
             "q-ctrl.com",
             "riverlane.com",
             "quera.com",
-        },
-    )
-
-    #: Hosts that carry real scholarly publications (publishers, preprint
-    #: servers, aggregators, DOI redirect). Used by
-    #: :meth:`_is_scholarly_host` as the ``OR`` branch of
-    #: :meth:`_is_scholarly_candidate`: an Exa hit without an extractable DOI
-    #: is still accepted when it lives on one of these hosts, while
-    #: vendor-explainer/blog/conference garbage (no DOI, not listed here) is
-    #: dropped even when it carries a ``publishedDate``.
-    _SCHOLARLY_HOSTS = frozenset(
-        {
-            "doi.org",
-            "arxiv.org",
-            "biorxiv.org",
-            "medrxiv.org",
-            "chemrxiv.org",
-            "preprints.org",
-            "ssrn.com",
-            "researchsquare.com",
-            "nature.com",
-            "springer.com",
-            "link.springer.com",
-            "sciencedirect.com",
-            "elsevier.com",
-            "wiley.com",
-            "onlinelibrary.wiley.com",
-            "science.org",
-            "cell.com",
-            "thelancet.com",
-            "nejm.org",
-            "bmj.com",
-            "jamanetwork.com",
-            "ieee.org",
-            "ieeexplore.ieee.org",
-            "acm.org",
-            "dl.acm.org",
-            "tandfonline.com",
-            "oxfordacademic.com",
-            "academic.oup.com",
-            "cambridge.org",
-            "plos.org",
-            "journals.plos.org",
-            "mdpi.com",
-            "frontiersin.org",
-            "sagepub.com",
-            "emerald.com",
-            "hindawi.com",
-            "iopscience.iop.org",
-            "rsc.org",
-            "acs.org",
-            "asm.org",
-            "biomedcentral.com",
-            "ascelibrary.org",
-            "jstor.org",
-            "doaj.org",
-            "scielo.br",
-            "scielo.org",
-            "cyberleninka.ru",
-            "ncbi.nlm.nih.gov",
-            "semanticscholar.org",
         },
     )
 
@@ -1527,37 +1469,6 @@ class ExaConnector(AsyncApiConnector):
             return True
         return host in cls._NON_SCHOLARLY_HOSTS
 
-    @classmethod
-    def _is_scholarly_host(cls, url: str) -> bool:
-        """Return whether ``url`` points at a known scholarly publication host.
-
-        Matched against the URL netloc (``www.`` stripped); subdomains match
-        via ``endswith`` so e.g. ``assets.researchsquare.com`` is accepted.
-        See :attr:`_SCHOLARLY_HOSTS`.
-        """
-        netloc = urlparse(url).netloc.lower()
-        if not netloc:
-            return False
-        host = netloc.removeprefix("www.")
-        if host in cls._SCHOLARLY_HOSTS:
-            return True
-        return any(host.endswith(f".{scholarly}") for scholarly in cls._SCHOLARLY_HOSTS)
-
-    @classmethod
-    def _is_scholarly_candidate(cls, url: str, doi: str) -> bool:
-        """Return whether an Exa hit is a scholarly article candidate.
-
-        Exa's ``research paper`` category mixes real articles with
-        encyclopedia, vendor-explainer, and consumer-health pages that carry a
-        ``publishedDate`` (so they pass the shared ``bool(doi or year)``
-        filter). Require either an extracted DOI or a known scholarly host,
-        then :meth:`_is_non_scholarly_domain` drops the rare garbage that
-        cites a DOI in its body text but lives on a non-scholarly host.
-        """
-        if cls._is_non_scholarly_domain(url):
-            return False
-        return bool(doi) or cls._is_scholarly_host(url)
-
     async def _cs_post_json(
         self,
         url: str,
@@ -1572,9 +1483,10 @@ class ExaConnector(AsyncApiConnector):
         request routes through the configured HTTPS proxy and reaches the real
         ``api.exa.ai`` origin instead of being 403'd by Cloudflare on the
         direct IP. No ``User-Agent`` override is applied: aiohttp's library
-        default UA is sent as-is. Network and timeout errors propagate as
-        :class:`OSError` (aiohttp ``ClientError`` derives from ``OSError``) so
-        :meth:`_fetch_single_lang` retries them; an upstream
+        default UA is sent as-is. Network and timeout errors propagate
+        unwrapped (aiohttp ``ClientError`` is **not** an ``OSError``
+        subclass, so :meth:`_fetch_single_lang` catches both explicitly) and
+        are retried; an upstream
         ``status >= HTTP_ERROR_THRESHOLD`` raises :class:`ConnectorFetchError`
         (terminal — the retry loop stops); invalid JSON or a non-dict payload
         raise :class:`ConnectorFetchError` here. The caller's ``headers``
@@ -1589,7 +1501,7 @@ class ExaConnector(AsyncApiConnector):
             session.post(url, headers=headers, json=payload) as response,
         ):
             if response.status >= HTTP_ERROR_THRESHOLD:
-                msg = f"{self.profile.source_key}: http {response.status}"
+                msg = f"{self.profile.source_key}: http {response.status} for {url}"
                 raise ConnectorFetchError(msg)
             text = await response.text()
         try:
@@ -1612,9 +1524,11 @@ class ExaConnector(AsyncApiConnector):
     ) -> tuple[list[RawArticle], Exception | None]:
         """Fetch results for a single language query with retry logic.
 
-        Transient network/timeout failures (``OSError`` from aiohttp's
-        ``ClientError``) are retried with backoff; a terminal
-        :class:`ConnectorFetchError` (upstream
+        Transient network/timeout failures are retried with backoff. aiohttp
+        ``ClientError`` (``ClientConnectionError``, ``ClientPayloadError``,
+        ...) is **not** an ``OSError`` subclass, so it is caught explicitly
+        alongside ``OSError`` (which covers ``TimeoutError``/``ServerTimeoutError``);
+        a terminal :class:`ConnectorFetchError` (upstream
         ``status >= HTTP_ERROR_THRESHOLD``, invalid JSON) stops the loop
         immediately.
 
@@ -1633,7 +1547,7 @@ class ExaConnector(AsyncApiConnector):
                 return self._extract_from_payload(lang_query, data, per_lang), None
             except ConnectorFetchError:
                 break
-            except OSError as exc:
+            except (aiohttp.ClientError, OSError) as exc:
                 if attempt < self.MAX_ATTEMPTS:
                     await asyncio.sleep(0.6 * attempt)
                 else:
@@ -2188,7 +2102,7 @@ class ExaConnector(AsyncApiConnector):
             combined = " ".join([title, text, journal, " ".join(authors)])
             if not title or not url_value:
                 continue
-            if not self._is_scholarly_candidate(url_value, doi):
+            if self._is_non_scholarly_domain(url_value):
                 continue
             if not self._is_article_like_item(title, url_value, doi, year):
                 continue
