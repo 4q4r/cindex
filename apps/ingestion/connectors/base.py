@@ -1201,7 +1201,7 @@ class AsyncApiConnector(BaseConnector):
         url = self._api_url(query, limit)
         try:
             async with (
-                aiohttp.ClientSession() as session,
+                aiohttp.ClientSession(trust_env=True) as session,
                 session.get(
                     url,
                     timeout=aiohttp.ClientTimeout(
