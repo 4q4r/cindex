@@ -271,8 +271,21 @@ class CrossrefConnector(AsyncApiConnector):
         language="en",
     )
 
+    # Crossref indexes book front-matter, back-matter ("Index"), whole books,
+    # and chapter records that carry a valid DOI but no abstract — pure garbage
+    # search results that would pass the save-layer DOI guard. The primary
+    # defence is the ``has-abstract:true`` API filter in ``_api_url``; the
+    # client-side ``not abstract`` skip below is defence-in-depth. A modest
+    # over-fetch absorbs the rare no-title/no-DOI drops so the result count
+    # stays close to ``limit`` (mirrors EuropePMC/OpenAlex/PMC).
+    _OVERFETCH_FACTOR = 3
+
     def _api_url(self, query: str, limit: int) -> str:
-        return f"{self.profile.search_url}?query={quote_plus(query)}&rows={limit}"
+        rows = limit * self._OVERFETCH_FACTOR
+        return (
+            f"{self.profile.search_url}?query={quote_plus(query)}"
+            f"&filter=has-abstract:true&rows={rows}"
+        )
 
     def _extract_from_payload(
         self,
@@ -282,12 +295,15 @@ class CrossrefConnector(AsyncApiConnector):
     ) -> list[RawArticle]:
         items_list = payload.get("message", {}).get("items", [])
         items: list[RawArticle] = []
-        for item in items_list[:limit]:
+        for item in items_list:
+            if len(items) >= limit:
+                break
             titles = item.get("title", [])
             title = titles[0] if titles else ""
             abstracts = item.get("abstract", "")
             if isinstance(abstracts, list):
                 abstracts = " ".join(abstracts)
+            abstract = abstracts.strip()
             doi = item.get("DOI", "") or self._extract_doi(f"{title} {abstracts}")
             year = None
             published = (
@@ -298,7 +314,11 @@ class CrossrefConnector(AsyncApiConnector):
                 with contextlib.suppress(ValueError, IndexError):
                     year = int(date_parts[0][0])
             url = f"https://doi.org/{doi}" if doi else ""
-            if not url:
+            # Book front-matter/back-matter and whole-book records carry a valid
+            # DOI (so they pass the save-layer DOI guard) but no abstract and
+            # often no authors — pure garbage search results. Skip records with
+            # no usable abstract so only real articles survive.
+            if not title or not url or not abstract:
                 continue
             authors_list = item.get("author", [])
             authors = [
@@ -314,8 +334,8 @@ class CrossrefConnector(AsyncApiConnector):
                 self._raw(
                     title=title,
                     url=url,
-                    abstract=abstracts,
-                    full_text=f"{title} {abstracts}",
+                    abstract=abstract,
+                    full_text=f"{title} {abstract}",
                     doi=doi,
                     year=year,
                     journal=journal,

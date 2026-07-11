@@ -739,6 +739,7 @@ class TestCrossrefVolumeIssuePages:
                     {
                         "title": ["Crossref article"],
                         "DOI": "10.1234/cr",
+                        "abstract": "A real abstract body.",
                         "author": [{"given": "A", "family": "B"}],
                         "container-title": ["Test Journal"],
                         "volume": "42",
@@ -763,6 +764,7 @@ class TestCrossrefVolumeIssuePages:
                     {
                         "title": ["No biblio"],
                         "DOI": "10.1234/nobiblio",
+                        "abstract": "No biblio abstract body.",
                     },
                 ],
             },
@@ -773,6 +775,107 @@ class TestCrossrefVolumeIssuePages:
         assert items[0].volume == ""
         assert items[0].issue == ""
         assert items[0].pages == ""
+
+
+class TestCrossrefAbstract:
+    """CrossrefConnector drops book front/back-matter with no abstract.
+
+    Book front-matter, back-matter ("Index"), whole books, and chapter records
+    carry a valid DOI but no abstract and would be stored as garbage. They are
+    skipped so only real articles survive (mirrors EuropePMC/OpenAlex/PMC).
+    """
+
+    def test_null_abstract_is_dropped(self) -> None:
+        payload = {
+            "message": {
+                "items": [
+                    {
+                        "title": ["Front Matter"],
+                        "DOI": "10.1002/9781119902881.fmatter",
+                        "container-title": ["Optimization and Machine Learning"],
+                    },
+                ],
+            },
+        }
+        conn = CrossrefConnector()
+        items = conn._extract_from_payload("test", payload, 5)
+        assert items == []
+
+    def test_whitespace_only_abstract_is_dropped(self) -> None:
+        payload = {
+            "message": {
+                "items": [
+                    {
+                        "title": ["Index"],
+                        "DOI": "10.1002/9781119902881.index",
+                        "abstract": "   \n\t  ",
+                    },
+                ],
+            },
+        }
+        conn = CrossrefConnector()
+        items = conn._extract_from_payload("test", payload, 5)
+        assert items == []
+
+    def test_abstract_list_is_joined_and_kept(self) -> None:
+        payload = {
+            "message": {
+                "items": [
+                    {
+                        "title": ["Chapter with list abstract"],
+                        "DOI": "10.1234/listabs",
+                        "abstract": ["First paragraph.", "Second paragraph."],
+                    },
+                ],
+            },
+        }
+        conn = CrossrefConnector()
+        items = conn._extract_from_payload("test", payload, 5)
+        assert len(items) == 1
+        assert items[0].abstract == "First paragraph. Second paragraph."
+
+    def test_no_title_is_dropped(self) -> None:
+        payload = {
+            "message": {
+                "items": [
+                    {
+                        "DOI": "10.1234/notitle",
+                        "abstract": "Abstract without a title.",
+                    },
+                ],
+            },
+        }
+        conn = CrossrefConnector()
+        items = conn._extract_from_payload("test", payload, 5)
+        assert items == []
+
+    def test_overfetch_keeps_limit_after_filtering(self) -> None:
+        # 6 records: 4 front-matter (no abstract) then 2 real articles. With
+        # limit=2 the loop drops the 4 garbage records and keeps the 2 real
+        # ones, stopping at the limit instead of under-filling.
+        records: list[dict] = []
+        for i in range(4):
+            records.append({"title": [f"Front Matter {i}"], "DOI": f"10.1/fm{i}"})
+        for i in range(2):
+            records.append(
+                {
+                    "title": [f"Real Article {i}"],
+                    "DOI": f"10.1/ra{i}",
+                    "abstract": f"Abstract body {i}.",
+                },
+            )
+        payload = {"message": {"items": records}}
+        conn = CrossrefConnector()
+        items = conn._extract_from_payload("test", payload, 2)
+        assert len(items) == 2
+        assert {it.doi for it in items} == {"10.1/ra0", "10.1/ra1"}
+        assert all(it.abstract for it in items)
+
+    def test_api_url_filters_null_abstract_and_overfetches(self) -> None:
+        conn = CrossrefConnector()
+        url = conn._api_url("machine learning", 5)
+        assert "filter=has-abstract:true" in url
+        assert "rows=15" in url
 
 
 class TestCyberLeninkaAuthors:
