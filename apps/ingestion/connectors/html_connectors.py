@@ -2015,10 +2015,13 @@ class OpenEditionConnector(BaseConnector):
     def fetch(self, query: str, limit: int = 5) -> list[RawArticle]:
         """Fetch query-relevant journal articles and book chapters.
 
-        Raises ``ConnectorFetchError`` (rather than silently returning an
-        empty list) when every platform request fails, so the ingestion
-        service marks the source as failed instead of reporting a
-        misleading zero-results success.
+        Requests journals (``platform=OJ``) and books (``platform=OB``)
+        separately and merges the feeds. If a platform fails but the other
+        still yields items, the failure is logged and we return what we
+        collected; if no items are collected and any platform failed, we
+        raise ``ConnectorFetchError`` so the ingestion service marks the
+        source as failed instead of reporting a misleading zero-results
+        success.
         """
         items: list[RawArticle] = []
         seen_urls: set[str] = set()
@@ -2031,6 +2034,7 @@ class OpenEditionConnector(BaseConnector):
                 xml_text = self._fetch_rss(url)
             except ConnectorFetchError as exc:
                 last_error = exc
+                logger.warning("openedition: platform %s failed: %s", platform, exc)
                 continue
             for raw in self._parse_rss_items(xml_text):
                 if not raw.url or raw.url in seen_urls:
@@ -2083,6 +2087,10 @@ class OpenEditionConnector(BaseConnector):
         try:
             root = ET.fromstring(xml_text)  # noqa: S314  # trusted API XML response
         except ET.ParseError:
+            logger.warning(
+                "openedition: search-api returned non-XML body (%d chars)",
+                len(xml_text),
+            )
             return []
         items: list[RawArticle] = []
         for node in root.findall(".//item"):
@@ -2121,7 +2129,12 @@ class OpenEditionConnector(BaseConnector):
                     full_text=f"{title} {description}",
                     doi=doi,
                     year=year,
-                    journal="",
+                    # The source key is the sentinel that triggers
+                    # ``enrich_raw`` to extract the real journal title from
+                    # the article landing page (base.py sentinel compares
+                    # ``raw.journal.upper() == raw.source_key.upper()``); an
+                    # empty string would skip enrichment and persist empty.
+                    journal=self.profile.source_key,
                     authors=authors or None,
                 ),
             )

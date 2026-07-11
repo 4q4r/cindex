@@ -417,6 +417,9 @@ def test_openedition_filters_hypotheses_blog_posts() -> None:
     # ``Surname, Firstname`` pairs are reversed to ``Firstname Surname``.
     assert items[0].authors == ("Jane Doe", "John Smith")
     assert "hypotheses.org" not in items[0].url
+    # Journal is the source-key sentinel so ``enrich_raw`` extracts the real
+    # journal title from the landing page (an empty string would skip it).
+    assert items[0].journal == "openedition"
 
 
 def test_base_html_extraction_does_not_emit_stub_links() -> None:
