@@ -2476,6 +2476,11 @@ class DergiParkConnector(BaseConnector):
             default="",
             namespaces=ns,
         ).strip()
+        # Relevance matching uses the topical fields only (title, abstract,
+        # subjects, identifiers, journal) — NOT authors. Including author
+        # names would let a query token that coincides with a surname surface
+        # off-topic articles, broadening recall into garbage. Authors are
+        # still surfaced on the RawArticle via ``authors=`` below.
         text_blob = " ".join(
             [
                 title,
@@ -2483,7 +2488,6 @@ class DergiParkConnector(BaseConnector):
                 " ".join(subjects),
                 " ".join(identifiers),
                 journal,
-                " ".join(authors),
             ],
         )
         if not self._matches_query(text_blob, query):

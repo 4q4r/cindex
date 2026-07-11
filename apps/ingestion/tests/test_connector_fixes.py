@@ -246,6 +246,38 @@ class TestDergiParkOaiRecord:
         assert len(items) == 1
         assert items[0].journal == "Mülkiye Meslek"  # OAI set name fallback
 
+    def test_journal_kept_intact_without_volume_suffix(self) -> None:
+        xml = self._OAI_XML.replace(
+            self._SOURCE_TAG,
+            "<dc:source>Mülkiye Dergisi</dc:source>",
+        )
+        items = DergiParkConnector()._parse_oai_records(
+            xml,
+            "bread",
+            "Mülkiye Dergisi",
+            5,
+        )
+        assert len(items) == 1
+        assert items[0].journal == "Mülkiye Dergisi"  # no Vol. suffix to strip
+
+    def test_empty_and_whitespace_creator_entries_skipped(self) -> None:
+        xml = self._OAI_XML.replace(
+            "<dc:creator>\n  Yilmaz, Selim\n  </dc:creator>"
+            "<dc:creator>\n  Gündoğdu, Şenol\n  </dc:creator>"
+            "<dc:creator>\n  Yilmaz, Selim\n  </dc:creator>",
+            "<dc:creator></dc:creator>"
+            "<dc:creator>   </dc:creator>"
+            "<dc:creator>\n  Yilmaz, Selim\n  </dc:creator>",
+        )
+        items = DergiParkConnector()._parse_oai_records(
+            xml,
+            "bread",
+            "Mülkiye Dergisi",
+            5,
+        )
+        assert len(items) == 1
+        assert items[0].authors == ("Yilmaz, Selim",)  # empties skipped, no dup
+
     def test_enrich_raw_returns_raw_without_landing_page_fetch(
         self,
         monkeypatch: pytest.MonkeyPatch,
