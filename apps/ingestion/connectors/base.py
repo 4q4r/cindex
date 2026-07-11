@@ -569,19 +569,22 @@ class BaseConnector:
 
     @classmethod
     def _looks_like_challenge_page(cls, text: str) -> bool:
-        """Detect a residual Cloudflare challenge or block page.
+        """Detect a residual Cloudflare or Anubis challenge/block page.
 
         The browser sidecar solves JS challenges in a real Chromium, so a
         well-behaved source returns its article body. This detector is the
         residual net for the rare case where the sidecar still hands back a
         challenge interstitial (e.g. a managed challenge served with HTTP 200
-        while the challenge JS is still running). It matches only
-        challenge-specific HTML signatures — element IDs/classes, the
-        ``cdn-cgi/challenge-platform`` path, the Turnstile host, and the
-        canonical interstitial phrases — so legitimate pages that merely
+        while the challenge JS is still running, or an Anubis proof-of-work
+        page whose ``techaro.lol-anubis-auth`` cookie has expired). It matches
+        only challenge-specific HTML signatures — Cloudflare element IDs/classes,
+        the ``cdn-cgi/challenge-platform`` path, the Turnstile host, the
+        canonical interstitial phrases, and Anubis JSON-script element IDs
+        (``anubis_*``) plus the Anubis heading — so legitimate pages that merely
         reference Cloudflare (a ``cdnjs.cloudflare.com`` CDN script URL, a
         ``Ray ID`` footer on a normal page) or discuss challenges in prose
-        (a ``proof-of-work`` abstract) are not misclassified.
+        (a ``proof-of-work`` abstract, or an Egyptology paper mentioning the
+        deity Anubis) are not misclassified.
 
         Upstream HTTP error status (``>= 400``) is already raised by the
         transport before this check runs, so the markers target body content
@@ -602,6 +605,21 @@ class BaseConnector:
             "checking your browser before access",
             "attention required! | cloudflare",
             "sorry, you have been blocked",
+            # Anubis (TecharoHQ/anubis) proof-of-work interstitial — JSON-script
+            # element IDs emitted by the challenge template via @templ.JSONScript
+            # and the canonical (English) challenge heading. The script IDs are
+            # machine-generated and locale-independent, so they never appear in
+            # scholarly prose; the bare word "anubis" is deliberately NOT used
+            # so an Egyptology abstract mentioning the deity is not misflagged.
+            # The heading marker is locale-sensitive and can in theory false-flag
+            # a real page that *quotes* the exact six-word phrase; this is an
+            # accepted trade-off, mitigated by the script-ID markers carrying the
+            # real detection weight.
+            "anubis_version",
+            "anubis_challenge",
+            "anubis_base_prefix",
+            "anubis_public_url",
+            "making sure you're not a bot",
         )
         return any(marker in lowered for marker in markers)
 
@@ -687,7 +705,7 @@ class BaseConnector:
         if body_text is None:
             body_text = result.body_bytes.decode("utf-8", errors="replace")
         if self._looks_like_challenge_page(body_text):
-            msg = f"{self.profile.source_key}: cloudflare challenge unresolved"
+            msg = f"{self.profile.source_key}: challenge page unresolved"
             raise ConnectorFetchError(msg)
         return body_text
 
