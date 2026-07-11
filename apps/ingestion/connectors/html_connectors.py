@@ -2887,12 +2887,16 @@ class AJOLConnector(BaseConnector):
                 not abstract or self._looks_like_page_range(abstract)
             ):
                 abstract = page_abstract
+            # AJOL OAI/HTML search payloads carry no authors; the article
+            # landing page lists each author in a ``citation_author`` meta tag.
+            authors = enriched.authors or self._extract_citation_authors(soup)
             return replace(
                 enriched,
                 doi=doi,
                 year=year,
                 journal=journal[:300],
                 abstract=abstract,
+                authors=authors,
                 full_text=" ".join([enriched.full_text, page_text[:12000]])[:20000],
             )
         except (ValueError, RuntimeError, ConnectionError):
@@ -2921,6 +2925,23 @@ class AJOLConnector(BaseConnector):
             if text:
                 return text[:4000]
         return self._extract_meta_content(soup, ["citation_abstract"])
+
+    def _extract_citation_authors(self, soup: BeautifulSoup) -> tuple[str, ...]:
+        """Return ordered, de-duplicated author names from Highwire citation meta.
+
+        AJOL article landing pages list each author in a separate
+        ``<meta name="citation_author" content="...">`` tag. Names are
+        returned in document order and de-duplicated so a repeated name
+        (e.g. an author listed twice) does not appear twice.
+        """
+        names: list[str] = []
+        seen: set[str] = set()
+        for meta in soup.select("meta[name='citation_author']"):
+            name = (meta.get("content") or "").strip()
+            if name and name not in seen:
+                names.append(name)
+                seen.add(name)
+        return tuple(names)
 
     _PAGE_RANGE_MAX_LEN = 12
 
