@@ -589,14 +589,16 @@ def test_pmc_strips_conference_abstract_number_and_falls_back_to_pub_date() -> N
     ``"122 Statistically valid ..."``. The parser must strip the leading
     number for those records only. The same records omit ``pubYear`` while
     carrying ``firstPublicationDate`` (``YYYY-MM-DD``), so the year must
-    fall back to that date instead of leaking ``None``.
+    fall back to that date instead of leaking ``None``. Conference records
+    that carry a real abstract are kept; empty-abstract ones are dropped
+    (covered in ``TestPMCAbstract``), so this record carries a body.
     """
     payload = {
         "resultList": {
             "result": [
                 {
                     "title": "122 Statistically valid fairness evaluation",
-                    "abstractText": "",
+                    "abstractText": "Conference abstract body text.",
                     "pmcid": "PMC13173230",
                     "pubTypeList": {"pubType": ["Abstract"]},
                     "firstPublicationDate": "2026-05-20",
