@@ -11,6 +11,7 @@ from apps.ingestion.connectors import (
     CyberLeninkaConnector,
     EuropePMCConnector,
     HALConnector,
+    HrcakConnector,
     MathNetConnector,
     MedknowConnector,
     OpenAlexConnector,
@@ -87,6 +88,86 @@ class TestMedknowOpenAlexRecord:
         )
         enriched = MedknowConnector().enrich_raw(article)
         assert enriched == article
+
+
+class TestHrcakOaiRecord:
+    """HrcakConnector parses authors/journal/language from OAI oai_dc.
+
+    Hrčak exposes OAI-PMH oai_dc records that carry ``dc:creator`` (authors,
+    with a leading space), ``dc:source`` (journal title, then ISSN lines) and
+    ``dc:language`` (ISO 639-3). The connector must surface all three instead
+    of hardcoding ``journal="Hrčak"`` and leaving authors empty, and
+    ``enrich_raw`` must return the raw record untouched (the landing-page
+    scrape inventories unrelated DOIs as the article's DOI).
+    """
+
+    _OAI_XML = (
+        '<OAI-PMH xmlns="http://www.openarchives.org/OAI/2.0/">'
+        "<ListRecords>"
+        "<record><header><identifier>oai:hrcak.srce.hr:1</identifier>"
+        "<datestamp>2024-01-01</datestamp></header><metadata>"
+        '<oai_dc:dc xmlns:oai_dc="http://www.openarchives.org/OAI/2.0/oai_dc/"'
+        ' xmlns:dc="http://purl.org/dc/elements/1.1/">'
+        "<dc:title>Quality evaluation of bread with sunflower seeds</dc:title>"
+        "<dc:creator> Karić, Aldin</dc:creator>"
+        "<dc:creator> Kusur, Amela</dc:creator>"
+        "<dc:creator> Karić, Aldin</dc:creator>"
+        "<dc:description>Abstract about bread quality.</dc:description>"
+        "<dc:source>Technologica Acta : chemistry and technology</dc:source>"
+        "<dc:source>ISSN 2232-7568 (Online)</dc:source>"
+        "<dc:language>eng</dc:language>"
+        "<dc:date>2024</dc:date>"
+        "<dc:identifier>https://hrcak.srce.hr/258767</dc:identifier>"
+        "</oai_dc:dc></metadata></record>"
+        "</ListRecords></OAI-PMH>"
+    )
+
+    def test_authors_journal_language_parsed(self) -> None:
+        items, token = HrcakConnector()._parse_oai_records(
+            self._OAI_XML,
+            "bread",
+            5,
+        )
+        assert token == ""
+        assert len(items) == 1
+        article = items[0]
+        assert article.authors == ("Karić, Aldin", "Kusur, Amela")  # deduped, stripped
+        assert article.journal == "Technologica Acta : chemistry and technology"
+        assert article.language == "en"  # eng -> en
+        assert article.year == 2024
+        assert article.url == "https://hrcak.srce.hr/258767"
+
+    def test_language_falls_back_to_profile_when_absent(self) -> None:
+        xml = self._OAI_XML.replace("<dc:language>eng</dc:language>", "")
+        items, _ = HrcakConnector()._parse_oai_records(xml, "bread", 5)
+        assert len(items) == 1
+        assert items[0].language == "en"  # profile default
+
+    def test_journal_falls_back_to_repository_name_without_source(self) -> None:
+        xml = self._OAI_XML.replace(
+            "<dc:source>Technologica Acta : chemistry and technology</dc:source>",
+            "",
+        ).replace("<dc:source>ISSN 2232-7568 (Online)</dc:source>", "")
+        items, _ = HrcakConnector()._parse_oai_records(xml, "bread", 5)
+        assert len(items) == 1
+        assert items[0].journal == "Hrčak"
+
+    def test_enrich_raw_returns_raw_without_landing_page_fetch(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        items, _ = HrcakConnector()._parse_oai_records(self._OAI_XML, "bread", 5)
+        article = items[0]
+        monkeypatch.setattr(
+            HrcakConnector,
+            "_request_text",
+            lambda *args, **kwargs: (_ for _ in ()).throw(
+                AssertionError("enrich_raw must not fetch the landing page"),
+            ),
+        )
+        enriched = HrcakConnector().enrich_raw(article)
+        assert enriched == article
+        assert enriched.doi == article.doi  # no bogus landing-page DOI injected
 
 
 class TestEuropePCMAuthors:

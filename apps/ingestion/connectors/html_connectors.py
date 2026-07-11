@@ -2504,6 +2504,21 @@ class HrcakConnector(BaseConnector):
             url = f"https://hrcak.srce.hr/oai/?verb=ListRecords&resumptionToken={quote_plus(token)}"
         return items[:limit]
 
+    def enrich_raw(self, raw: RawArticle) -> RawArticle:
+        """Return the OAI record as-is — no landing-page fetch.
+
+        The OAI-PMH oai_dc metadata already carries the authoritative title,
+        abstract (``dc:description``), authors (``dc:creator``), journal
+        (``dc:source``), language (``dc:language``) and year (``dc:date``), so
+        re-fetching the publisher landing page would only add latency. It is
+        also actively harmful: the base ``enrich_raw`` scrapes the landing page
+        for a DOI and inventories unrelated identifiers (e.g. a Zenodo badge
+        linked from the page) as the article's DOI, polluting the record with
+        garbage. Returning the raw OAI record avoids both the latency and the
+        bogus DOI.
+        """
+        return raw
+
     def _parse_oai_records(
         self,
         xml_text: str,
@@ -2544,6 +2559,29 @@ class HrcakConnector(BaseConnector):
                 default="",
                 namespaces=ns,
             ).strip()
+            # Authors: dc:creator entries carry a leading space; dedupe in order
+            # so a repeated name does not appear twice.
+            authors: list[str] = []
+            seen_authors: set[str] = set()
+            for node in metadata.findall(".//dc:creator", ns):
+                name = (node.text or "").strip()
+                if name and name not in seen_authors:
+                    authors.append(name)
+                    seen_authors.add(name)
+            # Journal: dc:source lists the journal title first, then ISSN lines;
+            # take the first non-ISSN entry and fall back to the repository name.
+            sources = [
+                (x.text or "").strip()
+                for x in metadata.findall(".//dc:source", ns)
+                if (x.text or "").strip()
+            ]
+            journal = next(
+                (s for s in sources if not s.upper().startswith("ISSN")),
+                "Hrčak",
+            )
+            language = self._hrcak_language(
+                metadata.findtext(".//dc:language", default="", namespaces=ns),
+            )
             combined = " ".join(
                 [
                     title,
@@ -2569,7 +2607,9 @@ class HrcakConnector(BaseConnector):
                     full_text=combined,
                     doi=doi,
                     year=year,
-                    journal="Hrčak",
+                    journal=journal,
+                    authors=authors,
+                    language=language,
                 ),
             )
             if len(items) >= remaining:
@@ -2581,6 +2621,40 @@ class HrcakConnector(BaseConnector):
             else ""
         )
         return (items, token)
+
+    @staticmethod
+    def _hrcak_language(code: str) -> str:
+        """Map a Hrčak ``dc:language`` ISO 639-3 code to ISO 639-1.
+
+        Hrčak OAI-PMH records carry 3-letter language codes (``eng``,
+        ``hrv``, ``deu`` ...); the rest of the pipeline expects 2-letter
+        codes. Unknown codes fall back to the profile default via ``_raw``.
+        """
+        return {
+            "eng": "en",
+            "hrv": "hr",
+            "srp": "sr",
+            "deu": "de",
+            "fra": "fr",
+            "ita": "it",
+            "spa": "es",
+            "rus": "ru",
+            "slk": "sk",
+            "slv": "sl",
+            "pol": "pl",
+            "ces": "cs",
+            "bul": "bg",
+            "ron": "ro",
+            "ell": "el",
+            "ukr": "uk",
+            "por": "pt",
+            "nld": "nl",
+            "tur": "tr",
+            "hun": "hu",
+            "ara": "ar",
+            "chi": "zh",
+            "jpn": "ja",
+        }.get((code or "").strip().lower(), "")
 
 
 class AJOLConnector(BaseConnector):
