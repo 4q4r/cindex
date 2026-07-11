@@ -12,10 +12,81 @@ from apps.ingestion.connectors import (
     EuropePMCConnector,
     HALConnector,
     MathNetConnector,
+    MedknowConnector,
     OpenAlexConnector,
     PMCConnector,
     SciELOConnector,
 )
+
+
+class TestMedknowOpenAlexRecord:
+    """MedknowConnector builds records from the OpenAlex API.
+
+    OpenAlex carries the authoritative authors (``authorships[].author
+    .display_name``) and per-record language, so the connector must surface
+    them on the raw article and must NOT attempt a landing-page fetch in
+    ``enrich_raw`` (the publisher pages are frequently bot-walled and only
+    502 through the sidecar, wasting latency without improving any field).
+    """
+
+    def _rec(self, *, language: str = "en") -> dict:
+        return {
+            "id": "https://openalex.org/Wmedknow",
+            "title": "Medknow open-access research article",
+            "abstract_inverted_index": {"A": [0], "real": [1], "abstract": [2]},
+            "doi": "https://doi.org/10.1234/medknow",
+            "publication_year": 2024,
+            "language": language,
+            "authorships": [
+                {"author": {"display_name": "Alice Smith"}},
+                {"author": {"display_name": "Bob Jones"}},
+                {"author": {"display_name": "Alice Smith"}},  # duplicate, deduped
+                {"author": {}},  # no display_name, skipped
+            ],
+            "primary_location": {
+                "landing_page_url": "https://example.org/medknow",
+                "source": {"display_name": "Medknow Journal"},
+            },
+        }
+
+    def test_authors_and_language_are_parsed(self) -> None:
+        article = MedknowConnector()._build_openalex_record(self._rec(), "Medknow")
+        assert article is not None
+        assert article.authors == ("Alice Smith", "Bob Jones")
+        assert article.language == "en"
+        assert article.journal == "Medknow Journal"
+
+    def test_language_falls_back_to_profile_when_absent(self) -> None:
+        rec = self._rec(language="")
+        article = MedknowConnector()._build_openalex_record(rec, "Medknow")
+        assert article is not None
+        assert article.language == "en"  # profile default
+
+    def test_no_authors_when_authorships_missing(self) -> None:
+        rec = self._rec()
+        rec.pop("authorships")
+        article = MedknowConnector()._build_openalex_record(rec, "Medknow")
+        assert article is not None
+        assert article.authors == ()
+
+    def test_enrich_raw_returns_raw_without_landing_page_fetch(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """enrich_raw must not hit the network — OpenAlex is authoritative."""
+        article = MedknowConnector()._build_openalex_record(self._rec(), "Medknow")
+        assert article is not None
+        # Any attempt to fetch the landing page would explode; ensure it never
+        # happens by asserting the enriched article is the same payload.
+        monkeypatch.setattr(
+            MedknowConnector,
+            "_request_text",
+            lambda *args, **kwargs: (_ for _ in ()).throw(
+                AssertionError("enrich_raw must not fetch the landing page"),
+            ),
+        )
+        enriched = MedknowConnector().enrich_raw(article)
+        assert enriched == article
 
 
 class TestEuropePCMAuthors:

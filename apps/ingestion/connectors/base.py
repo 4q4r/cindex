@@ -1151,7 +1151,9 @@ class BaseConnector:
             abstract = BaseConnector._build_abstract_from_index(abstract_index)
         year_raw = rec.get("publication_year")
         year = int(year_raw) if str(year_raw).isdigit() else None
-        combined = " ".join([title, abstract, journal, str(rec.get("language") or "")])
+        authors = BaseConnector._openalex_authors(rec.get("authorships"))
+        language = str(rec.get("language") or "").strip()
+        combined = f"{title} {abstract} {journal} {language}"
         if not title or not url_value.startswith("http"):
             return None
         if not self._is_article_like_item(title, url_value, doi, year):
@@ -1164,7 +1166,31 @@ class BaseConnector:
             doi=doi,
             year=year,
             journal=journal,
+            authors=authors,
+            language=language,
         )
+
+    @staticmethod
+    def _openalex_authors(authorships: object) -> tuple[str, ...]:
+        """Extract ordered author display names from an OpenAlex record.
+
+        ``authorships`` is a list of ``{"author": {"display_name": ...}}``;
+        names are deduplicated in order so a repeated author (e.g. listed twice
+        across positions) does not appear twice.
+        """
+        if not isinstance(authorships, list):
+            return ()
+        names: list[str] = []
+        for entry in authorships:
+            if not isinstance(entry, dict):
+                continue
+            author = entry.get("author")
+            if not isinstance(author, dict):
+                continue
+            name = str(author.get("display_name") or "").strip()
+            if name and name not in names:
+                names.append(name)
+        return tuple(names)
 
     @staticmethod
     def _build_abstract_from_index(index: dict) -> str:
