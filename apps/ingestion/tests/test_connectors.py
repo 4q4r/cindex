@@ -387,40 +387,35 @@ def test_mathnet_enrichment_extracts_bibliographic_fields(monkeypatch) -> None:
 
 
 def test_openedition_filters_hypotheses_blog_posts() -> None:
-    """Test openedition filters hypotheses blog posts helper."""
+    """OpenEdition RSS parsing keeps journal articles, drops Hypotheses blogs."""
     xml = """
-    <oai:OAI-PMH xmlns:oai="http://www.openarchives.org/OAI/2.0/" xmlns:dc="http://purl.org/dc/elements/1.1/">
-      <oai:ListRecords>
-        <oai:record>
-          <oai:metadata>
-            <dc:title>History article on France</dc:title>
-            <dc:description>Peer reviewed history article</dc:description>
-            <dc:identifier>https://doi.org/10.4000/example.2026.1</dc:identifier>
-            <dc:identifier>https://journals.openedition.org/example/1234</dc:identifier>
-            <dc:source>OpenEdition Journal</dc:source>
-          </oai:metadata>
-        </oai:record>
-        <oai:record>
-          <oai:metadata>
-            <dc:title>Le Cid à l'honneur</dc:title>
-            <dc:description>Blog post about theatre</dc:description>
-            <dc:identifier>https://doi.org/10.58079/164u7</dc:identifier>
-            <dc:identifier>https://corneille.hypotheses.org/3002</dc:identifier>
-            <dc:source>URI:https://corneille.hypotheses.org</dc:source>
-          </oai:metadata>
-        </oai:record>
-      </oai:ListRecords>
-    </oai:OAI-PMH>
+    <rss version="2.0" xmlns:dc="http://purl.org/dc/elements/1.1/">
+      <channel>
+        <item>
+          <title>History article on France</title>
+          <link>https://journals.openedition.org/example/1234</link>
+          <description><![CDATA[Peer reviewed history article…]]></description>
+          <pubDate>Thu, 01 Jan 2026 00:00:00 +0000</pubDate>
+          <dc:creator>Doe, Jane, Smith, John</dc:creator>
+        </item>
+        <item>
+          <title>Le Cid à l'honneur</title>
+          <link>https://corneille.hypotheses.org/3002</link>
+          <description><![CDATA[Blog post about theatre]]></description>
+          <dc:creator>Anonymous</dc:creator>
+        </item>
+      </channel>
+    </rss>
     """
-    items, token = OpenEditionConnector()._parse_oai_records(
-        xml,
-        "history france",
-        remaining=5,
-    )
+    items = OpenEditionConnector()._parse_rss_items(xml)
 
-    assert token == ""
     assert len(items) == 1
-    assert items[0].doi == "10.4000/example.2026.1"
+    assert items[0].url == "https://journals.openedition.org/example/1234"
+    # DOI is derived deterministically from the OpenEdition URL scheme.
+    assert items[0].doi == "10.4000/example.1234"
+    assert items[0].year == 2026
+    # ``Surname, Firstname`` pairs are reversed to ``Firstname Surname``.
+    assert items[0].authors == ("Jane Doe", "John Smith")
     assert "hypotheses.org" not in items[0].url
 
 
