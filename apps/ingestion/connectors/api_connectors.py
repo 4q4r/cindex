@@ -1304,6 +1304,20 @@ class IACRConnector(AsyncApiConnector):
         )
         return self._build_articles(query, self._parse_rss_xml(xml_text), limit)
 
+    async def _fetch_async(  # guard only; args unused by design
+        self,
+        query: str,
+        limit: int,
+    ) -> list[RawArticle]:
+        """Reject the inherited async path; IACR fetches via the sidecar.
+
+        The inherited ``AsyncApiConnector._fetch_async`` would GET the
+        bot-walled RSS over aiohttp (HTTP 403). It is explicitly disabled so a
+        stale caller cannot regress to zero results through the async path.
+        """
+        msg = "IACRConnector fetches via BrowserTransport; use fetch() instead"
+        raise NotImplementedError(msg)
+
     def _extract_from_payload(
         self,
         query: str,
@@ -1316,8 +1330,28 @@ class IACRConnector(AsyncApiConnector):
 
     @classmethod
     def _parse_rss_xml(cls, xml_text: str) -> list[dict]:
-        """Parse the IACR RSS feed into a list of record dicts."""
-        root = ET.fromstring(xml_text)  # noqa: S314  # trusted API XML response
+        """Parse the IACR RSS feed into a list of record dicts.
+
+        Raises :class:`ConnectorFetchError` if the body is not well-formed
+        XML or is not an RSS document (e.g. a bot-wall challenge page served
+        with HTTP 200), so a garbled feed cannot masquerade as a successful
+        empty fetch.
+        """
+        try:
+            root = ET.fromstring(xml_text)  # noqa: S314  # sidecar XML body
+        except ET.ParseError as exc:
+            msg = (
+                f"{cls.profile.source_key}: RSS feed is not well-formed XML"
+                f" (likely a challenge page): {exc}"
+            )
+            raise ConnectorFetchError(msg) from exc
+        items = root.findall(".//item")
+        if root.tag != "rss" and not items:
+            msg = (
+                f"{cls.profile.source_key}: RSS feed body is not an RSS"
+                f" document (root={root.tag!r})"
+            )
+            raise ConnectorFetchError(msg)
         return [
             {
                 "title": (item.findtext("title") or "").strip(),
@@ -1329,7 +1363,7 @@ class IACRConnector(AsyncApiConnector):
                     for c in item.findall(f"{{{cls._DC_NS}}}creator")
                 ],
             }
-            for item in root.findall(".//item")
+            for item in items
         ]
 
     def _build_articles(
