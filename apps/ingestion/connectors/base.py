@@ -440,6 +440,11 @@ class BaseConnector:
         and the record should be dropped instead of kept. Only connectors that
         set :attr:`_NON_ARTICLE_LANDING_META` can ever return ``None``; for
         every other connector this behaves exactly as before.
+
+        Subclasses that override this method and call ``super().enrich_raw()``
+        MUST handle a ``None`` return if they (or a class they inherit from)
+        set :attr:`_NON_ARTICLE_LANDING_META` — otherwise dereferencing the
+        result will raise ``AttributeError``.
         """
         if not raw.url.startswith("http"):
             return raw
