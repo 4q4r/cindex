@@ -74,7 +74,7 @@ class LawfulFullTextResolver:
                 aiohttp.ClientSession() as session,
                 session.get(
                     url,
-                    headers={"Accept": "application/json", "User-Agent": "cindex/1.0"},
+                    headers={"Accept": "application/json"},
                     timeout=aiohttp.ClientTimeout(total=self.REQUEST_TIMEOUT_SECONDS),
                 ) as response,
             ):
@@ -137,7 +137,7 @@ class LawfulFullTextResolver:
                 aiohttp.ClientSession() as session,
                 session.get(
                     url,
-                    headers={"Accept": "application/json", "User-Agent": "cindex/1.0"},
+                    headers={"Accept": "application/json"},
                     timeout=aiohttp.ClientTimeout(total=self.REQUEST_TIMEOUT_SECONDS),
                 ) as response,
             ):
