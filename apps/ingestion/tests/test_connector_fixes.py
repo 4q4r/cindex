@@ -16,6 +16,7 @@ from apps.ingestion.connectors import (
     MathNetConnector,
     MedknowConnector,
     OpenAlexConnector,
+    OpenEditionConnector,
     PMCConnector,
     SciELOConnector,
 )
@@ -3498,3 +3499,122 @@ class TestChallengePageDetector:
         reason: str,
     ) -> None:
         assert BaseConnector._looks_like_challenge_page(html) is False, reason
+
+
+class TestOpenEditionIssueDrop:
+    """OpenEdition drops issue/TOC landing pages, keeps articles and book chapters.
+
+    The RSS feed mixes issue / table-of-contents pages with real articles, and
+    both carry a synthetic ``10.4000/<slug>.<id>`` DOI so the DOI guard cannot
+    tell them apart. ``enrich_raw`` drops a landing page when none of
+    ``citation_journal_title`` (journal article), ``citation_inbook_title``
+    (book chapter) or ``citation_abstract`` (fallback) is present — the
+    reliable marker set for issue/TOC pages.
+    """
+
+    # Real journal-article landing page: carries the journal title.
+    _ARTICLE_HTML = (
+        "<html><head>"
+        '<meta name="citation_journal_title" content="Critique d\'art">'
+        '<meta name="citation_doi" content="10.4000/critiquedart.5306">'
+        '<meta name="citation_abstract" content="A real peer-reviewed article.">'
+        "</head><body><p>Article body text.</p></body></html>"
+    )
+    # Book-chapter landing page on books.openedition.org: carries the book
+    # title via ``citation_inbook_title`` but NOT ``citation_journal_title``.
+    _BOOK_HTML = (
+        "<html><head>"
+        '<meta name="citation_inbook_title" content="Open Book Series">'
+        '<meta name="citation_doi" content="10.4000/books.1234">'
+        "</head><body><p>Book chapter body text.</p></body></html>"
+    )
+    # Issue / table-of-contents landing page: carries a synthetic DOI and a
+    # dc.source but none of the three article markers.
+    _ISSUE_HTML = (
+        "<html><head>"
+        '<meta name="citation_doi" content="10.4000/critiquedart.108859">'
+        '<meta name="dc.source" content="Critique d\'art">'
+        "</head><body><h1>Varia</h1>"
+        "<p>Table of contents of the full issue.</p></body></html>"
+    )
+
+    @staticmethod
+    def _raw(conn: OpenEditionConnector, url: str) -> object:
+        return conn._raw(
+            title="Some title",
+            url=url,
+            abstract="",
+            full_text="some title",
+            doi="10.4000/example.1",
+            year=2026,
+            journal=conn.profile.source_key,
+            authors=None,
+        )
+
+    def test_drops_issue_landing_page(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        conn = OpenEditionConnector()
+        raw = self._raw(conn, "https://journals.openedition.org/critiquedart/108859")
+        monkeypatch.setattr(
+            OpenEditionConnector,
+            "_request_text",
+            lambda self_, url, *args, **kwargs: self._ISSUE_HTML,
+        )
+        assert conn.enrich_raw(raw) is None
+
+    def test_keeps_journal_article(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        conn = OpenEditionConnector()
+        raw = self._raw(conn, "https://journals.openedition.org/critiquedart/5306")
+        monkeypatch.setattr(
+            OpenEditionConnector,
+            "_request_text",
+            lambda self_, url, *args, **kwargs: self._ARTICLE_HTML,
+        )
+        enriched = conn.enrich_raw(raw)
+        assert enriched is not None
+        assert enriched.journal == "Critique d'art"
+
+    def test_keeps_book_chapter(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        conn = OpenEditionConnector()
+        raw = self._raw(conn, "https://books.openedition.org/books/1234")
+        monkeypatch.setattr(
+            OpenEditionConnector,
+            "_request_text",
+            lambda self_, url, *args, **kwargs: self._BOOK_HTML,
+        )
+        assert conn.enrich_raw(raw) is not None
+
+    def test_meta_tuple_set_on_openedition(self) -> None:
+        assert OpenEditionConnector._NON_ARTICLE_LANDING_META == (
+            "citation_journal_title",
+            "citation_inbook_title",
+            "citation_abstract",
+        )
+
+    def test_base_default_tuple_is_empty_noop(self) -> None:
+        # The base default is an empty tuple so every other connector keeps
+        # the legacy behavior (never drops via this mechanism).
+        assert BaseConnector._NON_ARTICLE_LANDING_META == ()
+
+    def test_connector_without_tuple_never_drops(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        # AJOL does not set the tuple, so a page lacking all three markers is
+        # still enriched (returned, not dropped).
+        conn = AJOLConnector()
+        raw = conn._raw(
+            title="Some title",
+            url="https://www.ajol.info/index.php/samj/article/view/149224",
+            abstract="",
+            full_text="some title",
+            doi="",
+            year=2019,
+            journal="AJOL",
+            authors=(),
+        )
+        monkeypatch.setattr(
+            AJOLConnector,
+            "_request_text",
+            lambda self_, url, *args, **kwargs: self._ISSUE_HTML,
+        )
+        assert conn.enrich_raw(raw) is not None

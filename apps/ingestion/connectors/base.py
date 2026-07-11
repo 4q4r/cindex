@@ -408,6 +408,12 @@ class BaseConnector:
     profile: SourceProfile
     REQUEST_TIMEOUT_SECONDS = 25
     MAX_ATTEMPTS = 3
+    # Highwire/Dublin-Core meta fields whose presence on a landing page marks
+    # a real article (or book chapter). An empty tuple disables the
+    # non-article drop; a source whose upstream feed mixes issue/table-of-
+    # contents pages with articles (e.g. OpenEdition) sets the fields it
+    # expects on every true article so ``enrich_raw`` can drop the rest.
+    _NON_ARTICLE_LANDING_META: tuple[str, ...] = ()
 
     @cached_property
     def _transport(self) -> BrowserTransport:
@@ -426,8 +432,20 @@ class BaseConnector:
             return self._fetch_ws(query, limit)
         return self._fetch_html(query, limit)
 
-    def enrich_raw(self, raw: RawArticle) -> RawArticle:
-        """Enrich the raw source payload with parsed metadata."""
+    def enrich_raw(self, raw: RawArticle) -> RawArticle | None:
+        """Enrich the raw source payload with parsed metadata.
+
+        Returns ``None`` to signal that the landing page is not a real article
+        (e.g. an issue / table-of-contents page mixed into an upstream feed)
+        and the record should be dropped instead of kept. Only connectors that
+        set :attr:`_NON_ARTICLE_LANDING_META` can ever return ``None``; for
+        every other connector this behaves exactly as before.
+
+        Subclasses that override this method and call ``super().enrich_raw()``
+        MUST handle a ``None`` return if they (or a class they inherit from)
+        set :attr:`_NON_ARTICLE_LANDING_META` — otherwise dereferencing the
+        result will raise ``AttributeError``.
+        """
         if not raw.url.startswith("http"):
             return raw
         try:
@@ -452,14 +470,10 @@ class BaseConnector:
         body_text = self._html_text(soup)
         page_sample = body_text[:20000]
         combined_page_text = f"{meta_text} {page_sample}"
-        if self._looks_like_challenge_page(combined_page_text):
-            msg = (
-                f"{self.profile.source_key}: challenge page returned for"
-                " article landing page"
-            )
-            raise ConnectorFetchError(
-                msg,
-            )
+        self._raise_if_challenge_page(combined_page_text)
+
+        if self._is_non_article_landing_page(soup, raw.url):
+            return None
 
         pdf_url = self._extract_pdf_url(
             soup,
@@ -566,6 +580,39 @@ class BaseConnector:
             indexing_evidence=indexing_evidence[:3000],
             preprint_evidence=preprint_evidence[:3000],
         )
+
+    def _raise_if_challenge_page(self, combined_page_text: str) -> None:
+        """Raise ``ConnectorFetchError`` when the landing page is a challenge.
+
+        Factored out of :meth:`enrich_raw` so the branch stays out of that
+        method's cyclomatic-complexity budget.
+        """
+        if self._looks_like_challenge_page(combined_page_text):
+            msg = (
+                f"{self.profile.source_key}: challenge page returned for"
+                " article landing page"
+            )
+            raise ConnectorFetchError(msg)
+
+    def _is_non_article_landing_page(self, soup: BeautifulSoup, url: str) -> bool:
+        """Return ``True`` when the landing page is not a real article.
+
+        Sources whose upstream feed mixes issue / table-of-contents pages with
+        articles set :attr:`_NON_ARTICLE_LANDING_META` to the Highwire/Dublin-
+        Core fields every true article (or book chapter) carries. When none of
+        them is present the page is an issue/TOC and the record is dropped.
+        A connector that leaves the tuple empty (the default) never drops here.
+        """
+        if not self._NON_ARTICLE_LANDING_META:
+            return False
+        if self._extract_meta_content(soup, list(self._NON_ARTICLE_LANDING_META)):
+            return False
+        logger.info(
+            "%s: dropping non-article landing page %s",
+            self.profile.source_key,
+            url,
+        )
+        return True
 
     @classmethod
     def _looks_like_challenge_page(cls, text: str) -> bool:
