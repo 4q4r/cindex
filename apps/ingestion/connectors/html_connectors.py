@@ -1976,108 +1976,206 @@ class PerseeConnector(BaseConnector):
 
 
 class OpenEditionConnector(BaseConnector):
-    """Open Edition source connector."""
+    """Open Edition source connector.
+
+    OpenEdition exposes no text search over its OAI-PMH endpoint
+    (``oai.openedition.org``): ``ListRecords`` returns the chronologically
+    latest records with the query ignored, so every record failed the
+    article filter and the source surfaced as zero results. The public
+    OpenEdition Search API (``search-api.openedition.org/rss``) returns a
+    query-relevant RSS feed filterable by platform — ``platform=OJ``
+    (journals) and ``platform=OB`` (books) return only journal articles
+    and book chapters, excluding the Hypotheses blogs and Calenda events
+    the unfiltered feed mixes in. Search therefore uses an async aiohttp
+    GET (explicit API); article-page enrichment (abstract, journal title,
+    full text) still runs through the inherited ``enrich_raw`` on the
+    browser sidecar, since landing pages may carry JS challenges.
+    """
 
     profile = SourceProfile(
         source_key="openedition",
-        search_url="https://oai.openedition.org/",
+        search_url="https://search-api.openedition.org/rss",
         result_selector=".search-result, article, li",
         title_selector="h2 a, .title a, a[href]",
         abstract_selector=".description, .abstract, p",
         journal_selector=".journal, .source",
         indexing_evidence="scopus web of science",
-        language="fr",
+        language="",
+    )
+
+    _SEARCH_API = "https://search-api.openedition.org/rss"
+    # ``platform`` is singular: the OpenEdition Search API keeps only the
+    # last value when ``platform`` is repeated, and ``platforms`` (plural)
+    # is ignored, so journals and books must be fetched in two requests.
+    _SEARCH_PLATFORMS = ("OJ", "OB")
+    _OPENEDITION_HOSTS = frozenset(
+        {"journals.openedition.org", "books.openedition.org"},
     )
 
     def fetch(self, query: str, limit: int = 5) -> list[RawArticle]:
-        """Fetch records from the upstream source."""
-        url = "https://oai.openedition.org/?verb=ListRecords&metadataPrefix=oai_dc"
+        """Fetch query-relevant journal articles and book chapters.
+
+        Requests journals (``platform=OJ``) and books (``platform=OB``)
+        separately and merges the feeds. If a platform fails but the other
+        still yields items, the failure is logged and we return what we
+        collected; if no items are collected and any platform failed, we
+        raise ``ConnectorFetchError`` so the ingestion service marks the
+        source as failed instead of reporting a misleading zero-results
+        success.
+        """
         items: list[RawArticle] = []
-        for _ in range(3):
+        seen_urls: set[str] = set()
+        last_error: ConnectorFetchError | None = None
+        for platform in self._SEARCH_PLATFORMS:
+            if len(items) >= limit:
+                break
+            url = f"{self._SEARCH_API}?q={quote_plus(query)}&mm=100&platform={platform}"
             try:
-                xml_text = self._request_text(url)
-            except ConnectorFetchError:
-                break
-            parsed, token = self._parse_oai_records(xml_text, query, limit - len(items))
-            items.extend(parsed)
-            if len(items) >= limit or not token:
-                break
-            url = f"https://oai.openedition.org/?verb=ListRecords&resumptionToken={quote_plus(token)}"
+                xml_text = self._fetch_rss(url)
+            except ConnectorFetchError as exc:
+                last_error = exc
+                logger.warning("openedition: platform %s failed: %s", platform, exc)
+                continue
+            for raw in self._parse_rss_items(xml_text):
+                if not raw.url or raw.url in seen_urls:
+                    continue
+                seen_urls.add(raw.url)
+                items.append(raw)
+                if len(items) >= limit:
+                    break
+        if not items and last_error is not None:
+            raise last_error
         return items[:limit]
 
-    def _parse_oai_records(
-        self,
-        xml_text: str,
-        query: str,  # noqa: ARG002  # required by base class signature
-        remaining: int,
-    ) -> tuple[list[RawArticle], str]:
-        """Parse OAI records."""
+    def _fetch_rss(self, url: str) -> str:
+        """Fetch the raw RSS body from the OpenEdition Search API."""
+        try:
+
+            async def _fetch() -> str:
+                async with (
+                    aiohttp.ClientSession(trust_env=True) as session,
+                    session.get(
+                        url,
+                        headers={
+                            "Accept": "application/rss+xml,application/xml,*/*",
+                        },
+                        timeout=aiohttp.ClientTimeout(
+                            total=self.REQUEST_TIMEOUT_SECONDS,
+                        ),
+                    ) as resp,
+                ):
+                    resp.raise_for_status()
+                    return await resp.text()
+
+            import asyncio as _asyncio  # noqa: PLC0415  # lazy import to avoid circular dependency
+
+            return _asyncio.run(_fetch())
+        except ConnectorFetchError:
+            raise
+        except (
+            aiohttp.ClientError,
+            ValueError,
+            RuntimeError,
+            ConnectionError,
+            TimeoutError,
+        ) as exc:
+            msg = f"openedition: search-api request failed for {url}: {exc}"
+            raise ConnectorFetchError(msg) from exc
+
+    def _parse_rss_items(self, xml_text: str) -> list[RawArticle]:
+        """Parse an OpenEdition Search RSS feed into raw articles."""
         try:
             root = ET.fromstring(xml_text)  # noqa: S314  # trusted API XML response
         except ET.ParseError:
-            return ([], "")
-        ns = {
-            "oai": "http://www.openarchives.org/OAI/2.0/",
-            "dc": "http://purl.org/dc/elements/1.1/",
-        }
-        candidates: list[RawArticle] = []
-        relevant: list[RawArticle] = []
-        for rec in root.findall(".//oai:record", ns):
-            metadata = rec.find("oai:metadata", ns)
-            if metadata is None:
-                continue
-            title = metadata.findtext(".//dc:title", default="", namespaces=ns).strip()
-            description = metadata.findtext(
-                ".//dc:description",
-                default="",
-                namespaces=ns,
+            logger.warning(
+                "openedition: search-api returned non-XML body (%d chars)",
+                len(xml_text),
+            )
+            return []
+        items: list[RawArticle] = []
+        for node in root.findall(".//item"):
+            title = (node.findtext("title", default="") or "").strip()
+            url_value = (node.findtext("link", default="") or "").strip()
+            description = (node.findtext("description", default="") or "").strip()
+            creator = (
+                node.findtext(
+                    "dc:creator",
+                    default="",
+                    namespaces={"dc": "http://purl.org/dc/elements/1.1/"},
+                )
+                or ""
             ).strip()
-            identifiers = [
-                x.text.strip()
-                for x in metadata.findall(".//dc:identifier", ns)
-                if x.text
-            ]
-            url_value = next((x for x in identifiers if x.startswith("http")), "")
-            sources = [
-                x.text.strip() for x in metadata.findall(".//dc:source", ns) if x.text
-            ]
-            journal = sources[0] if sources else "OpenEdition"
-            combined = " ".join([title, description, " ".join(identifiers), journal])
-            doi = self._extract_doi(combined)
-            year = self._extract_year(combined)
+            pub_date = (node.findtext("pubDate", default="") or "").strip()
             if not title or not url_value:
                 continue
+            doi = self._derive_openedition_doi(url_value)
+            year = self._extract_year(pub_date) if pub_date else None
+            authors = self._parse_openedition_authors(creator)
             if not self._is_true_article_record(
                 url_value,
                 doi,
-                journal,
+                "",
                 title,
                 description,
             ):
                 continue
             if not self._is_article_like_item(title, url_value, doi, year):
                 continue
-            built = self._raw(
-                title=title,
-                url=url_value,
-                abstract=description,
-                full_text=combined,
-                doi=doi,
-                year=year,
-                journal=journal,
+            items.append(
+                self._raw(
+                    title=title,
+                    url=url_value,
+                    abstract=description,
+                    full_text=f"{title} {description}",
+                    doi=doi,
+                    year=year,
+                    # The source key is the sentinel that triggers
+                    # ``enrich_raw`` to extract the real journal title from
+                    # the article landing page (base.py sentinel compares
+                    # ``raw.journal.upper() == raw.source_key.upper()``); an
+                    # empty string would skip enrichment and persist empty.
+                    journal=self.profile.source_key,
+                    authors=authors or None,
+                ),
             )
-            candidates.append(built)
-            relevant.append(built)
-            if len(candidates) >= remaining * 3:
-                break
-        items = relevant[:remaining] if relevant else candidates[:remaining]
-        token_node = root.find(".//oai:resumptionToken", ns)
-        token = (
-            token_node.text.strip()
-            if token_node is not None and token_node.text
-            else ""
-        )
-        return (items, token)
+        return items
+
+    @classmethod
+    def _derive_openedition_doi(cls, url: str) -> str:
+        """Derive the deterministic OpenEdition DOI from the article URL.
+
+        OpenEdition mints DOIs as ``10.4000/<slug>.<id>`` for both journals
+        (``journals.openedition.org/<slug>/<id>``) and books
+        (``books.openedition.org/<slug>/<id>``); we reconstruct it from the
+        URL so the raw article carries a DOI before enrichment.
+        """
+        parsed = urlparse(url)
+        if parsed.netloc.lower() not in cls._OPENEDITION_HOSTS:
+            return ""
+        match = re.match(r"^/([^/]+)/(\d+)/?$", parsed.path)
+        if not match:
+            return ""
+        return f"10.4000/{match.group(1)}.{match.group(2)}"
+
+    @staticmethod
+    def _parse_openedition_authors(creator: str) -> tuple[str, ...]:
+        """Parse ``dc:creator`` into ``Firstname Surname`` author names.
+
+        The feed encodes authors as a single comma-separated string of
+        ``Surname, Firstname`` pairs (e.g. ``"Artigas Herold, Maria Fernanda,
+        Castro Castro, Daniel"``); consecutive tokens are paired and each
+        pair is reversed to the ``Firstname Surname`` form used downstream.
+        """
+        tokens = [t.strip() for t in creator.split(",") if t.strip()]
+        if not tokens:
+            return ()
+        authors: list[str] = []
+        for i in range(0, len(tokens), 2):
+            if i + 1 < len(tokens):
+                authors.append(f"{tokens[i + 1]} {tokens[i]}")
+            else:
+                authors.append(tokens[i])
+        return tuple(a for a in authors if a)
 
     @staticmethod
     def _is_true_article_record(
@@ -2087,7 +2185,7 @@ class OpenEditionConnector(BaseConnector):
         title: str,
         description: str,
     ) -> bool:
-        """Return whether true article record."""
+        """Return whether the record is a true article (not a blog/event)."""
         lowered_url = (url or "").lower()
         lowered_doi = (doi or "").lower()
         lowered_journal = (journal or "").lower()
