@@ -3412,6 +3412,29 @@ class TestChallengePageDetector:
                 "</head><body>Sorry, you have been blocked.</body></html>",
                 "cf block page",
             ),
+            # Anubis (TecharoHQ/anubis) proof-of-work interstitial — the challenge
+            # template emits JSON-script elements with these @templ.JSONScript IDs
+            # and the canonical "Making sure you're not a bot!" heading. Served at
+            # HTTP 200 while the client grinds the SHA-256 PoW.
+            (
+                "<html><head><title>Making sure you're not a bot!</title></head>"
+                '<body><script type="application/json" id="anubis_version">'
+                "1.0.0</script>"
+                '<script type="application/json" id="anubis_challenge">'
+                '{"challenge":"...","difficulty":"5"}'
+                "</script></body></html>",
+                "anubis pow interstitial",
+            ),
+            (
+                "<html><body>"
+                '<script type="application/json" id="anubis_base_prefix">'
+                '"/.within.x/Anubis/"</script>'
+                '<script type="application/json" id="anubis_public_url">'
+                '"https://anubis.example/x"</script>'
+                '<div class="centered-div"><h1>Making sure you\'re not a bot!'
+                "</h1></div></body></html>",
+                "anubis base prefix + heading",
+            ),
         ],
     )
     def test_detects_real_challenge_pages(self, html: str, reason: str) -> None:
@@ -3441,6 +3464,16 @@ class TestChallengePageDetector:
                 "<html><body><p>This paper analyses the proof-of-work scheme"
                 " used in early cryptocurrencies.</p></body></html>",
                 "proof-of-work in abstract prose",
+            ),
+            # An Egyptology abstract mentioning the deity Anubis. The bare word
+            # "anubis" is deliberately not a detector marker (only the machine
+            # anubis_* script IDs and the challenge heading are), so a normal
+            # page that names the god must not trip the Anubis challenge check.
+            (
+                "<html><body><p>This study examines the role of Anubis as the"
+                " god of mummification in Old Kingdom funerary rites, drawing"
+                " on iconographic evidence from Saqqara.</p></body></html>",
+                "anubis the deity in egyptology prose",
             ),
             # Generic phrases that previously caused false positives.
             (
