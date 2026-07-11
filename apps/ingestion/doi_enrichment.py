@@ -92,6 +92,7 @@ class DoiEnrichmentService:
 
         async with aiohttp.ClientSession(
             timeout=aiohttp.ClientTimeout(total=30),
+            trust_env=True,
         ) as session:
             tasks = [
                 cls._fetch_enrichment_for_article(

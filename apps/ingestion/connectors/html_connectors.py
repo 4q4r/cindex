@@ -1742,7 +1742,7 @@ class SciELOConnector(BaseConnector):
 
         async def _fetch() -> dict:
             async with (
-                aiohttp.ClientSession() as session,
+                aiohttp.ClientSession(trust_env=True) as session,
                 session.get(
                     self._ARTICLEMETA_API,
                     params=params,
@@ -2137,7 +2137,7 @@ class MedknowConnector(BaseConnector):
 
             async def _fetch() -> dict:
                 async with (
-                    aiohttp.ClientSession() as session,
+                    aiohttp.ClientSession(trust_env=True) as session,
                     session.get(
                         url,
                         timeout=aiohttp.ClientTimeout(

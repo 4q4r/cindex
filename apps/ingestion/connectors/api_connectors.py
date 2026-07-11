@@ -354,7 +354,7 @@ class PubMedConnector(AsyncApiConnector):
         search_url = self._api_url(query, limit)
         try:
             async with (
-                aiohttp.ClientSession() as session,
+                aiohttp.ClientSession(trust_env=True) as session,
                 session.get(search_url) as resp,
             ):
                 resp.raise_for_status()
@@ -373,7 +373,7 @@ class PubMedConnector(AsyncApiConnector):
         )
         try:
             async with (
-                aiohttp.ClientSession() as session,
+                aiohttp.ClientSession(trust_env=True) as session,
                 session.get(summary_url) as resp,
             ):
                 resp.raise_for_status()
@@ -391,7 +391,7 @@ class PubMedConnector(AsyncApiConnector):
                 f"?db=pubmed&id={','.join(pmids[:limit])}&retmode=xml"
             )
             async with (
-                aiohttp.ClientSession() as session,
+                aiohttp.ClientSession(trust_env=True) as session,
                 session.get(efetch_url) as resp,
             ):
                 resp.raise_for_status()
@@ -686,7 +686,7 @@ class COREConnector(AsyncApiConnector):
             headers["Authorization"] = f"Bearer {api_key}"
         try:
             async with (
-                aiohttp.ClientSession() as session,
+                aiohttp.ClientSession(trust_env=True) as session,
                 session.get(url, headers=headers) as resp,
             ):
                 resp.raise_for_status()
@@ -938,7 +938,10 @@ class ArXivConnector(AsyncApiConnector):
             return self._fetch_sync(query, limit)
         url = self._api_url(query, limit)
         try:
-            async with aiohttp.ClientSession() as session, session.get(url) as resp:
+            async with (
+                aiohttp.ClientSession(trust_env=True) as session,
+                session.get(url) as resp,
+            ):
                 resp.raise_for_status()
                 xml_text = await resp.text()
         except Exception as exc:
@@ -1290,7 +1293,7 @@ class IACRConnector(AsyncApiConnector):
         }
         try:
             async with (
-                aiohttp.ClientSession() as session,
+                aiohttp.ClientSession(trust_env=True) as session,
                 session.get(
                     self._RSS_URL,
                     headers=headers,

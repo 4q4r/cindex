@@ -71,7 +71,7 @@ class LawfulFullTextResolver:
         )
         try:
             async with (
-                aiohttp.ClientSession() as session,
+                aiohttp.ClientSession(trust_env=True) as session,
                 session.get(
                     url,
                     headers={"Accept": "application/json"},
@@ -134,7 +134,7 @@ class LawfulFullTextResolver:
         )
         try:
             async with (
-                aiohttp.ClientSession() as session,
+                aiohttp.ClientSession(trust_env=True) as session,
                 session.get(
                     url,
                     headers={"Accept": "application/json"},

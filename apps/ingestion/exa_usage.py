@@ -87,7 +87,7 @@ async def _list_exa_api_keys_async(
     if not active_key:
         return []
     async with (
-        aiohttp.ClientSession() as session,
+        aiohttp.ClientSession(trust_env=True) as session,
         session.get(
             f"{EXA_TEAM_MANAGEMENT_BASE_URL}/api-keys",
             headers=_team_management_headers(active_key),
@@ -120,7 +120,7 @@ async def _get_exa_api_key_usage_async(
     period_end = end_date or now
     period_start = start_date or (period_end - timedelta(days=30))
     async with (
-        aiohttp.ClientSession() as session,
+        aiohttp.ClientSession(trust_env=True) as session,
         session.get(
             f"{EXA_TEAM_MANAGEMENT_BASE_URL}/api-keys/{api_key_id}/usage",
             headers=_team_management_headers(active_key),
