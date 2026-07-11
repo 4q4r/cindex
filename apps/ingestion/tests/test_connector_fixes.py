@@ -170,6 +170,61 @@ class TestHrcakOaiRecord:
         assert enriched.doi == article.doi  # no bogus landing-page DOI injected
 
 
+class TestAjolCitationAuthors:
+    """AJOLConnector extracts authors from landing-page ``citation_author`` meta.
+
+    AJOL OAI/HTML-search payloads carry no authors, but the article landing
+    page lists each author in a ``<meta name="citation_author">`` tag.
+    ``enrich_raw`` must surface them, de-duplicated and in document order.
+    """
+
+    _AUTHOR_HTML = (
+        "<html><head>"
+        '<meta name="citation_journal_title" content="South African Medical Journal">'
+        '<meta name="citation_author" content="L London">'
+        '<meta name="citation_author" content="D Sanders">'
+        '<meta name="citation_author" content="L London">'  # duplicate, deduped
+        '<meta name="citation_author" content="J te Water Naude">'
+        "</head><body><div class='article-abstract'><p>"
+        "Background and methods for the study."
+        "</p></div></body></html>"
+    )
+
+    def test_extract_citation_authors_dedupes_in_order(self) -> None:
+        from bs4 import BeautifulSoup
+
+        soup = BeautifulSoup(self._AUTHOR_HTML, "lxml")
+        authors = AJOLConnector()._extract_citation_authors(soup)
+        assert authors == ("L London", "D Sanders", "J te Water Naude")
+
+    def test_enrich_raw_populates_authors_from_landing_page(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        conn = AJOLConnector()
+        raw = conn._raw(
+            title="Environmental health and water safety research",
+            url="https://www.ajol.info/index.php/samj/article/view/149224",
+            abstract="",
+            full_text="environmental health and water safety research",
+            doi="",
+            year=2019,
+            journal="AJOL",
+            authors=(),
+        )
+        monkeypatch.setattr(
+            AJOLConnector,
+            "_request_text",
+            lambda self_, url, *args, **kwargs: self._AUTHOR_HTML,
+        )
+        enriched = conn.enrich_raw(raw)
+        assert enriched.authors == ("L London", "D Sanders", "J te Water Naude")
+        # journal meta overrides the placeholder source-key fallback
+        assert enriched.journal == "South African Medical Journal"
+        # page abstract replaces the empty OAI abstract
+        assert enriched.abstract.startswith("Background and methods")
+
+
 class TestEuropePCMAuthors:
     """EuropePMCConnector should extract authors from authorList and authorString."""
 
