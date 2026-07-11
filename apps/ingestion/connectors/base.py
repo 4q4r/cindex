@@ -607,10 +607,14 @@ class BaseConnector:
             "sorry, you have been blocked",
             # Anubis (TecharoHQ/anubis) proof-of-work interstitial — JSON-script
             # element IDs emitted by the challenge template via @templ.JSONScript
-            # and the canonical challenge heading. The script IDs are
+            # and the canonical (English) challenge heading. The script IDs are
             # machine-generated and locale-independent, so they never appear in
             # scholarly prose; the bare word "anubis" is deliberately NOT used
             # so an Egyptology abstract mentioning the deity is not misflagged.
+            # The heading marker is locale-sensitive and can in theory false-flag
+            # a real page that *quotes* the exact six-word phrase; this is an
+            # accepted trade-off, mitigated by the script-ID markers carrying the
+            # real detection weight.
             "anubis_version",
             "anubis_challenge",
             "anubis_base_prefix",
@@ -701,7 +705,7 @@ class BaseConnector:
         if body_text is None:
             body_text = result.body_bytes.decode("utf-8", errors="replace")
         if self._looks_like_challenge_page(body_text):
-            msg = f"{self.profile.source_key}: cloudflare challenge unresolved"
+            msg = f"{self.profile.source_key}: challenge page unresolved"
             raise ConnectorFetchError(msg)
         return body_text
 
