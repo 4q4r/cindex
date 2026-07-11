@@ -382,12 +382,15 @@ async def test_cross_origin_redirect_fetches_final_url(monkeypatch):
 async def test_same_origin_redirect_keeps_original_fetch_url(monkeypatch):
     """A same-origin redirect keeps fetching the original URL.
 
-    When the redirect stays on the same origin (e.g. an http -> https or path
-    redirect), the original URL is still same-origin with the page, so the
-    in-page fetch re-issues it (the browser re-follows the redirect inside
-    ``fetch``). Using ``page.url`` here would freeze the redirect at the
-    post-navigation path and drop query params the caller sent — so the pool
-    must keep the original URL in this case.
+    When the redirect stays on the same scheme + host (e.g. a path redirect),
+    the original URL is still same-origin with the page, so the in-page fetch
+    re-issues it (the browser re-follows the redirect inside ``fetch``). Using
+    ``page.url`` here would freeze the redirect at the post-navigation path and
+    drop query params the caller sent — so the pool must keep the original URL
+    in this case. (An ``http`` -> ``https`` upgrade is NOT same-origin here:
+    ``_same_origin`` compares scheme, so it is handled by the cross-origin
+    branch and fetches the upgraded ``page.url`` — which avoids a mixed-content
+    block too.)
     """
     original = "https://example.com/article?id=42"
     redirected = "https://example.com/articles/42"
