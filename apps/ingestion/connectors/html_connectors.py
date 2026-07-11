@@ -2233,6 +2233,17 @@ class MedknowConnector(BaseConnector):
         """
         return self._fetch_openalex(query, limit)
 
+    def enrich_raw(self, raw: RawArticle) -> RawArticle:
+        """Return the OpenAlex record as-is — no landing-page fetch.
+
+        The OpenAlex API already carries the authoritative title, abstract
+        (reconstructed from the inverted index), authors, year, DOI, journal
+        and language, so re-fetching the publisher landing page (which is
+        frequently bot-walled and 502s through the sidecar) would only risk a
+        ``ConnectorFetchError`` and add latency without improving any field.
+        """
+        return raw
+
     def _fetch_openalex(self, query: str, limit: int) -> list[RawArticle]:
         """Fetch openalex."""
         url = (
