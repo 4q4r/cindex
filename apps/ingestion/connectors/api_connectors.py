@@ -1260,14 +1260,15 @@ class IACRConnector(AsyncApiConnector):
     The ePrint search page (``/search``) is guarded by an aggressive
     anti-bot "tin foil hat" wall that returns a block page even to real
     browsers, and IACR exposes no public search API. The RSS feed
-    (``/rss/rss.xml``) is the only unblocked, machine-readable channel: it
-    lists the ~100 most recent eprints with title, link, authors
-    (``dc:creator``), publication date and an abstract snippet. The feed is
-    fetched with aiohttp (it is served without the anti-bot wall) and
-    filtered client-side to items whose title or abstract contains every
-    query token -- the same approach every known IACR integration takes.
-    IACR ePrint does not assign DOIs, so ``doi`` is left empty rather than
-    fabricated.
+    (``/rss/rss.xml``) is the only machine-readable channel: it lists the
+    ~100 most recent eprints with title, link, authors (``dc:creator``),
+    publication date and an abstract snippet. The feed is itself bot-walled
+    -- a direct aiohttp GET receives HTTP 403 -- so it is fetched through the
+    cloakbrowser browser sidecar (real Chromium passes the wall) via
+    :class:`BrowserTransport`. The single feed is then filtered client-side
+    to items whose title or abstract contains every query token -- the same
+    approach every known IACR integration takes. IACR ePrint does not assign
+    DOIs, so ``doi`` is left empty rather than fabricated.
     """
 
     _DC_NS = "http://purl.org/dc/elements/1.1/"
@@ -1282,36 +1283,40 @@ class IACRConnector(AsyncApiConnector):
         language="en",
     )
 
-    def _api_url(self, query: str, limit: int) -> str:  # noqa: ARG002  # RSS is one feed
-        """IACR RSS is a single feed; the query is filtered client-side."""
-        return self._RSS_URL
+    def fetch(self, query: str, limit: int = 5) -> list[RawArticle]:
+        """Fetch the ePrint RSS feed via the browser sidecar and filter it.
 
-    async def _fetch_async(self, query: str, limit: int) -> list[RawArticle]:
-        headers = {
-            "Accept": "application/rss+xml,application/xml,text/xml,*/*;q=0.8",
-            "Accept-Language": "en-US,en;q=0.9",
-        }
-        try:
-            async with (
-                aiohttp.ClientSession(trust_env=True) as session,
-                session.get(
-                    self._RSS_URL,
-                    headers=headers,
-                    timeout=aiohttp.ClientTimeout(
-                        total=self.REQUEST_TIMEOUT_SECONDS,
-                    ),
-                ) as response,
-            ):
-                response.raise_for_status()
-                xml_text = await response.text()
-        except aiohttp.ClientResponseError as exc:
-            status = getattr(exc, "status", None) or getattr(exc, "code", None)
-            msg = f"{self.profile.source_key}: HTTP {status} for {self._RSS_URL}: {exc}"
-            raise ConnectorFetchError(msg) from exc
-        except aiohttp.ClientError as exc:
-            msg = f"{self.profile.source_key}: request failed: {exc}"
-            raise ConnectorFetchError(msg) from exc
+        The RSS endpoint is bot-walled (a direct aiohttp GET receives HTTP
+        403), so the feed is fetched through the cloakbrowser browser sidecar
+        -- real Chromium passes the wall -- via :class:`BrowserTransport`,
+        which maps sidecar/upstream errors to :class:`ConnectorFetchError`
+        with retry/backoff. The single feed lists the ~100 most recent
+        eprints; items are then filtered client-side to those whose title or
+        abstract contains every query token.
+        """
+        result = self._transport.fetch(
+            self._RSS_URL,
+            accept="application/rss+xml,application/xml,text/xml,*/*",
+        )
+        xml_text = result.body_text or result.body_bytes.decode(
+            "utf-8",
+            errors="replace",
+        )
         return self._build_articles(query, self._parse_rss_xml(xml_text), limit)
+
+    async def _fetch_async(  # guard only; args unused by design
+        self,
+        query: str,
+        limit: int,
+    ) -> list[RawArticle]:
+        """Reject the inherited async path; IACR fetches via the sidecar.
+
+        The inherited ``AsyncApiConnector._fetch_async`` would GET the
+        bot-walled RSS over aiohttp (HTTP 403). It is explicitly disabled so a
+        stale caller cannot regress to zero results through the async path.
+        """
+        msg = "IACRConnector fetches via BrowserTransport; use fetch() instead"
+        raise NotImplementedError(msg)
 
     def _extract_from_payload(
         self,
@@ -1325,8 +1330,28 @@ class IACRConnector(AsyncApiConnector):
 
     @classmethod
     def _parse_rss_xml(cls, xml_text: str) -> list[dict]:
-        """Parse the IACR RSS feed into a list of record dicts."""
-        root = ET.fromstring(xml_text)  # noqa: S314  # trusted API XML response
+        """Parse the IACR RSS feed into a list of record dicts.
+
+        Raises :class:`ConnectorFetchError` if the body is not well-formed
+        XML or is not an RSS document (e.g. a bot-wall challenge page served
+        with HTTP 200), so a garbled feed cannot masquerade as a successful
+        empty fetch.
+        """
+        try:
+            root = ET.fromstring(xml_text)  # noqa: S314  # sidecar XML body
+        except ET.ParseError as exc:
+            msg = (
+                f"{cls.profile.source_key}: RSS feed is not well-formed XML"
+                f" (likely a challenge page): {exc}"
+            )
+            raise ConnectorFetchError(msg) from exc
+        items = root.findall(".//item")
+        if root.tag != "rss" and not items:
+            msg = (
+                f"{cls.profile.source_key}: RSS feed body is not an RSS"
+                f" document (root={root.tag!r})"
+            )
+            raise ConnectorFetchError(msg)
         return [
             {
                 "title": (item.findtext("title") or "").strip(),
@@ -1338,7 +1363,7 @@ class IACRConnector(AsyncApiConnector):
                     for c in item.findall(f"{{{cls._DC_NS}}}creator")
                 ],
             }
-            for item in root.findall(".//item")
+            for item in items
         ]
 
     def _build_articles(

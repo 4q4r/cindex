@@ -6,6 +6,7 @@ from apps.ingestion.connectors import (
     AJOLConnector,
     BaseConnector,
     CiNiiConnector,
+    ConnectorFetchError,
     DOAJConnector,
     EuropePMCConnector,
     IACRConnector,
@@ -676,3 +677,29 @@ def test_iacr_rss_filter_keeps_matching_eprints_and_skips_off_topic() -> None:
     assert only.authors == ("Alice Smith", "Bob Jones")
     assert only.journal == "IACR ePrint"
     assert "machine learning" in only.abstract.lower()
+
+
+def test_iacr_rejects_non_rss_and_malformed_body() -> None:
+    """A 200 bot-wall/challenge body must surface as ConnectorFetchError.
+
+    The RSS endpoint is bot-walled; if the sidecar ever returns HTTP 200 with
+    a non-RSS body (a challenge page) or malformed markup, the connector must
+    fail loudly rather than silently yield zero results.
+    """
+    connector = IACRConnector()
+
+    # well-formed XHTML (not RSS), no <item> -> not an RSS document
+    with pytest.raises(ConnectorFetchError, match="not an RSS document"):
+        connector._parse_rss_xml(
+            "<?xml version='1.0'?><html><body><h1>Just a moment...</h1></body></html>",
+        )
+
+    # malformed XML -> not well-formed
+    with pytest.raises(ConnectorFetchError, match="not well-formed XML"):
+        connector._parse_rss_xml("<rss><item><title>oops</rss>")
+
+    # the inherited async path is disabled and must fail loudly
+    import asyncio
+
+    with pytest.raises(NotImplementedError, match="BrowserTransport"):
+        asyncio.run(connector._fetch_async("machine learning", 3))
