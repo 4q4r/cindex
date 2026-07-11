@@ -3785,3 +3785,120 @@ class TestOpenEditionIssueDrop:
             lambda self_, url, *args, **kwargs: self._ISSUE_HTML,
         )
         assert conn.enrich_raw(raw) is not None
+
+
+class TestExtractMetaContentKeyPriority:
+    """``_extract_meta_content`` must honour the ``keys`` list order, not DOM order.
+
+    Call sites pass an ordered key list (e.g. ``citation_journal_title`` before
+    ``prism.publicationname``). A lower-priority meta frequently carries a
+    noisier value — Springer's ``prism.publicationname`` / ``dc.source`` embed
+    volume/issue/year (``"Machine Learning 2020 109:5"``) and appear earlier in
+    the DOM than the clean ``citation_journal_title`` (``"Machine Learning"``).
+    Iterating meta tags in DOM order returned the noisy value; the fix iterates
+    keys in priority order so the cleanest available field wins.
+    """
+
+    _SPRINGER_HTML = (
+        "<html><head>"
+        '<meta name="prism.publicationname" content="Machine Learning 2020 109:5"/>'
+        '<meta name="dc.source" content="Machine Learning 2020 109:5"/>'
+        '<meta name="citation_journal_title" content="Machine Learning"/>'
+        '<meta property="og:site_name" content="SpringerLink"/>'
+        "</head><body></body></html>"
+    )
+
+    def _soup(self):
+        from bs4 import BeautifulSoup
+
+        return BeautifulSoup(self._SPRINGER_HTML, "lxml")
+
+    def test_priority_key_wins_over_dom_earlier_noisy_meta(self) -> None:
+        soup = self._soup()
+        journal = BaseConnector._extract_meta_content(
+            soup,
+            [
+                "citation_journal_title",
+                "dc.source",
+                "dc.Source",
+                "prism.publicationname",
+                "og:site_name",
+            ],
+        )
+        assert journal == "Machine Learning"
+
+    def test_falls_back_to_next_priority_when_top_key_absent(self) -> None:
+        from bs4 import BeautifulSoup
+
+        html = (
+            "<html><head>"
+            '<meta name="prism.publicationname" content="Machine Learning 2020 109:5"/>'
+            '<meta property="og:site_name" content="SpringerLink"/>'
+            "</head><body></body></html>"
+        )
+        soup = BeautifulSoup(html, "lxml")
+        journal = BaseConnector._extract_meta_content(
+            soup,
+            [
+                "citation_journal_title",
+                "dc.source",
+                "dc.Source",
+                "prism.publicationname",
+                "og:site_name",
+            ],
+        )
+        # citation_journal_title/dc.source absent -> prism.publicationname wins
+        # (the next priority), NOT og:site_name which appears later in DOM but
+        # is lower priority than prism.publicationname.
+        assert journal == "Machine Learning 2020 109:5"
+
+    def test_case_insensitive_name_matching_preserved(self) -> None:
+        from bs4 import BeautifulSoup
+
+        html = '<html><head><meta name="DC.Source" content="Journal X"/></head></html>'
+        soup = BeautifulSoup(html, "lxml")
+        assert (
+            BaseConnector._extract_meta_content(soup, ["dc.source", "dc.Source"])
+            == "Journal X"
+        )
+
+    def test_empty_content_skipped_for_non_empty_of_same_key(self) -> None:
+        from bs4 import BeautifulSoup
+
+        html = (
+            "<html><head>"
+            '<meta name="citation_journal_title" content=""/>'
+            '<meta name="citation_journal_title" content="Real Journal"/>'
+            "</head></html>"
+        )
+        soup = BeautifulSoup(html, "lxml")
+        assert (
+            BaseConnector._extract_meta_content(soup, ["citation_journal_title"])
+            == "Real Journal"
+        )
+
+    def test_no_match_returns_empty(self) -> None:
+        from bs4 import BeautifulSoup
+
+        soup = BeautifulSoup("<html><head></head></html>", "lxml")
+        assert (
+            BaseConnector._extract_meta_content(soup, ["citation_journal_title"]) == ""
+        )
+
+    def test_single_key_call_is_linear_scan_unchanged(self) -> None:
+        """The PDF-URL extractor calls ``_extract_meta_content(soup, [key])`` per
+        key in an outer priority loop; a single-key call must still return the
+        first non-empty meta with that name (DOM order within one key)."""
+        from bs4 import BeautifulSoup
+
+        html = (
+            "<html><head>"
+            '<meta name="citation_pdf_url" content="https://x.com/a.pdf"/>'
+            '<meta name="citation_pdf_url" content="https://x.com/b.pdf"/>'
+            "</head></html>"
+        )
+        soup = BeautifulSoup(html, "lxml")
+        assert (
+            BaseConnector._extract_meta_content(soup, ["citation_pdf_url"])
+            == "https://x.com/a.pdf"
+        )
