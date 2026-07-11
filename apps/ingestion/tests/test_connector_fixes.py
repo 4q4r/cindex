@@ -665,6 +665,70 @@ class TestPMCJournal:
         assert items[0].journal == "PMC"
 
 
+class TestPMCAbstract:
+    """PMCConnector must drop records with a null/empty abstract.
+
+    PMC shares the EuropePMC REST API and returns ``abstractText: null`` (a
+    present-but-null key) for conference supplements, meeting abstracts and
+    errata. The live audit showed 4/5 'machine learning' records with no
+    abstract (and no DOI) — garbage that wasted the fetch slots and left a
+    single usable article. Such records are dropped and the over-fetched page
+    keeps the result near ``limit``.
+    """
+
+    def _rec(self, title: str, abstract: object, doi: str) -> dict:
+        return {
+            "title": title,
+            "abstractText": abstract,
+            "doi": doi,
+            "pubYear": "2024",
+            "pmcid": "PMC1000001",
+        }
+
+    def test_null_abstract_is_dropped(self) -> None:
+        payload = {
+            "resultList": {
+                "result": [
+                    self._rec("Conference abstract", None, "10.1/ca"),
+                    self._rec("Real Article", "A real abstract.", "10.1/a"),
+                ],
+            },
+        }
+        conn = PMCConnector()
+        items = conn._extract_from_payload("test", payload, 5)
+        assert len(items) == 1
+        assert items[0].title == "Real Article"
+        assert items[0].abstract == "A real abstract."
+
+    def test_empty_and_whitespace_abstract_is_dropped(self) -> None:
+        payload = {
+            "resultList": {
+                "result": [
+                    self._rec("Empty", "", "10.1/e"),
+                    self._rec("Whitespace", "   ", "10.1/w"),
+                    self._rec("Kept", "Kept abstract.", "10.1/k"),
+                ],
+            },
+        }
+        conn = PMCConnector()
+        items = conn._extract_from_payload("test", payload, 5)
+        assert [it.title for it in items] == ["Kept"]
+
+    def test_overfetch_keeps_limit_after_filtering(self) -> None:
+        """Filtering null-abstract records must not shrink the result below
+        ``limit`` when the over-fetched page contains enough real abstracts."""
+        results = [
+            self._rec(f"Meeting abstract {i}", None, f"10.1/ma{i}") for i in range(3)
+        ] + [
+            self._rec(f"Article {i}", f"Abstract {i}.", f"10.1/a{i}") for i in range(5)
+        ]
+        payload = {"resultList": {"result": results}}
+        conn = PMCConnector()
+        items = conn._extract_from_payload("test", payload, 4)
+        assert len(items) == 4
+        assert all(it.abstract for it in items)
+
+
 class TestCrossrefVolumeIssuePages:
     """CrossrefConnector should extract volume/issue/pages."""
 
