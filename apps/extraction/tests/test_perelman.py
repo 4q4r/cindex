@@ -281,26 +281,85 @@ class TestAgentLoop:
         assert len(client.chat_calls) == 1
         assert len(result.quotes) == 1
 
-    def test_max_tool_turns_guard_terminates_without_raising(self) -> None:
-        # Always returns a tool_call — the loop must stop at max_tool_turns.
-        client = _FakeClient(
-            [
-                _assistant(
-                    tool_calls=[
-                        _tool_call("c", "zoom", {"image_id": "page-0", "factor": 1.5}),
-                    ],
-                ),
-            ]
-            * 5,
+    def test_max_tool_turns_guard_force_finalizes_and_parses(self) -> None:
+        # The model keeps calling tools past max_tool_turns (over-eager vision
+        # model, e.g. glm-4.6v-flash). The loop dispatches every turn (so the
+        # conversation stays well-formed), then makes ONE tool-free finalize
+        # call whose JSON is parsed — instead of returning empty content.
+        tool_turn = _assistant(
+            tool_calls=[
+                _tool_call("c", "zoom", {"image_id": "page-0", "factor": 1.5}),
+            ],
         )
+        client = _FakeClient([tool_turn, tool_turn, _assistant(content=_FINAL_JSON)])
         fetcher = _FakeFetcher(_parts())
         extractor = _extractor(client, fetcher, _cfg(max_tool_turns=1))
 
         result = asyncio.run(extractor.extract(_StubArticle()))
 
-        # max_tool_turns=1 → at most 2 chat calls (turns 0 and 1).
-        assert len(client.chat_calls) == 2
+        # max_tool_turns=1 → 2 tool turns (0 and 1) + 1 force-finalize call.
+        assert len(client.chat_calls) == 3
+        # Tool turns carried tools; the finalize call stripped them.
+        assert client.kwargs[0]["tools"] is TOOL_SCHEMAS
+        assert client.kwargs[1]["tools"] is TOOL_SCHEMAS
+        assert client.kwargs[2]["tools"] is None
+        assert client.kwargs[2]["tool_choice"] is None
+        # The finalize message is a user «finalize now» instruction.
+        finalize_msgs = client.chat_calls[2]
+        assert finalize_msgs[-1]["role"] == "user"
+        assert "final JSON" in finalize_msgs[-1]["content"]
+        # Finalize JSON parsed → quotes recovered despite the tool loop.
+        assert len(result.quotes) == 1
+        assert (
+            result.quotes[0].text == "We demonstrate a verbatim result worth quoting."
+        )
+
+    def test_max_tool_turns_guard_empty_when_finalize_also_empty(self) -> None:
+        # If the finalize call also returns no content (model refuses to
+        # converge), the result is empty but never raises.
+        tool_turn = _assistant(
+            tool_calls=[
+                _tool_call("c", "zoom", {"image_id": "page-0", "factor": 1.5}),
+            ],
+        )
+        client = _FakeClient([tool_turn, tool_turn, _assistant(content=None)])
+        fetcher = _FakeFetcher(_parts())
+        extractor = _extractor(client, fetcher, _cfg(max_tool_turns=1))
+
+        result = asyncio.run(extractor.extract(_StubArticle()))
+
+        assert len(client.chat_calls) == 3
         assert result.is_empty
+
+    def test_finalize_returning_tool_calls_is_logged_and_dropped(
+        self,
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        # Provider ignores stripped tools and returns tool_calls on the finalize
+        # call — they are dropped, result is empty, and a warning is logged so
+        # operators can spot provider misbehavior.
+        tool_turn = _assistant(
+            tool_calls=[
+                _tool_call("c", "zoom", {"image_id": "page-0", "factor": 1.5}),
+            ],
+        )
+        finalize_misbehave = _assistant(
+            tool_calls=[
+                _tool_call("c2", "zoom", {"image_id": "page-0", "factor": 2.0}),
+            ],
+        )
+        client = _FakeClient([tool_turn, tool_turn, finalize_misbehave])
+        fetcher = _FakeFetcher(_parts())
+        extractor = _extractor(client, fetcher, _cfg(max_tool_turns=1))
+
+        with caplog.at_level("WARNING", logger="apps.extraction.perelman"):
+            result = asyncio.run(extractor.extract(_StubArticle()))
+
+        assert len(client.chat_calls) == 3
+        assert result.is_empty
+        assert any(
+            "finalize call returned tool_calls" in r.message for r in caplog.records
+        )
 
     def test_malformed_json_yields_empty_no_raise(self) -> None:
         client = _FakeClient([_assistant(content="this is not json at all")])

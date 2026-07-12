@@ -249,7 +249,6 @@ class PerelmanExtractor:
         """
         cfg = self._cfg
         max_turns = cfg.max_tool_turns
-        final_content = ""
         for turn in range(max_turns + 1):
             try:
                 msg = await self._client.chat(
@@ -259,21 +258,66 @@ class PerelmanExtractor:
                 )
             except Exception as exc:  # noqa: BLE001 - per-result isolation
                 logger.warning("perelman: llm call failed", turn=turn, error=str(exc))
-                return final_content
+                return ""
             messages.append(msg)
             tool_calls = msg.get("tool_calls")
             if not tool_calls:
                 content = msg.get("content")
                 return content if isinstance(content, str) else ""
-            final_content = msg.get("content") or final_content
+            # Dispatch tool calls on every turn (including the last) so the
+            # conversation stays well-formed: an assistant message carrying
+            # tool_calls must be followed by tool-result messages, or the
+            # next request is rejected by strict OpenAI-compatible providers.
+            await self._handle_tool_calls(tool_calls, reg, messages)
             if turn == max_turns:
                 logger.warning(
                     "perelman: max_tool_turns reached with pending tool_calls",
                     max_turns=max_turns,
                 )
-                break
-            await self._handle_tool_calls(tool_calls, reg, messages)
-        return final_content
+                return await self._force_finalize(messages)
+        return ""  # pragma: no cover - loop always returns or raises above
+
+    async def _force_finalize(self, messages: list[dict]) -> str:
+        """Force a tool-free final answer when the tool loop is exhausted.
+
+        Over-eager vision models (e.g. Z.AI's ``glm-4.6v-flash``) keep calling
+        ``zoom`` / ``crop`` / ``rotate`` on every turn and never emit a final
+        JSON object, so ``_agent_loop`` would return empty content and the
+        article would get zero quotes. This strips the tools entirely (no
+        ``tools`` / ``tool_choice`` — the model physically cannot call tools)
+        and sends an explicit «finalize now» instruction, letting the model
+        transcribe what it has already inspected into the required JSON.
+
+        Returns the final content string (possibly empty on failure). Never
+        raises: a failure here yields ``""`` which parses to an empty result.
+        """
+        messages.append(
+            {
+                "role": "user",
+                "content": (
+                    "You have used all available inspection turns. Stop calling "
+                    "tools and return the final JSON object NOW with the quotes, "
+                    "formulas, and figures you have gathered so far. Use exactly "
+                    "the shape from the system prompt and output ONLY the JSON "
+                    "object (no prose, no code fences)."
+                ),
+            },
+        )
+        try:
+            msg = await self._client.chat(messages)
+        except Exception as exc:  # noqa: BLE001 - per-result isolation
+            logger.warning("perelman: finalize call failed", error=str(exc))
+            return ""
+        # A well-behaved provider returns plain content with tools stripped. If
+        # it still returns tool_calls (ignoring the omitted tools), log it so
+        # operators can distinguish a non-converging model from provider
+        # misbehavior; the tool_calls are dropped and the result is empty.
+        if msg.get("tool_calls"):
+            logger.warning(
+                "perelman: finalize call returned tool_calls despite stripped tools",
+            )
+        content = msg.get("content")
+        return content if isinstance(content, str) else ""
 
     async def _handle_tool_calls(
         self,
