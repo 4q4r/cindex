@@ -370,6 +370,81 @@ class TestAgentLoop:
 
         assert result.is_empty
 
+    def test_unescaped_latex_backslashes_are_repaired_and_parsed(self) -> None:
+        # Vision models embed LaTeX in JSON strings without doubling the
+        # backslash (``\alpha`` not ``\\alpha``), which json.loads rejects as
+        # "Invalid \escape". The parser doubles stray backslashes so the real
+        # quotes/formulas survive. ``\\a`` in this source is one backslash in
+        # the string — i.e. the genuinely-malformed payload the model emits.
+        content = (
+            '{"quotes":[{"text":"The energy is $\\alpha + \\beta$ here.",'
+            '"location":"s1","relevance":0.9,"rationale":"r"}],'
+            '"formulas":[{"latex":"$$\\sum_i x_i$$","location":"f1","caption":""}],'
+            '"figures":[]}'
+        )
+        # Sanity: the payload is genuinely invalid JSON before the repair.
+        with pytest.raises(ValueError, match="escape"):
+            json.loads(content)
+        client = _FakeClient([_assistant(content=content)])
+        fetcher = _FakeFetcher(_parts())
+        extractor = _extractor(client, fetcher)
+
+        result = asyncio.run(extractor.extract(_StubArticle()))
+
+        assert len(result.quotes) == 1
+        assert result.quotes[0].text == "The energy is $\\alpha + \\beta$ here."
+        assert len(result.formulas) == 1
+        assert result.formulas[0].latex == "$$\\sum_i x_i$$"
+
+    def test_latex_colliding_with_json_escape_is_not_silently_corrupted(self) -> None:
+        # ``\beta`` / ``\nabla`` / ``\frac`` / ``\tau`` / ``\rho`` all start with the
+        # same letter as a valid JSON short escape (``\b`` / ``\n`` / ``\f`` / ``\t``
+        # / ``\r``). Strict json.loads reads them as control chars with NO error —
+        # a silent corruption a naive regex filter leaves in place. The scanner
+        # doubles these so the LaTeX survives verbatim. ``\\b`` etc. in this source
+        # are single backslashes in the string — the malformed payload the model emits.
+        content = (
+            '{"quotes":[{"text":"$\\beta + \\nabla + \\tau + \\rho$",'
+            '"location":"s1","relevance":0.9,"rationale":"r"}],'
+            '"formulas":[],"figures":[]}'
+        )
+        intended = "$\\beta + \\nabla + \\tau + \\rho$"
+        # Sanity: strict json.loads parses silently (no error) but misreads the
+        # LaTeX commands as control chars — the parsed text is NOT the LaTeX.
+        strict_text = json.loads(content)["quotes"][0]["text"]
+        assert strict_text != intended
+        assert any(ord(c) < 0x20 for c in strict_text)
+        client = _FakeClient([_assistant(content=content)])
+        fetcher = _FakeFetcher(_parts())
+        extractor = _extractor(client, fetcher)
+
+        result = asyncio.run(extractor.extract(_StubArticle()))
+
+        assert len(result.quotes) == 1
+        assert result.quotes[0].text == intended
+
+    def test_raw_control_char_inside_quote_is_escaped_and_parsed(self) -> None:
+        # The vision model drops a literal newline (0x0A) inside a verbatim quote
+        # value, which json.loads rejects as "Invalid control character". The
+        # scanner escapes it to ``\n`` so the quote survives (json then decodes it
+        # back to a real newline in the parsed string).
+        content = (
+            '{"quotes":[{"text":"line one\nline two continues",'
+            '"location":"abstract","relevance":1.0,"rationale":"r"}],'
+            '"formulas":[],"figures":[]}'
+        )
+        # Sanity: the payload is genuinely invalid JSON before the repair.
+        with pytest.raises(ValueError, match="control character"):
+            json.loads(content)
+        client = _FakeClient([_assistant(content=content)])
+        fetcher = _FakeFetcher(_parts())
+        extractor = _extractor(client, fetcher)
+
+        result = asyncio.run(extractor.extract(_StubArticle()))
+
+        assert len(result.quotes) == 1
+        assert result.quotes[0].text == "line one\nline two continues"
+
     def test_http_error_yields_empty_no_raise(self) -> None:
         client = _FakeClient([], raises_on=0)
         fetcher = _FakeFetcher(_parts())
