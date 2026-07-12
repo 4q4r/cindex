@@ -31,6 +31,21 @@ class FetchRequest(BaseModel):
     timeout: float = Field(default=25.0, gt=0, le=120)
 
 
+class ScreenshotRequest(BaseModel):
+    """A screenshot request forwarded from the cindex worker.
+
+    The sidecar opens a page on its persistent Chromium context, navigates to
+    the URL (solving any JS challenge and setting cookies), then captures a
+    full-page PNG. Used by the PERELMAN content fetcher for HTML articles
+    without a PDF — the PNG is fed to the vision LLM as the ``page-shot``
+    image. The PNG is returned inline (base64 in the ``FetchResponse`` body),
+    never written to a shared filesystem (the sidecar has none with the worker).
+    """
+
+    url: HttpUrl
+    timeout: float = Field(default=25.0, gt=0, le=120)
+
+
 class FetchResponse(BaseModel):
     """The upstream response returned to the worker.
 

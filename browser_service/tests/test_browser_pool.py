@@ -38,6 +38,9 @@ class FakePage:
         commit_on_raise=True,
         evaluate_delay=0.0,
         redirect_to=None,
+        screenshot_result=None,
+        screenshot_delay=0.0,
+        screenshot_exc=None,
     ):
         self.evaluate_result = evaluate_result
         self.goto_exc = goto_exc
@@ -47,9 +50,17 @@ class FakePage:
         # Maps a goto input URL to the final URL the browser lands on after
         # following a server-side redirect (``page.url`` post-navigation).
         self.redirect_to = redirect_to or {}
+        # Screenshot scripting: ``screenshot_result`` is returned verbatim (bytes
+        # for the happy path, non-bytes to exercise the no-bytes guard); a
+        # ``screenshot_delay`` longer than the remaining budget makes
+        # ``asyncio.wait_for`` time out; ``screenshot_exc`` raises instead.
+        self.screenshot_result = screenshot_result
+        self.screenshot_delay = screenshot_delay
+        self.screenshot_exc = screenshot_exc
         self.url = "about:blank"
         self.goto_calls = []
         self.evaluate_calls = []
+        self.screenshot_calls = []
         self.closed = False
 
     async def goto(self, url, **kwargs):
@@ -68,6 +79,14 @@ class FakePage:
         if self.evaluate_delay:
             await asyncio.sleep(self.evaluate_delay)
         return self.evaluate_result
+
+    async def screenshot(self, **kwargs):
+        self.screenshot_calls.append(kwargs)
+        if self.screenshot_delay:
+            await asyncio.sleep(self.screenshot_delay)
+        if self.screenshot_exc is not None:
+            raise self.screenshot_exc
+        return self.screenshot_result
 
     async def close(self):
         self.closed = True
@@ -404,4 +423,82 @@ async def test_same_origin_redirect_keeps_original_fetch_url(monkeypatch):
     assert page.url == redirected
     fetch_arg = page.evaluate_calls[0][1]
     assert fetch_arg[0] == original
+    assert page.closed is True
+
+
+# Minimal valid PNG (8-byte signature + dummy chunks) — the pool only forwards
+# whatever ``page.screenshot`` returns, so a real PNG signature is enough to
+# assert the bytes round-trip and the full_page/type kwargs are passed through.
+_PNG_SIGNATURE = b"\x89PNG\r\n\x1a\n"
+_PNG_BYTES = _PNG_SIGNATURE + b"\x00" * 32
+
+
+async def test_screenshot_returns_png_bytes(monkeypatch):
+    """The happy path: navigate, capture a full-page PNG, close the page."""
+    page = FakePage(screenshot_result=_PNG_BYTES)
+    _patch_launch(monkeypatch, page)
+    pool = browser_pool.BrowserPool()
+    png = await pool.screenshot("https://example.com", timeout_seconds=25.0)
+    assert png == _PNG_BYTES
+    assert png.startswith(_PNG_SIGNATURE)
+    # ``screenshot`` must be asked for a full-page PNG.
+    assert page.screenshot_calls == [{"full_page": True, "type": "png"}]
+    # The disposable page is always closed in the ``finally`` block.
+    assert page.closed is True
+    assert [c[0] for c in page.goto_calls] == ["https://example.com"]
+
+
+async def test_screenshot_goto_best_effort_still_screens(monkeypatch):
+    """A networkidle timeout already landed the page — screenshot still runs.
+
+    Like ``fetch``, navigation is best-effort: endpoints that never reach
+    ``networkidle`` raise inside ``_navigate`` but the page did commit, so the
+    screenshot of whatever landed is still captured rather than aborting.
+    """
+    url = "https://example.com/long-stream"
+    page = FakePage(
+        goto_exc=TimeoutError("networkidle timeout"),
+        goto_raise_on={url},
+        commit_on_raise=True,
+        screenshot_result=_PNG_BYTES,
+    )
+    _patch_launch(monkeypatch, page)
+    pool = browser_pool.BrowserPool()
+    png = await pool.screenshot(url)
+    assert png == _PNG_BYTES
+    # ``_ensure_same_origin`` sees the page already on ``url`` (same-origin) and
+    # skips a redundant origin goto — exactly one navigation, then screenshot.
+    assert [c[0] for c in page.goto_calls] == [url]
+    assert page.screenshot_calls == [{"full_page": True, "type": "png"}]
+    assert page.closed is True
+
+
+async def test_screenshot_timeout_raises_and_closes_page(monkeypatch):
+    """A hanging ``page.screenshot`` is bounded by the remaining budget."""
+    page = FakePage(screenshot_result=_PNG_BYTES, screenshot_delay=5.0)
+    _patch_launch(monkeypatch, page)
+    pool = browser_pool.BrowserPool()
+    with pytest.raises(browser_pool.BrowserPoolError):
+        await pool.screenshot("https://example.com", timeout_seconds=0.2)
+    # The page is released even when the screenshot times out.
+    assert page.closed is True
+
+
+async def test_screenshot_no_bytes_raises(monkeypatch):
+    """A non-bytes screenshot result is a hard error, not a silent empty body."""
+    page = FakePage(screenshot_result={"not": "bytes"})
+    _patch_launch(monkeypatch, page)
+    pool = browser_pool.BrowserPool()
+    with pytest.raises(browser_pool.BrowserPoolError):
+        await pool.screenshot("https://example.com")
+    assert page.closed is True
+
+
+async def test_screenshot_exception_wrapped_as_pool_error(monkeypatch):
+    """Any page-level screenshot failure becomes a ``BrowserPoolError``."""
+    page = FakePage(screenshot_exc=RuntimeError("target closed"))
+    _patch_launch(monkeypatch, page)
+    pool = browser_pool.BrowserPool()
+    with pytest.raises(browser_pool.BrowserPoolError):
+        await pool.screenshot("https://example.com")
     assert page.closed is True

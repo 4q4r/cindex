@@ -94,6 +94,12 @@ export function mapApiResult(
     },
     url: item.url,
     rerankScore: item.rerank_score ?? 0,
+    quotes: (item.quotes ?? []).map((q) => ({
+      text: q.text,
+      location: q.location,
+      relevance: q.relevance,
+      rationale: q.rationale,
+    })),
   };
 }
 

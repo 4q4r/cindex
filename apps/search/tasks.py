@@ -10,6 +10,7 @@ from celery import shared_task
 from django.conf import settings
 from django.utils import timezone
 
+from apps.extraction.services import QuoteExtractionService
 from apps.ingestion.services import IngestionService
 
 from .filters import SearchFilters
@@ -379,6 +380,20 @@ def run_search_job(job_id: str) -> None:
             filters=_filters_from_job(job),
         )
         hits_after = SearchService.index_hit_count(job.query, job.expression)
+
+        # PERELMAN quote extraction (cache-aware, query-agnostic, never raises).
+        # Runs as a visible substage so the user sees the LLM batch progress;
+        # fills ``results[i]["quotes"]`` from the ``ArticleQuotes`` cache or a
+        # fresh extraction. When the LLM is not configured this is a no-op and
+        # quotes stay empty — the frontend falls back to the abstract preview.
+        _update_job(
+            job,
+            stage="searching_index",
+            substage="quote_extraction",
+            substage_label="Извлекаем цитаты (PERELMAN)",
+            message="Извлекаем релевантные цитаты из статей",
+        )
+        QuoteExtractionService.enrich(results)
 
         final_status = "completed"
         final_message = "Готово"

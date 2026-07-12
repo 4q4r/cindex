@@ -69,6 +69,11 @@ class Article(models.Model):
     publication_date = models.DateField(null=True, blank=True)
     url = models.URLField(max_length=1000, db_index=True)
     doi = models.CharField(max_length=256, unique=True)
+    # Path to a PERELMAN-processed local markdown file (relative to
+    # CINDEX_ARTICLES_DIR). A non-empty value marks the article as "frozen":
+    # on refresh the ingestion pipeline reads the local md first and skips
+    # re-fetching from the network. Only published articles are frozen.
+    local_md_path = models.CharField(max_length=512, blank=True, default="")
     volume = models.CharField(max_length=32, blank=True)
     issue = models.CharField(max_length=32, blank=True)
     pages = models.CharField(max_length=32, blank=True)
@@ -100,6 +105,7 @@ class Article(models.Model):
         indexes = (
             models.Index(fields=["is_eligible", "publication_year"]),
             models.Index(fields=["doi"]),
+            models.Index(fields=["local_md_path"]),
         )
 
     def __str__(self) -> str:

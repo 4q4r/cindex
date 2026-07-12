@@ -112,6 +112,11 @@ class SearchService:
             },
             "url": article.url,
             "rerank_score": rerank_score,
+            # PERELMAN quotes are filled in by ``QuoteExtractionService.enrich``
+            # after the search payload is built (cache-aware, query-agnostic).
+            # Default empty so the field is always present even when the LLM is
+            # not configured — the frontend falls back to the preview block.
+            "quotes": [],
         }
 
     @staticmethod

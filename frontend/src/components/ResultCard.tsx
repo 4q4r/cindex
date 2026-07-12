@@ -12,14 +12,14 @@ import {
   FileText,
   Clock,
 } from "lucide-react";
-import { SearchResult, ViewMode } from "../types";
+import type { CitationStyle, Quote, SearchResult, ViewMode } from "../types";
 import { buildCitation } from "../utils/citation";
 
 interface ResultCardProps {
   result: SearchResult;
   query: string;
   viewMode: ViewMode;
-  citationStyle: "gost2018" | "mla" | "apa" | "vancouver" | "ieee" | "harvard";
+  citationStyle: CitationStyle;
   onCopy: (text: string, type: string) => void;
 }
 
@@ -107,6 +107,82 @@ function ConfidenceBadge({ score }: { score: number }) {
     >
       <span>{label}</span>
     </div>
+  );
+}
+
+function QuotesBlock({
+  quotes,
+  query,
+  preview,
+  onCopy,
+  isCompact,
+}: {
+  quotes: Quote[];
+  query: string;
+  preview: string;
+  onCopy: (text: string, type: string) => void;
+  isCompact: boolean;
+}) {
+  if (quotes.length === 0) {
+    // LLM not configured / no text / extraction failed — fall back to the
+    // real abstract preview (a graceful degraded path, never fake).
+    return (
+      <div
+        className={`text-sm text-text-secondary leading-relaxed ${
+          isCompact ? "line-clamp-5" : ""
+        } mb-4`}
+      >
+        <HighlightedText text={preview} query={query} />
+      </div>
+    );
+  }
+
+  return (
+    <section
+      aria-label="Извлечённые цитаты"
+      className="mb-4 space-y-3 animate-fade-in"
+    >
+      {quotes.map((q, i) => {
+        const relevancePct =
+          typeof q.relevance === "number"
+            ? Math.round(q.relevance * 100)
+            : null;
+        return (
+          <blockquote
+            key={i}
+            className="border-l-2 border-accent/60 pl-3 font-serif text-text-secondary leading-relaxed"
+          >
+            <p className={isCompact ? "line-clamp-3" : ""}>
+              <HighlightedText text={q.text} query={query} />
+            </p>
+            <div className="flex items-center justify-between gap-2 mt-1.5 not-italic font-sans">
+              <span className="text-text-tertiary text-xs">
+                {relevancePct !== null
+                  ? `релевантность: ${String(relevancePct)}%`
+                  : ""}
+                {q.location ? ` · ${q.location}` : ""}
+              </span>
+              <button
+                type="button"
+                aria-label="Скопировать цитату"
+                onClick={() => {
+                  onCopy(q.text, "quote");
+                }}
+                className="press-feedback flex items-center gap-1 text-text-tertiary hover:text-accent-text bg-bg-elevated border border-border-default px-3 py-1.5 rounded-lg transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/50"
+              >
+                <Copy className="w-3.5 h-3.5" />
+                <span className="text-xs">Копировать</span>
+              </button>
+            </div>
+            {q.rationale && (
+              <p className="text-text-tertiary text-xs italic mt-1 font-sans">
+                {q.rationale}
+              </p>
+            )}
+          </blockquote>
+        );
+      })}
+    </section>
   );
 }
 
@@ -200,11 +276,13 @@ export const ResultCard = memo(function ResultCard({
         />
       </div>
 
-      <div
-        className={`text-sm text-text-secondary leading-relaxed ${isCompact ? "line-clamp-5" : ""} mb-4`}
-      >
-        <HighlightedText text={result.preview} query={query} />
-      </div>
+      <QuotesBlock
+        quotes={result.quotes}
+        query={query}
+        preview={result.preview}
+        onCopy={onCopy}
+        isCompact={isCompact}
+      />
 
       <div className="mb-3">
         <button
@@ -242,12 +320,13 @@ export const ResultCard = memo(function ResultCard({
         <button
           type="button"
           onClick={() => {
-            onCopy(result.preview, "preview");
+            const quotesText = result.quotes.map((q) => q.text).join("\n\n");
+            onCopy(quotesText || result.preview, "quotes");
           }}
           className="press-feedback flex items-center gap-1.5 text-xs text-text-tertiary hover:text-accent-text bg-bg-elevated border border-border-default px-3 py-1.5 rounded-lg transition-colors"
         >
           <Copy className="w-3.5 h-3.5" />
-          Копировать превью
+          Копировать цитаты
         </button>
         <a
           href={doi ? `https://doi.org/${doi}` : result.url}

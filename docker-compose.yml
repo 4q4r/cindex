@@ -28,6 +28,7 @@ services:
       - secret_key
     volumes:
       - ./local_imports:/app/local_imports
+      - ./var/articles:/app/var/articles
     depends_on:
       migrate:
         condition: service_completed_successfully
@@ -71,6 +72,7 @@ services:
           memory: 6g
     volumes:
       - ./local_imports:/app/local_imports
+      - ./var/articles:/app/var/articles
     entrypoint: ["/app/.venv/bin/celery"]
     command: ["-A", "config", "worker", "-l", "info"]
     depends_on:

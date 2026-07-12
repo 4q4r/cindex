@@ -177,9 +177,67 @@ Every article is scored against four criteria
 - `not_preprint` — not a preprint (or is an author-manuscript version)
 
 Each criterion carries a confidence value; `eligibility_confidence.overall`
-drives ranking. The frontend renders copy-ready citations in GOST 2018, MLA,
-APA, Vancouver, IEEE, and Harvard styles (citation style is a client-side
-display preference).
+drives ranking. The frontend renders copy-ready citations in twelve styles —
+ГОСТ Р 7.0.108-2022 (default, the newest Russian GOST for online articles),
+ГОСТ Р 7.0.5-2008, ГОСТ Р 7.0.100-2018, APA 7, IEEE, MLA 9, Chicago 17,
+Vancouver, GB/T 7714-2015, Harvard, BibTeX, and RIS — selected in the filter
+panel (citation style is a client-side display preference).
+
+---
+
+## Quote extraction (PERELMAN)
+
+Each search result carries verbatim quotes extracted by an OpenAI-compatible
+LLM agent that implements the PERELMAN method for meta-analysis of scientific
+literature. The extractor is **multimodal and agentic**: it receives the
+article as text **plus images** — rendered PDF pages, a full-page HTML
+screenshot, and figure images — and may call `zoom` / `crop` / `rotate` tools
+(over PyMuPDF) to inspect small regions before transcribing. It transcribes
+all mathematical formulas as LaTeX and converts all graphs, plots, and
+figures to markdown, so a processed article is fully represented as text.
+
+Extraction is **query-agnostic** and runs as an automatic background batch
+inside `run_search_job` (substage «Извлекаем цитаты (PERELMAN)»). The search
+query is used only for frontend highlight; quotes capture the article's own
+salient passages, so they cache cleanly per article.
+
+**Configuration** (in `.env`, all required for extraction to run):
+
+- `CINDEX_LLM_BASE_URL`, `CINDEX_LLM_API_KEY`, `CINDEX_LLM_MODEL` — the
+  OpenAI-compatible `chat/completions` endpoint. If any is unset, the pipeline
+  logs one warning and every result falls back to the abstract preview (no
+  quotes). There is no hardcoded provider and no fake fallback.
+- `CINDEX_LLM_EXTRA_BODY` — provider-specific extensions merged into the
+  request body (e.g. thinking budgets, provider routing). Override wins on
+  collision.
+- `CINDEX_LLM_TIMEOUT` / `TEMPERATURE` / `MAX_QUOTES` / `CONCURRENCY` /
+  `MAX_INPUT_CHARS` — extraction tuning. Raise `TIMEOUT` for vision (large
+  image payloads).
+- `CINDEX_LLM_PDF_DPI` / `MAX_PDF_PAGES` / `MAX_IMAGES` / `MAX_IMAGE_DIM` /
+  `IMAGE_QUALITY` / `MAX_TOOL_TURNS` / `IMAGE_DETAIL` — multimodal / vision
+  caps and the agent-loop guard.
+- `CINDEX_ARTICLES_DIR` — local markdown store (default `var/articles`).
+
+**Persistence and freezing:**
+
+- Quotes are cached per article in the database (`ArticleQuotes`,
+  `apps/extraction`), so each article is processed **once**; subsequent
+  searches read the cached quotes.
+- **Published** articles are also saved as `.md` in `CINDEX_ARTICLES_DIR`
+  (abstract + full text + `## Формулы` + `## Графики и рисунки` + `##
+Извлечённые цитаты`) and **frozen**: on the next refresh the ingestion
+  pipeline reads the local markdown first and skips re-fetching the article
+  from the network.
+- **Preprints** are never cached and never written to `.md` (they may still
+  change); their quotes are extracted fresh on each search and they stay
+  fully refreshable.
+
+Bind-mount `CINDEX_ARTICLES_DIR` in `docker-compose.yml` (the `app` and
+`celery-worker` services mount `./var/articles:/app/var/articles`) so the
+`.md` files survive container rebuilds. To force re-extraction of a single
+published article after an erratum, delete its `ArticleQuotes` row and the
+corresponding `.md` file (then clear `Article.local_md_path`); this is a
+manual operation, not automated.
 
 ---
 

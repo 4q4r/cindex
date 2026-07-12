@@ -77,6 +77,37 @@ export interface SearchJobParams {
   per_page?: number;
 }
 
+/**
+ * Citation style identifier shared across the filter dropdown, the citation
+ * builder, and ResultCard. The default is the newest Russian GOST for online
+ * articles (ГОСТ Р 7.0.108-2022).
+ */
+export type CitationStyle =
+  | "gost_7_0_108_2022"
+  | "gost_7_0_5_2008"
+  | "gost2018"
+  | "apa"
+  | "ieee"
+  | "mla"
+  | "chicago"
+  | "vancouver"
+  | "gb_t_7714"
+  | "harvard"
+  | "bibtex"
+  | "ris";
+
+/**
+ * A verbatim passage extracted from an article by the PERELMAN LLM pipeline.
+ * Cached per-article in the backend (`ArticleQuotes`); surfaced on every
+ * search result. `text` is always a verbatim quote from the article.
+ */
+export interface Quote {
+  text: string;
+  location?: string;
+  relevance?: number;
+  rationale?: string;
+}
+
 export interface ApiSearchResult {
   id: number;
   title: string;
@@ -106,6 +137,7 @@ export interface ApiSearchResult {
   };
   url: string;
   rerank_score?: number;
+  quotes?: Quote[];
 }
 
 export interface SearchResult {
@@ -137,10 +169,11 @@ export interface SearchResult {
   };
   url: string;
   rerankScore?: number;
+  quotes: Quote[];
 }
 
 export interface Filters {
-  citationStyle: "gost2018" | "mla" | "apa" | "vancouver" | "ieee" | "harvard";
+  citationStyle: CitationStyle;
   peerReviewedOnly: boolean;
   indexedOnly: boolean;
   excludePreprints: boolean;
@@ -186,7 +219,7 @@ export interface SearchProgress {
 }
 
 export const DEFAULT_FILTERS: Filters = {
-  citationStyle: "gost2018",
+  citationStyle: "gost_7_0_108_2022",
   peerReviewedOnly: true,
   indexedOnly: true,
   excludePreprints: true,

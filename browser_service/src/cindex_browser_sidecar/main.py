@@ -9,6 +9,7 @@ without touching the real browser.
 from __future__ import annotations
 
 import asyncio
+import base64
 import os
 from contextlib import asynccontextmanager
 from typing import TYPE_CHECKING
@@ -19,7 +20,11 @@ from fastapi import FastAPI
 from fastapi.responses import JSONResponse
 
 from cindex_browser_sidecar.browser_pool import BrowserPool, BrowserPoolError
-from cindex_browser_sidecar.models import FetchRequest, FetchResponse
+from cindex_browser_sidecar.models import (
+    FetchRequest,
+    FetchResponse,
+    ScreenshotRequest,
+)
 
 if TYPE_CHECKING:
     from collections.abc import AsyncIterator
@@ -136,6 +141,43 @@ async def fetch(payload: FetchRequest) -> FetchResponse:
         return JSONResponse(status_code=status, content={"detail": str(exc)})
     log.info("fetch_ok", status=response.status, content_type=response.content_type)
     return response
+
+
+@app.post(
+    "/screenshot",
+    response_model=FetchResponse,
+    summary="Capture a full-page PNG screenshot through the stealth browser context",
+)
+async def screenshot(payload: ScreenshotRequest) -> FetchResponse:
+    """Render ``url`` in the persistent context and return a full-page PNG.
+
+    The PNG is returned inline as base64 (``encoding="base64"``) so the worker
+    can decode it straight into the PERELMAN vision payload; nothing is written
+    to a shared filesystem (the sidecar has none with the worker).
+    """
+    pool = get_pool()
+    log = logger.bind(url=str(payload.url))
+    try:
+        png = await asyncio.wait_for(
+            pool.screenshot(str(payload.url), timeout_seconds=payload.timeout),
+            timeout=max(payload.timeout, 1.0) + 10,
+        )
+    except TimeoutError as exc:
+        log.warning("screenshot_timeout")
+        msg = f"screenshot timed out for {payload.url}: {exc}"
+        return JSONResponse(status_code=504, content={"detail": msg})
+    except BrowserPoolError as exc:
+        log.warning("screenshot_failed", exc_info=exc)
+        status = 504 if _is_timeout_error(exc) else 502
+        return JSONResponse(status_code=status, content={"detail": str(exc)})
+    body = base64.standard_b64encode(png).decode("ascii")
+    log.info("screenshot_ok", bytes=len(png))
+    return FetchResponse(
+        status=200,
+        body=body,
+        content_type="image/png",
+        encoding="base64",
+    )
 
 
 def main() -> None:

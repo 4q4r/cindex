@@ -14,6 +14,7 @@ from requests.exceptions import RequestException
 from apps.articles.models import Article, ArticleAuthor, Author, Journal, Source
 from apps.articles.services import ArticleEligibilityService, IdentifierService
 from apps.core.translate import translate_query_for_source
+from apps.extraction.local_store import LocalArticleStore
 
 from .connectors import CONNECTORS, BaseConnector, ConnectorFetchError, RawArticle
 from .doi_enrichment import DoiEnrichmentService
@@ -298,7 +299,7 @@ class IngestionService:
         return saved
 
     @classmethod
-    def _process_single_source(  # noqa: PLR0913
+    def _process_single_source(  # noqa: PLR0913, PLR0915, C901
         cls,
         *,
         source_key: str,
@@ -343,7 +344,22 @@ class IngestionService:
             enriched_raws: list[RawArticle] = []
             for raw in raws:
                 try:
-                    enriched = connector.enrich_raw(raw)
+                    if LocalArticleStore.exists(raw.doi):
+                        # Local-first: a frozen article (already saved as local
+                        # markdown by PERELMAN) is not re-fetched from the network.
+                        # ``_save_article`` upsert then takes its content from the
+                        # local md, so the network source is bypassed on refresh.
+                        enriched = LocalArticleStore.to_raw(raw.doi, fallback_raw=raw)
+                        if enriched is None:
+                            # md parse failed -> fall back to the network path.
+                            enriched = connector.enrich_raw(raw)
+                        else:
+                            logger.info(
+                                "ingestion: local-md hit, skipping network enrich",
+                                doi=raw.doi,
+                            )
+                    else:
+                        enriched = connector.enrich_raw(raw)
                 except (ValueError, RuntimeError, ConnectorFetchError):
                     # A single article's enrichment must not abort the whole
                     # source: a sidecar 502/403 or a residual challenge page on

@@ -103,6 +103,7 @@ INSTALLED_APPS = [
     "apps.articles",
     "apps.ingestion",
     "apps.search",
+    "apps.extraction",
 ]
 
 MIDDLEWARE = [

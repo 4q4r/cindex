@@ -1,14 +1,20 @@
 import { useState, useRef, useEffect, useMemo, useId } from "react";
 import { ChevronDown, X, Filter, Check } from "lucide-react";
-import { Filters } from "../types";
+import type { CitationStyle, Filters } from "../types";
 
 const CITATION_STYLE_OPTIONS = [
+  { value: "gost_7_0_108_2022", label: "ГОСТ Р 7.0.108-2022" },
+  { value: "gost_7_0_5_2008", label: "ГОСТ Р 7.0.5-2008" },
   { value: "gost2018", label: "ГОСТ Р 7.0.100-2018" },
-  { value: "mla", label: "MLA" },
-  { value: "apa", label: "APA" },
-  { value: "vancouver", label: "Vancouver" },
+  { value: "apa", label: "APA 7" },
   { value: "ieee", label: "IEEE" },
+  { value: "mla", label: "MLA 9" },
+  { value: "chicago", label: "Chicago 17" },
+  { value: "vancouver", label: "Vancouver" },
+  { value: "gb_t_7714", label: "GB/T 7714-2015" },
   { value: "harvard", label: "Harvard" },
+  { value: "bibtex", label: "BibTeX" },
+  { value: "ris", label: "RIS" },
 ] as const;
 
 const SORT_OPTIONS = [
@@ -332,10 +338,7 @@ export function FilterPanel({
         value={filters.citationStyle}
         options={CITATION_STYLE_OPTIONS}
         onChange={(v) => {
-          updateFilter(
-            "citationStyle",
-            v as "gost2018" | "mla" | "apa" | "vancouver" | "ieee" | "harvard",
-          );
+          updateFilter("citationStyle", v as CitationStyle);
         }}
       />
 
