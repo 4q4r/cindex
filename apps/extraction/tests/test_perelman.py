@@ -331,6 +331,36 @@ class TestAgentLoop:
         assert len(client.chat_calls) == 3
         assert result.is_empty
 
+    def test_finalize_returning_tool_calls_is_logged_and_dropped(
+        self,
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        # Provider ignores stripped tools and returns tool_calls on the finalize
+        # call — they are dropped, result is empty, and a warning is logged so
+        # operators can spot provider misbehavior.
+        tool_turn = _assistant(
+            tool_calls=[
+                _tool_call("c", "zoom", {"image_id": "page-0", "factor": 1.5}),
+            ],
+        )
+        finalize_misbehave = _assistant(
+            tool_calls=[
+                _tool_call("c2", "zoom", {"image_id": "page-0", "factor": 2.0}),
+            ],
+        )
+        client = _FakeClient([tool_turn, tool_turn, finalize_misbehave])
+        fetcher = _FakeFetcher(_parts())
+        extractor = _extractor(client, fetcher, _cfg(max_tool_turns=1))
+
+        with caplog.at_level("WARNING", logger="apps.extraction.perelman"):
+            result = asyncio.run(extractor.extract(_StubArticle()))
+
+        assert len(client.chat_calls) == 3
+        assert result.is_empty
+        assert any(
+            "finalize call returned tool_calls" in r.message for r in caplog.records
+        )
+
     def test_malformed_json_yields_empty_no_raise(self) -> None:
         client = _FakeClient([_assistant(content="this is not json at all")])
         fetcher = _FakeFetcher(_parts())

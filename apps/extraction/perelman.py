@@ -308,6 +308,14 @@ class PerelmanExtractor:
         except Exception as exc:  # noqa: BLE001 - per-result isolation
             logger.warning("perelman: finalize call failed", error=str(exc))
             return ""
+        # A well-behaved provider returns plain content with tools stripped. If
+        # it still returns tool_calls (ignoring the omitted tools), log it so
+        # operators can distinguish a non-converging model from provider
+        # misbehavior; the tool_calls are dropped and the result is empty.
+        if msg.get("tool_calls"):
+            logger.warning(
+                "perelman: finalize call returned tool_calls despite stripped tools",
+            )
         content = msg.get("content")
         return content if isinstance(content, str) else ""
 
