@@ -67,59 +67,34 @@ _CONTROL_SHORT_ESCAPES = {
 # Highest control char that must be escaped inside a JSON string value.
 _CONTROL_MAX = 0x1F
 
-_HEX = set("0123456789abcdefABCDEF")
-
-# Backslash escapes that are genuinely valid in JSON (kept verbatim by the
-# scanner). ``b`` / ``f`` / ``n`` / ``r`` / ``t`` are excluded here because they
-# also start LaTeX commands and are resolved contextually in the helper.
-_LITERAL_KEEP_ESCAPES = frozenset({'"', "\\", "/"})
-
-
-def _escape_string_backslash(content: str, i: int, n: int) -> tuple[str, int]:
-    r"""Rewrite a backslash inside a JSON string value.
-
-    Returns the replacement text and the next index. A genuine ``\uXXXX`` and
-    the literal escapes ``\"`` / ``\\`` / ``\/`` are kept; a backslash before an
-    ASCII letter is doubled (LaTeX command like ``\alpha`` / ``\beta`` /
-    ``\nabla``); an ambiguous ``\b`` / ``\f`` / ``\n`` / ``\r`` / ``\t`` is kept
-    only when it is NOT the start of a LaTeX word; any other lone backslash is
-    doubled so ``json.loads`` treats it as a literal backslash.
-    """
-    nxt = content[i + 1] if i + 1 < n else ""
-    if nxt == "u" and i + 6 <= n and all(c in _HEX for c in content[i + 2 : i + 6]):
-        return content[i : i + 6], i + 6  # genuine \uXXXX — keep verbatim
-    if nxt in _LITERAL_KEEP_ESCAPES:
-        return f"\\{nxt}", i + 2
-    # \b \f \n \r \t: a real short escape only when NOT starting a LaTeX word.
-    if nxt in "bfnrt" and not (i + 2 < n and content[i + 2].isalpha()):
-        return f"\\{nxt}", i + 2
-    if nxt and nxt.isalpha():  # LaTeX command — double the backslash
-        return f"\\\\{nxt}", i + 2
-    # Lone backslash before a digit / symbol / space / EOF — double to literal.
-    return f"\\\\{nxt}", i + 2 if nxt else i + 1
-
 
 def _lenient_json_loads(content: str) -> object | None:
-    r"""Tolerant JSON loader for vision-model output.
+    r"""Tolerant JSON loader that escapes raw control chars inside string values.
 
     Even with ``response_format={"type": "json_object"}`` the GLM vision model
-    still emits two classes of invalid JSON inside string values:
+    still emits a literal raw control character (typically 0x0A newline) inside
+    a verbatim quote — ``"text": "line one<0x0A>line two"`` — which
+    ``json.loads`` rejects as ``Invalid control character``. ``json_object`` does
+    NOT reliably escape these, so this scanner repairs that one defect class.
 
-    1. **Raw control characters** — a literal newline / tab dropped inside a
-       verbatim quote (``"text": "line one<0x0A>line two"``), which
-       ``json.loads`` rejects as ``Invalid control character``.
-    2. **Unescaped LaTeX backslashes** — ``\alpha`` instead of ``\\alpha``; some
-       collide with valid JSON escapes (``\beta`` reads as backspace + ``eta``,
-       ``\nabla`` as newline + ``abla``, ``\frac`` as formfeed + ``rac``) and are
-       silently corrupted rather than rejected.
+    Backslashes are NOT repaired here. The finalize turn sets
+    ``response_format=json_object`` so the provider doubles LaTeX backslashes
+    (``\\alpha``), which is the robust class-1 fix. A lax class-1 doubling in the
+    scanner was fundamentally unsafe: it could not distinguish a genuine
+    ``\n`` / ``\b`` / ``\f`` / ``\r`` / ``\t`` JSON escape followed by an ASCII
+    letter (a real newline + text, common in multi-line verbatim quotes after
+    ``json_object``) from a LaTeX command (``\nabla`` / ``\nu``), and corrupted
+    verbatim quote text — the core PERELMAN deliverable. So this scanner only
+    escapes raw control chars; a bare ``\alpha`` without ``json_object`` still
+    raises ``Invalid \escape`` and yields ``None`` (a safe empty result, never
+    silent corruption).
 
-    This scans char-by-char, tracking string state (toggling on an unescaped
-    ``"``), and rewrites the content *only inside string values*: raw control
-    chars become their JSON escapes and a backslash starting a LaTeX command
-    (``\`` + ASCII letter, except a genuine ``\uXXXX``) is doubled. Structural
-    whitespace, valid ``\"`` / ``\\`` / ``\/``, and ``\uXXXX`` are preserved, so
-    well-formed JSON round-trips byte-identically through the strict pass and
-    this fallback only runs on the rare genuinely-broken payload.
+    Scans char-by-char, tracking string state (toggling on an unescaped ``"``).
+    Outside strings, content passes through unchanged (raw newlines are valid
+    structural whitespace). Inside strings: a backslash plus the next char is
+    copied verbatim — so ``\"`` does not end the string, real ``\n`` / ``\t``
+    escapes survive, genuine ``\uXXXX`` is kept, and even an invalid ``\a`` is
+    left for strict to reject — and a raw control char becomes its JSON escape.
     """
     out: list[str] = []
     append = out.append
@@ -140,13 +115,26 @@ def _lenient_json_loads(content: str) -> object | None:
             i += 1
             continue
         if ch == "\\":
-            replacement, i = _escape_string_backslash(content, i, n)
-            append(replacement)
+            # Copy the backslash and the following char verbatim: keeps real
+            # ``\n``/``\t`` escapes, ``\\``, ``\"`` (so it does not toggle
+            # in_str), genuine ``\uXXXX``, and even invalid ``\a`` (left for
+            # strict to reject). Only escape a control char that follows a
+            # backslash (e.g. ``\<0x0A>``), which is otherwise dropped raw.
+            append("\\")
+            i += 1
+            if i < n:
+                nxt = content[i]
+                if ord(nxt) <= _CONTROL_MAX:
+                    append(_CONTROL_SHORT_ESCAPES.get(nxt, f"\\u{ord(nxt):04x}"))
+                else:
+                    append(nxt)
+                i += 1
             continue
         if ord(ch) <= _CONTROL_MAX:  # raw control char inside a string — escape it
             append(_CONTROL_SHORT_ESCAPES.get(ch, f"\\u{ord(ch):04x}"))
-        else:
-            append(ch)
+            i += 1
+            continue
+        append(ch)
         i += 1
     try:
         return json.loads("".join(out))
@@ -418,8 +406,20 @@ class PerelmanExtractor:
                 response_format={"type": "json_object"},
             )
         except Exception as exc:  # noqa: BLE001 - per-result isolation
-            logger.warning("perelman: finalize call failed", error=str(exc))
-            return ""
+            # Some OpenAI-compatible providers reject ``response_format`` with a
+            # 400. Retry once without it so the model can still finalize: the
+            # lenient scanner in :meth:`_parse` escapes any raw control chars,
+            # and bare LaTeX (without json_object doubling) degrades to an empty
+            # result rather than corrupting the quotes.
+            logger.warning(
+                "perelman: json_object finalize rejected, retrying plain",
+                error=str(exc),
+            )
+            try:
+                msg = await self._client.chat(messages)
+            except Exception as exc2:  # noqa: BLE001 - per-result isolation
+                logger.warning("perelman: finalize call failed", error=str(exc2))
+                return ""
         # A well-behaved provider returns plain content with tools stripped. If
         # it still returns tool_calls (ignoring the omitted tools), log it so
         # operators can distinguish a non-converging model from provider
@@ -519,25 +519,23 @@ class PerelmanExtractor:
     def _parse(self, content: str) -> ExtractionResult:
         r"""Parse the LLM's final JSON content into an :class:`ExtractionResult`.
 
-        Tolerates ```json fences and bare JSON. Vision models emit malformed
-        JSON in two ways: (1) unescaped LaTeX backslashes inside string values
-        (``\alpha`` instead of ``\\alpha``) — some collide with valid JSON short
-        escapes (``\b``/``\n``/``\f``/``\t``/``\r``) and are SILENTLY corrupted by
-        strict ``json.loads`` (``\beta`` → backspace+``eta``, no error), others
-        raise ``Invalid \escape``; (2) raw control chars (literal 0x0A newlines)
-        inside string values, raising ``Invalid control character``.
+        Tolerates ```json fences and bare JSON. Two malformations reach here:
+        (1) unescaped LaTeX backslashes (``\alpha``) — handled on the finalize
+        turn by ``response_format=json_object`` (the provider doubles them); bare
+        LaTeX without ``json_object`` raises ``Invalid \escape`` and yields an
+        empty result rather than silent corruption. (2) raw control chars
+        (literal 0x0A) inside string values, raising ``Invalid control
+        character`` — ``json_object`` does NOT fix these, so the lenient scanner
+        escapes them.
 
-        ``response_format=json_object`` on the finalize turn makes the provider
-        double backslashes (fixing class 1 on that turn), but it does NOT
-        reliably escape raw control chars, and the tool-loop turns cannot use
-        ``json_object`` at all (tools+json_object are incompatible on most
-        providers) — so the non-finalize path still emits raw LaTeX. The lenient
-        scanner is therefore the PRIMARY parser: it rewrites content ONLY inside
-        string values — escaping raw control chars and doubling bare-backslash
-        LaTeX commands — while preserving well-formed JSON byte-for-byte (a
-        strict ``json.loads`` is kept as a fast path and also covers any
-        well-formed payload the scanner might not need to touch). Structural /
-        unparseable payloads yield an empty result (logged), never raise.
+        Strict ``json.loads`` is the fast path (covers well-formed json_object
+        output). On ``ValueError`` the lenient scanner repairs class 2. The
+        scanner NEVER overrides a successful strict parse: it cannot distinguish
+        a real ``\n``+letter escape (newline + text in a verbatim quote) from a
+        LaTeX ``\nabla`` / ``\nu``, so any class-1 doubling on the strict path
+        would corrupt verbatim quote text. The scanner runs ONLY when strict
+        raises. Structural / unparseable payloads yield an empty result
+        (logged), never raise.
         """
         if not content or not content.strip():
             return ExtractionResult()
@@ -547,31 +545,22 @@ class PerelmanExtractor:
             start, end = stripped.find("{"), stripped.rfind("}")
             if start != -1 and end != -1 and end > start:
                 stripped = stripped[start : end + 1]
-        # Fast path: well-formed JSON (incl. json_object-doubled backslashes)
-        # parses strict and round-trips byte-identical through the scanner too,
-        # so try strict first; on ANY failure fall through to the lenient scan
-        # which repairs both defect classes. Silent-corruption cases (``\beta``
-        # etc.) do NOT raise here — they are caught by the scanner path below,
-        # so we cannot rely on strict alone; the scanner is authoritative.
-        data: object | None
+        # Fast path: well-formed JSON (incl. json_object-doubled backslashes).
+        # A successful strict parse is returned AS-IS — the lenient scanner
+        # cannot safely repair bare-backslash LaTeX (it would corrupt real
+        # ``\n``+letter escapes in verbatim quotes), so it runs ONLY when strict
+        # raises, escaping any raw control chars.
         try:
             data = json.loads(stripped)
-            # Strict succeeded — but ``\beta``-style collisions parse silently
-            # as control chars. Re-scan to detect & repair: the scanner round-
-            # trips well-formed JSON unchanged, so a differing result means the
-            # payload had bare-backslash LaTeX that strict misread.
-            repaired = _lenient_json_loads(stripped)
-            if repaired is not None and repaired != data:
-                data = repaired
         except ValueError:
             data = _lenient_json_loads(stripped)
-        if data is None:
-            logger.warning(
-                "perelman: final JSON parse failed",
-                content_len=len(content),
-                content_preview=content[:600],
-            )
-            return ExtractionResult()
+            if data is None:
+                logger.warning(
+                    "perelman: final JSON parse failed",
+                    content_len=len(content),
+                    content_preview=content[:600],
+                )
+                return ExtractionResult()
         if not isinstance(data, dict):
             return ExtractionResult()
         return ExtractionResult(

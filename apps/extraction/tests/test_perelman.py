@@ -370,21 +370,24 @@ class TestAgentLoop:
 
         assert result.is_empty
 
-    def test_unescaped_latex_backslashes_are_repaired_and_parsed(self) -> None:
-        # Vision models embed LaTeX in JSON strings without doubling the
-        # backslash (``\alpha`` not ``\\alpha``), which json.loads rejects as
-        # "Invalid \escape". The parser doubles stray backslashes so the real
-        # quotes/formulas survive. ``\\a`` in this source is one backslash in
-        # the string — i.e. the genuinely-malformed payload the model emits.
+    def test_json_object_doubled_latex_is_parsed_verbatim(self) -> None:
+        # ``response_format=json_object`` on the finalize turn makes the provider
+        # double LaTeX backslashes (``\\alpha``), which is the robust class-1 fix.
+        # The doubled payload is valid JSON, so strict ``json.loads`` is the fast
+        # path and the LaTeX survives verbatim as a single backslash in the parsed
+        # string. ``\\\\a`` in this source is the doubled ``\\alpha`` the provider
+        # emits; the parsed string then contains a single ``\alpha``.
         content = (
-            '{"quotes":[{"text":"The energy is $\\alpha + \\beta$ here.",'
+            '{"quotes":[{"text":"The energy is $\\\\alpha + \\\\beta$ here.",'
             '"location":"s1","relevance":0.9,"rationale":"r"}],'
-            '"formulas":[{"latex":"$$\\sum_i x_i$$","location":"f1","caption":""}],'
-            '"figures":[]}'
+            '"formulas":[{"latex":"$$\\\\sum_i x_i$$","location":"f1",'
+            '"caption":""}],"figures":[]}'
         )
-        # Sanity: the payload is genuinely invalid JSON before the repair.
-        with pytest.raises(ValueError, match="escape"):
-            json.loads(content)
+        # Sanity: the doubled-backslash payload is well-formed JSON.
+        assert (
+            json.loads(content)["quotes"][0]["text"]
+            == "The energy is $\\alpha + \\beta$ here."
+        )
         client = _FakeClient([_assistant(content=content)])
         fetcher = _FakeFetcher(_parts())
         extractor = _extractor(client, fetcher)
@@ -396,24 +399,23 @@ class TestAgentLoop:
         assert len(result.formulas) == 1
         assert result.formulas[0].latex == "$$\\sum_i x_i$$"
 
-    def test_latex_colliding_with_json_escape_is_not_silently_corrupted(self) -> None:
-        # ``\beta`` / ``\nabla`` / ``\frac`` / ``\tau`` / ``\rho`` all start with the
-        # same letter as a valid JSON short escape (``\b`` / ``\n`` / ``\f`` / ``\t``
-        # / ``\r``). Strict json.loads reads them as control chars with NO error —
-        # a silent corruption a naive regex filter leaves in place. The scanner
-        # doubles these so the LaTeX survives verbatim. ``\\b`` etc. in this source
-        # are single backslashes in the string — the malformed payload the model emits.
+    def test_json_object_doubled_collision_latex_round_trips(self) -> None:
+        # ``\beta`` / ``\nabla`` / ``\frac`` / ``\tau`` / ``\rho`` start with the
+        # same letter as a valid JSON short escape (``\b`` / ``\n`` / ``\f`` /
+        # ``\t`` / ``\r``): bare, strict json.loads reads them as control chars
+        # with NO error — a silent corruption. ``json_object`` doubles them
+        # (``\\beta``) so strict parses the LaTeX verbatim. ``\\\\b`` in this
+        # source is the doubled ``\\beta`` the provider emits.
         content = (
-            '{"quotes":[{"text":"$\\beta + \\nabla + \\tau + \\rho$",'
+            '{"quotes":[{"text":"$\\\\beta + \\\\nabla + \\\\tau + \\\\rho$",'
             '"location":"s1","relevance":0.9,"rationale":"r"}],'
             '"formulas":[],"figures":[]}'
         )
         intended = "$\\beta + \\nabla + \\tau + \\rho$"
-        # Sanity: strict json.loads parses silently (no error) but misreads the
-        # LaTeX commands as control chars — the parsed text is NOT the LaTeX.
-        strict_text = json.loads(content)["quotes"][0]["text"]
-        assert strict_text != intended
-        assert any(ord(c) < 0x20 for c in strict_text)
+        # Sanity: with the backslashes doubled, strict reads the LaTeX verbatim
+        # (no control chars, no error) — the class-1 fix is json_object's doubling.
+        assert json.loads(content)["quotes"][0]["text"] == intended
+        assert not any(ord(c) < 0x20 for c in json.loads(content)["quotes"][0]["text"])
         client = _FakeClient([_assistant(content=content)])
         fetcher = _FakeFetcher(_parts())
         extractor = _extractor(client, fetcher)
@@ -422,6 +424,60 @@ class TestAgentLoop:
 
         assert len(result.quotes) == 1
         assert result.quotes[0].text == intended
+
+    def test_bare_invalid_escape_latex_degrades_to_empty(self) -> None:
+        # Without ``json_object`` a provider writes single-backslash LaTeX. An
+        # invalid-escape letter (``\a`` in ``\alpha``, ``\s`` in ``\sum``) makes
+        # strict json.loads raise ``Invalid \escape``. The lenient scanner only
+        # escapes raw control chars (class 2) — it does NOT double backslashes,
+        # because that would corrupt real ``\n``+letter escapes (see the
+        # regression guard below). So bare LaTeX re-raises and degrades to an
+        # empty result: safe (no corruption, no crash). Production avoids this by
+        # always finalizing with ``json_object``. ``\\a`` here is one backslash.
+        content = (
+            '{"quotes":[{"text":"The energy is $\\alpha + \\sum$ here.",'
+            '"location":"s1","relevance":0.9,"rationale":"r"}],'
+            '"formulas":[],"figures":[]}'
+        )
+        # Sanity: bare invalid-escape LaTeX is genuinely invalid JSON.
+        with pytest.raises(ValueError, match="escape"):
+            json.loads(content)
+        client = _FakeClient([_assistant(content=content)])
+        fetcher = _FakeFetcher(_parts())
+        extractor = _extractor(client, fetcher)
+
+        result = asyncio.run(extractor.extract(_StubArticle()))
+
+        assert result.is_empty
+
+    def test_real_short_escape_followed_by_letter_is_preserved(self) -> None:
+        # Regression guard (Finding 1): a genuine JSON short escape (``\t``)
+        # immediately followed by an ASCII letter (``d`` in ``det``) looks
+        # lexically identical to a LaTeX command (``\tau``) to a count-based
+        # scanner. The old scanner doubled ``\t`` -> ``\\t`` here, corrupting
+        # the verbatim quote to a literal backslash-t. This payload ALSO carries
+        # a raw 0x0A control char, so strict raises and the scanner runs —
+        # proving the scanner escapes the raw control char while leaving the
+        # real ``\t`` escape untouched (no doubling). ``\\t`` is the JSON tab
+        # escape; the bare ``\n`` mid-string is a raw 0x0A.
+        content = (
+            '{"quotes":[{"text":"col_a\\tdet\nrow two continues",'
+            '"location":"abstract","relevance":1.0,"rationale":"r"}],'
+            '"formulas":[],"figures":[]}'
+        )
+        # Sanity: strict raises on the raw 0x0A control char (not on ``\t``).
+        with pytest.raises(ValueError, match="control character"):
+            json.loads(content)
+        client = _FakeClient([_assistant(content=content)])
+        fetcher = _FakeFetcher(_parts())
+        extractor = _extractor(client, fetcher)
+
+        result = asyncio.run(extractor.extract(_StubArticle()))
+
+        assert len(result.quotes) == 1
+        # A real tab (from ``\t``) + a real newline (from the escaped 0x0A) —
+        # NO literal backslashes. The old scanner produced ``col_a\\tdet\n...``.
+        assert result.quotes[0].text == "col_a\tdet\nrow two continues"
 
     def test_raw_control_char_inside_quote_is_escaped_and_parsed(self) -> None:
         # The vision model drops a literal newline (0x0A) inside a verbatim quote
