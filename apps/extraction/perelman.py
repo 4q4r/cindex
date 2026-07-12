@@ -95,6 +95,19 @@ def _lenient_json_loads(content: str) -> object | None:
     copied verbatim — so ``\"`` does not end the string, real ``\n`` / ``\t``
     escapes survive, genuine ``\uXXXX`` is kept, and even an invalid ``\a`` is
     left for strict to reject — and a raw control char becomes its JSON escape.
+
+    Accepted tradeoff: without ``json_object`` a bare LaTeX command whose
+    escape letter is INVALID (``\alpha`` / ``\sum``) makes strict raise and
+    degrade to an empty result (safe); but a bare command whose letter COLLIDES
+    with a valid JSON short escape (``\beta`` / ``\nabla`` / ``\frac`` / ``\tau``
+    / ``\rho``) is read by strict as a control char with NO error — a silent
+    corruption of that formula. This only affects the rare no-``json_object``
+    path (a provider rejects ``response_format``): production always finalizes
+    with ``json_object``, which doubles the backslashes so strict parses the
+    LaTeX verbatim. Re-introducing class-1 doubling in the scanner to repair
+    this would re-corrupt real ``\n``+letter escapes in verbatim quotes
+    (Finding 1), so the tradeoff is kept: corrupt a rare bare-collision formula
+    rather than the core verbatim-quote deliverable.
     """
     out: list[str] = []
     append = out.append
@@ -521,12 +534,16 @@ class PerelmanExtractor:
 
         Tolerates ```json fences and bare JSON. Two malformations reach here:
         (1) unescaped LaTeX backslashes (``\alpha``) — handled on the finalize
-        turn by ``response_format=json_object`` (the provider doubles them); bare
-        LaTeX without ``json_object`` raises ``Invalid \escape`` and yields an
-        empty result rather than silent corruption. (2) raw control chars
-        (literal 0x0A) inside string values, raising ``Invalid control
-        character`` — ``json_object`` does NOT fix these, so the lenient scanner
-        escapes them.
+        turn by ``response_format=json_object`` (the provider doubles them).
+        Without ``json_object``, a bare command with an INVALID escape letter
+        (``\alpha`` / ``\sum``) raises ``Invalid \escape`` and degrades to an
+        empty result; a bare COLLISION command (``\beta`` / ``\nabla`` / ``\frac``
+        / ``\tau`` / ``\rho``) is silently misread by strict as a control char
+        — an accepted tradeoff of the rare no-``json_object`` retry path
+        (production always finalizes with ``json_object``, see
+        :func:`_lenient_json_loads`). (2) raw control chars (literal 0x0A)
+        inside string values, raising ``Invalid control character`` —
+        ``json_object`` does NOT fix these, so the lenient scanner escapes them.
 
         Strict ``json.loads`` is the fast path (covers well-formed json_object
         output). On ``ValueError`` the lenient scanner repairs class 2. The
