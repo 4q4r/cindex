@@ -76,6 +76,12 @@ class LLMConfig:
     temperature: float = 0.2
     max_quotes: int = 3
     concurrency: int = 4
+    # Minimum gap between successive LLM request *starts* (seconds), enforced
+    # client-side by ``OpenAICompatibleClient``. 0.0 disables the gate. Some
+    # OpenAI-compatible providers (notably Z.AI's free tier) throttle by
+    # request frequency (~1 QPS) on top of concurrency — set this to honour it
+    # so the provider does not return 429 / drop requests.
+    min_request_interval: float = 0.0
     max_input_chars: int = 12000
     articles_dir: str = "var/articles"
     # Multimodal / vision (PERELMAN receives rendered PDF pages, full-page
@@ -130,6 +136,7 @@ def load_config() -> LLMConfig:
         temperature=_env_float("CINDEX_LLM_TEMPERATURE", 0.2),
         max_quotes=_env_int("CINDEX_LLM_MAX_QUOTES", 3),
         concurrency=_env_int("CINDEX_LLM_CONCURRENCY", 4),
+        min_request_interval=_env_float("CINDEX_LLM_MIN_REQUEST_INTERVAL", 0.0),
         max_input_chars=_env_int("CINDEX_LLM_MAX_INPUT_CHARS", 12000),
         articles_dir=os.getenv("CINDEX_ARTICLES_DIR", "var/articles"),
         pdf_dpi=_env_int("CINDEX_LLM_PDF_DPI", 200),

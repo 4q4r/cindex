@@ -11,6 +11,7 @@ connector. No real network is touched.
 
 import asyncio
 import json
+import time
 from typing import Self
 
 import aiohttp
@@ -321,3 +322,59 @@ class TestOpenAICompatibleClient:
 
         with pytest.raises(ConnectorFetchError, match="transient failure"):
             asyncio.run(client.chat([{"role": "user", "content": "hi"}]))
+
+    def test_min_request_interval_spaces_consecutive_calls(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """Two chat calls are spaced at least ``min_request_interval`` apart.
+
+        ``asyncio.sleep`` is recorded; the first call sleeps ~interval (gated
+        against an uninitialised timestamp it would not, but monotonic starts
+        large so the first call fires immediately and the second waits the
+        full interval). Real elapsed time is asserted to be >= interval.
+        """
+        body = json.dumps({"choices": [{"message": {"content": "ok"}}]})
+        _install_fake(
+            monkeypatch,
+            [
+                _FakeResponse(status=200, body=body),
+                _FakeResponse(status=200, body=body),
+            ],
+        )
+        client = OpenAICompatibleClient(_cfg(min_request_interval=0.05))
+
+        async def _run() -> float:
+            start = time.monotonic()
+            await client.chat([{"role": "user", "content": "a"}])
+            await client.chat([{"role": "user", "content": "b"}])
+            return time.monotonic() - start
+
+        elapsed = asyncio.run(_run())
+        assert elapsed >= 0.05
+
+    def test_zero_min_request_interval_is_noop(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """With ``min_request_interval=0`` the gate never sleeps."""
+        body = json.dumps({"choices": [{"message": {"content": "ok"}}]})
+        fake = _install_fake(monkeypatch, [_FakeResponse(status=200, body=body)])
+        client = OpenAICompatibleClient(_cfg(min_request_interval=0.0))
+
+        slept: list[float] = []
+
+        async def _spy_sleep(t: float) -> None:
+            slept.append(t)
+
+        monkeypatch.setattr(
+            "apps.extraction.llm_client.asyncio.sleep",
+            _spy_sleep,
+        )
+
+        asyncio.run(client.chat([{"role": "user", "content": "hi"}]))
+
+        assert fake.post_kwargs["json"]["messages"] == [
+            {"role": "user", "content": "hi"},
+        ]
+        assert slept == []

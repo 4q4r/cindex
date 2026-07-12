@@ -10,6 +10,11 @@ that treats ``ConnectorFetchError`` as terminal and retries transient
 ``aiohttp.ClientError`` / ``OSError``, and a loud ``LLMNotConfiguredError``
 when the API key is missing — never a fake fallback.
 
+A client-side request-frequency gate (``cfg.min_request_interval``) spaces
+successive request starts by at least that many seconds on a monotonic clock,
+so providers that throttle by QPS on top of concurrency (e.g. Z.AI's free
+tier, ~1 QPS) are not overrun. 0.0 disables it.
+
 The client is content-agnostic: ``messages`` are passed through verbatim, so
 the caller builds multimodal content (``{"type": "text"}`` +
 ``{"type": "image_url", "image_url": {"url": "data:...;base64,...", "detail": ...}}``
@@ -23,6 +28,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import time
 
 import aiohttp
 import structlog
@@ -50,11 +56,23 @@ class OpenAICompatibleClient:
     """
 
     def __init__(self, cfg: LLMConfig) -> None:
-        """Store the resolved config, failing loudly on a missing API key."""
+        """Store the resolved config, failing loudly on a missing API key.
+
+        A client-side request-frequency gate is initialized from
+        ``cfg.min_request_interval``: successive ``chat`` calls are spaced at
+        least that many seconds apart (measured between request starts, on a
+        monotonic clock). The gate is shared across every concurrent caller
+        that holds this client (the PERELMAN batch uses one client), so it
+        enforces the provider's QPS cap on top of the upstream concurrency
+        semaphore. 0.0 disables it.
+        """
         if not cfg.api_key:
             msg = "CINDEX_LLM_API_KEY is required"
             raise LLMNotConfiguredError(msg)
         self._cfg = cfg
+        self._rate_lock = asyncio.Lock()
+        self._last_request = 0.0
+        self._min_interval = max(0.0, cfg.min_request_interval)
 
     async def chat(  # noqa: PLR0913  # OpenAI passthrough surface is inherently wide
         self,
@@ -103,6 +121,8 @@ class OpenAICompatibleClient:
         }
         url = f"{cfg.base_url.rstrip('/')}/chat/completions"
 
+        await self._enforce_rate_limit()
+
         last_error: Exception | None = None
         for attempt in range(1, _MAX_ATTEMPTS + 1):
             try:
@@ -123,6 +143,24 @@ class OpenAICompatibleClient:
             raise ConnectorFetchError(str(last_error))
         msg = "llm: retry loop exited without a result"
         raise ConnectorFetchError(msg)  # pragma: no cover - defensive
+
+    async def _enforce_rate_limit(self) -> None:
+        """Space successive request starts by at least ``_min_interval`` seconds.
+
+        Holds the rate lock only long enough to measure the gap, sleep the
+        remaining time, and stamp the new request start — the lock is released
+        before the network call, so a concurrent caller may begin its own wait
+        while this one is still in-flight. The monotonic clock avoids wall-clock
+        jumps. No-op when ``_min_interval`` is 0.
+        """
+        if self._min_interval <= 0.0:
+            return
+        async with self._rate_lock:
+            now = time.monotonic()
+            wait = self._min_interval - (now - self._last_request)
+            if wait > 0:
+                await asyncio.sleep(wait)
+            self._last_request = time.monotonic()
 
     async def _post_json(
         self,

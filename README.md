@@ -213,10 +213,35 @@ salient passages, so they cache cleanly per article.
 - `CINDEX_LLM_TIMEOUT` / `TEMPERATURE` / `MAX_QUOTES` / `CONCURRENCY` /
   `MAX_INPUT_CHARS` — extraction tuning. Raise `TIMEOUT` for vision (large
   image payloads).
+- `CINDEX_LLM_MIN_REQUEST_INTERVAL` — minimum gap (seconds) between successive
+  LLM request **starts**, enforced client-side on a monotonic clock on top of
+  `CONCURRENCY`. `0` disables it. Some OpenAI-compatible providers throttle by
+  request frequency (~1 QPS) in addition to concurrency — e.g. Z.AI's free tier
+  is effectively 1 concurrent request + ~1 QPS, so set `CONCURRENCY=1` and
+  `MIN_REQUEST_INTERVAL=1.0` there to avoid 429s.
 - `CINDEX_LLM_PDF_DPI` / `MAX_PDF_PAGES` / `MAX_IMAGES` / `MAX_IMAGE_DIM` /
   `IMAGE_QUALITY` / `MAX_TOOL_TURNS` / `IMAGE_DETAIL` — multimodal / vision
   caps and the agent-loop guard.
 - `CINDEX_ARTICLES_DIR` — local markdown store (default `var/articles`).
+
+**Provider example — Z.AI (Zhipu AI) free tier:**
+
+Z.AI exposes an OpenAI-compatible endpoint at `https://api.z.ai/api/paas/v4`.
+Its free tier is **concurrency-based** (effectively one in-flight request)
+with ~1 QPS on top, so the client-side frequency gate matters. The free
+**vision** model is `glm-4.6v-flash` (native multimodal function-calling —
+ideal for PERELMAN's `zoom` / `crop` / `rotate` tool loop); the text-only
+`glm-4.7-flash` would reject `image_url` parts, so do not use it for
+extraction. A minimal `.env`:
+
+```env
+CINDEX_LLM_BASE_URL=https://api.z.ai/api/paas/v4
+CINDEX_LLM_API_KEY=<your-key>
+CINDEX_LLM_MODEL=glm-4.6v-flash
+CINDEX_LLM_CONCURRENCY=1
+CINDEX_LLM_MIN_REQUEST_INTERVAL=1.0
+CINDEX_LLM_TIMEOUT=120
+```
 
 **Persistence and freezing:**
 
