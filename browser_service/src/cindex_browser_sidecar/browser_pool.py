@@ -155,6 +155,68 @@ class BrowserPool:
                 except OSError as exc:  # pragma: no cover - cleanup race
                     logger.warning("page_close_failed", exc_info=exc)
 
+    async def screenshot(self, url: str, *, timeout_seconds: float = 25.0) -> bytes:
+        """Capture a full-page PNG screenshot of ``url`` via the shared context.
+
+        Opens a disposable page on the persistent context, navigates to ``url``
+        (reusing the best-effort challenge-solving ``_navigate``), then captures
+        a full-page PNG. The PNG bytes are returned inline — the caller base64-
+        encodes them into the HTTP response; nothing is written to disk (the
+        sidecar shares no filesystem with the worker).
+
+        Navigation is best-effort (same rationale as ``fetch``): endpoints that
+        never reach ``networkidle`` or PDF-style downloads raise inside
+        ``_navigate`` and are logged, after which we still attempt the
+        screenshot of whatever landed on the page.
+
+        Args:
+            url: The URL to render and screenshot.
+            timeout_seconds: Overall render budget (seconds); bounds the
+                screenshot call against the remaining budget after navigation.
+
+        Returns:
+            The raw PNG bytes of the full-page screenshot.
+
+        Raises:
+            BrowserPoolError: If the browser cannot be started, the screenshot
+                call times out, returns no bytes, or fails for any page reason.
+
+        """
+        await self.start()
+        if self._context is None:  # pragma: no cover - defensive
+            msg = "browser context is not available"
+            raise BrowserPoolError(msg)
+
+        async with self._semaphore:
+            page = await self._context.new_page()  # type: ignore[attr-defined]
+            try:
+                remaining = await self._navigate(page, url, timeout_seconds)
+                try:
+                    png = await asyncio.wait_for(
+                        page.screenshot(  # type: ignore[attr-defined]
+                            full_page=True,
+                            type="png",
+                        ),
+                        timeout=max(1.0, remaining),
+                    )
+                except TimeoutError as exc:
+                    msg = f"screenshot timed out for {url} after {timeout_seconds:.1f}s"
+                    raise BrowserPoolError(msg) from exc
+                except Exception as exc:
+                    msg = f"screenshot failed for {url}: {exc}"
+                    raise BrowserPoolError(msg) from exc
+                if not isinstance(png, (bytes, bytearray)):
+                    msg = (
+                        f"screenshot returned no bytes for {url}: {type(png).__name__}"
+                    )
+                    raise BrowserPoolError(msg)
+                return bytes(png)
+            finally:
+                try:
+                    await page.close()  # type: ignore[attr-defined]
+                except OSError as exc:  # pragma: no cover - cleanup race
+                    logger.warning("page_close_failed", exc_info=exc)
+
     async def _get(self, page: object, request: FetchRequest) -> FetchResponse:
         """Fetch a GET resource via in-page fetch after solving any challenge."""
         url = self._build_url(str(request.url), request.params)

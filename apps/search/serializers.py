@@ -77,6 +77,24 @@ class SearchJobDetailQuerySerializer(serializers.Serializer):
     per_page = serializers.IntegerField(min_value=1, max_value=50, default=5)
 
 
+class QuoteSerializer(serializers.Serializer):
+    """A verbatim quote extracted from an article by the PERELMAN agent.
+
+    Quotes are extracted query-agnostic (the article's own salient passages)
+    and cached per-article in ``ArticleQuotes``; the search query is used only
+    for frontend highlighting, never for extraction.
+    """
+
+    text = serializers.CharField()
+    location = serializers.CharField(required=False, allow_blank=True)
+    relevance = serializers.FloatField(
+        required=False,
+        min_value=0,
+        max_value=1,
+    )
+    rationale = serializers.CharField(required=False, allow_blank=True)
+
+
 class SearchResultSerializer(serializers.Serializer):
     """Serialize a ranked search result for the frontend."""
 
@@ -97,6 +115,7 @@ class SearchResultSerializer(serializers.Serializer):
     eligibility_confidence = serializers.DictField(child=serializers.FloatField())
     url = serializers.CharField()
     rerank_score = serializers.FloatField(required=False)
+    quotes = QuoteSerializer(many=True, required=False, default=list)
 
     def to_representation(
         self,
@@ -113,6 +132,8 @@ class SearchResultSerializer(serializers.Serializer):
             data.get("journal", ""),
             max_length=300,
         )
+        quotes = data.get("quotes") or []
+        data["quotes"] = quotes if isinstance(quotes, list) else []
         return data
 
 

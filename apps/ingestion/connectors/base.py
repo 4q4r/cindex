@@ -259,21 +259,54 @@ class BrowserTransport:
             body["accept"] = accept
         return body
 
-    def _post(self, payload: dict[str, object]) -> FetchResult:
-        """POST a fetch request to the sidecar with retry/backoff.
+    def screenshot(self, url: str, *, timeout: float | None = None) -> bytes:
+        """Capture a full-page PNG screenshot of ``url`` through the sidecar.
 
-        Retries transient sidecar failures (network errors, 502, 504) up to
-        ``max_attempts``. Non-retryable sidecar errors (422, other 4xx/5xx)
-        and upstream HTTP errors (``status >= 400`` in the 200 body) raise
+        Used by the PERELMAN content fetcher for HTML articles without a PDF:
+        the sidecar renders the page in its stealth Chromium context (solving
+        JS challenges) and returns a full-page PNG, which the extractor feeds
+        to the vision LLM as the ``page-shot`` image. Returns the raw PNG
+        bytes. Raises :class:`ConnectorFetchError` on sidecar/upstream failure
+        (the caller treats a screenshot failure as "figures only" — graceful,
+        never fatal to the extraction).
+        """
+        payload: dict[str, object] = {
+            "url": url,
+            "timeout": float(
+                timeout if timeout is not None else self._timeout_seconds,
+            ),
+        }
+        result = self._post_endpoint("/screenshot", payload)
+        return result.body_bytes
+
+    def _post(self, payload: dict[str, object]) -> FetchResult:
+        """POST a fetch request to the sidecar's ``/fetch`` endpoint."""
+        return self._post_endpoint("/fetch", payload)
+
+    def _post_endpoint(
+        self,
+        endpoint: str,
+        payload: dict[str, object],
+    ) -> FetchResult:
+        """POST ``payload`` to a sidecar endpoint with retry/backoff.
+
+        Shared by ``/fetch`` (decoded into a :class:`FetchResult`) and
+        ``/screenshot`` (PNG bytes). Retries transient sidecar failures
+        (network errors, 502, 504) up to ``max_attempts``. Non-retryable
+        sidecar errors (422, other 4xx/5xx) and upstream HTTP errors
+        (``status >= 400`` in the 200 body) raise
         :class:`ConnectorFetchError` immediately.
         """
-        endpoint = f"{self._base_url}/fetch"
-        http_timeout = float(payload["timeout"]) + _BROWSER_HTTP_TIMEOUT_MARGIN
+        url = f"{self._base_url}{endpoint}"
+        # ``/fetch`` payloads carry an upstream timeout; ``/screenshot`` carries
+        # a render timeout. Either way the HTTP call needs headroom over it.
+        http_timeout = float(payload.get("timeout", self._timeout_seconds))
+        http_timeout += _BROWSER_HTTP_TIMEOUT_MARGIN
         last_error: Exception | None = None
         for attempt in range(1, self._max_attempts + 1):
             try:
                 response = self._session.post(
-                    endpoint,
+                    url,
                     json=payload,
                     timeout=http_timeout,
                 )

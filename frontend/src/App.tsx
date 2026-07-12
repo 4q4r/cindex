@@ -39,12 +39,18 @@ function buildParams(filters: Filters): SearchJobParams {
 }
 
 const CITATION_STYLES = [
+  "gost_7_0_108_2022",
+  "gost_7_0_5_2008",
   "gost2018",
-  "mla",
   "apa",
-  "vancouver",
   "ieee",
+  "mla",
+  "chicago",
+  "vancouver",
+  "gb_t_7714",
   "harvard",
+  "bibtex",
+  "ris",
 ] as const;
 const SORT_OPTIONS = ["relevance", "newest", "metadata"] as const;
 
