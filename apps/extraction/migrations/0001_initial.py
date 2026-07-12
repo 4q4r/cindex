@@ -5,29 +5,60 @@ from django.db import migrations, models
 
 
 class Migration(migrations.Migration):
-
     initial = True
 
     dependencies = [
-        ('articles', '0011_article_local_md_path_and_more'),
+        ("articles", "0011_article_local_md_path_and_more"),
     ]
 
     operations = [
         migrations.CreateModel(
-            name='ArticleQuotes',
+            name="ArticleQuotes",
             fields=[
-                ('id', models.BigAutoField(auto_created=True, primary_key=True, serialize=False, verbose_name='ID')),
-                ('quotes', models.JSONField(default=list)),
-                ('status', models.CharField(choices=[('pending', 'pending'), ('done', 'done'), ('no_text', 'no_text'), ('failed', 'failed')], db_index=True, default='pending', max_length=16)),
-                ('extracted_at', models.DateTimeField(blank=True, null=True)),
-                ('model', models.CharField(blank=True, max_length=128)),
-                ('error', models.TextField(blank=True)),
-                ('created_at', models.DateTimeField(auto_now_add=True)),
-                ('updated_at', models.DateTimeField(auto_now=True)),
-                ('article', models.OneToOneField(on_delete=django.db.models.deletion.CASCADE, related_name='quotes', to='articles.article')),
+                (
+                    "id",
+                    models.BigAutoField(
+                        auto_created=True,
+                        primary_key=True,
+                        serialize=False,
+                        verbose_name="ID",
+                    ),
+                ),
+                ("quotes", models.JSONField(default=list)),
+                (
+                    "status",
+                    models.CharField(
+                        choices=[
+                            ("pending", "pending"),
+                            ("done", "done"),
+                            ("no_text", "no_text"),
+                            ("failed", "failed"),
+                        ],
+                        db_index=True,
+                        default="pending",
+                        max_length=16,
+                    ),
+                ),
+                ("extracted_at", models.DateTimeField(blank=True, null=True)),
+                ("model", models.CharField(blank=True, max_length=128)),
+                ("error", models.TextField(blank=True)),
+                ("created_at", models.DateTimeField(auto_now_add=True)),
+                ("updated_at", models.DateTimeField(auto_now=True)),
+                (
+                    "article",
+                    models.OneToOneField(
+                        on_delete=django.db.models.deletion.CASCADE,
+                        related_name="quotes",
+                        to="articles.article",
+                    ),
+                ),
             ],
             options={
-                'indexes': [models.Index(fields=['status'], name='extraction__status_1f99cf_idx')],
+                "indexes": [
+                    models.Index(
+                        fields=["status"], name="extraction__status_1f99cf_idx",
+                    ),
+                ],
             },
         ),
     ]

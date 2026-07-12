@@ -4,19 +4,20 @@ from django.db import migrations, models
 
 
 class Migration(migrations.Migration):
-
     dependencies = [
-        ('articles', '0010_pg_fulltext_gin_index'),
+        ("articles", "0010_pg_fulltext_gin_index"),
     ]
 
     operations = [
         migrations.AddField(
-            model_name='article',
-            name='local_md_path',
-            field=models.CharField(blank=True, default='', max_length=512),
+            model_name="article",
+            name="local_md_path",
+            field=models.CharField(blank=True, default="", max_length=512),
         ),
         migrations.AddIndex(
-            model_name='article',
-            index=models.Index(fields=['local_md_path'], name='articles_ar_local_m_394fce_idx'),
+            model_name="article",
+            index=models.Index(
+                fields=["local_md_path"], name="articles_ar_local_m_394fce_idx",
+            ),
         ),
     ]
