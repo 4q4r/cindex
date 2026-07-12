@@ -277,7 +277,7 @@ class TestOpenAICompatibleClient:
         self,
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
-        _install_fake(
+        fake = _install_fake(
             monkeypatch,
             [
                 _FakeResponse(status=429, body="rl 1"),
@@ -297,6 +297,10 @@ class TestOpenAICompatibleClient:
 
         with pytest.raises(LLMRateLimitedError, match="HTTP 429"):
             asyncio.run(client.chat([{"role": "user", "content": "hi"}]))
+
+        # All three attempts fired (the loop retried, then re-raised) — pins
+        # the attempt count so a no-retry implementation would fail here.
+        assert fake._responses == []
 
     def test_rate_limit_429_respects_retry_after_header(
         self,
