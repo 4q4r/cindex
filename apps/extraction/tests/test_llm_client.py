@@ -18,7 +18,7 @@ import aiohttp
 import pytest
 
 from apps.extraction.config import LLMConfig, LLMNotConfiguredError
-from apps.extraction.llm_client import OpenAICompatibleClient
+from apps.extraction.llm_client import LLMRateLimitedError, OpenAICompatibleClient
 from apps.ingestion.connectors.base import ConnectorFetchError
 
 
@@ -32,11 +32,13 @@ class _FakeResponse:
         body: str = "",
         enter_exc: BaseException | None = None,
         text_exc: BaseException | None = None,
+        headers: dict[str, str] | None = None,
     ) -> None:
         self.status = status
         self._body = body
         self._enter_exc = enter_exc
         self._text_exc = text_exc
+        self.headers = headers if headers is not None else {}
 
     async def __aenter__(self) -> Self:
         if self._enter_exc is not None:
@@ -241,11 +243,125 @@ class TestOpenAICompatibleClient:
         self,
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
-        _install_fake(monkeypatch, [_FakeResponse(status=429, body="rate limited")])
+        # Non-429 HTTP errors are terminal (no retry).
+        _install_fake(monkeypatch, [_FakeResponse(status=500, body="oops")])
         client = OpenAICompatibleClient(_cfg())
 
-        with pytest.raises(ConnectorFetchError, match="HTTP 429"):
+        with pytest.raises(ConnectorFetchError, match="HTTP 500"):
             asyncio.run(client.chat([{"role": "user", "content": "hi"}]))
+
+    def test_rate_limit_429_retried_then_succeeds(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        body = json.dumps({"choices": [{"message": {"content": "ok"}}]})
+        responses = [
+            _FakeResponse(status=429, body="rate limited"),
+            _FakeResponse(status=200, body=body),
+        ]
+        _install_fake(monkeypatch, responses)
+        client = OpenAICompatibleClient(_cfg())
+
+        async def _no_sleep(_t: float) -> None:
+            return None
+
+        monkeypatch.setattr(
+            "apps.extraction.llm_client.asyncio.sleep",
+            _no_sleep,
+        )
+
+        message = asyncio.run(client.chat([{"role": "user", "content": "hi"}]))
+        assert message["content"] == "ok"
+
+    def test_rate_limit_429_exhausts_retries_raises_rate_limited(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        fake = _install_fake(
+            monkeypatch,
+            [
+                _FakeResponse(status=429, body="rl 1"),
+                _FakeResponse(status=429, body="rl 2"),
+                _FakeResponse(status=429, body="rl 3"),
+            ],
+        )
+        client = OpenAICompatibleClient(_cfg())
+
+        async def _no_sleep(_t: float) -> None:
+            return None
+
+        monkeypatch.setattr(
+            "apps.extraction.llm_client.asyncio.sleep",
+            _no_sleep,
+        )
+
+        with pytest.raises(LLMRateLimitedError, match="HTTP 429"):
+            asyncio.run(client.chat([{"role": "user", "content": "hi"}]))
+
+        # All three attempts fired (the loop retried, then re-raised) — pins
+        # the attempt count so a no-retry implementation would fail here.
+        assert fake._responses == []
+
+    def test_rate_limit_429_respects_retry_after_header(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        body = json.dumps({"choices": [{"message": {"content": "ok"}}]})
+        _install_fake(
+            monkeypatch,
+            [
+                _FakeResponse(
+                    status=429,
+                    body="rate limited",
+                    headers={"Retry-After": "7"},
+                ),
+                _FakeResponse(status=200, body=body),
+            ],
+        )
+        client = OpenAICompatibleClient(_cfg())
+
+        slept: list[float] = []
+
+        async def _spy_sleep(t: float) -> None:
+            slept.append(t)
+
+        monkeypatch.setattr(
+            "apps.extraction.llm_client.asyncio.sleep",
+            _spy_sleep,
+        )
+
+        message = asyncio.run(client.chat([{"role": "user", "content": "hi"}]))
+        assert message["content"] == "ok"
+        # The provider's Retry-After hint overrides the exponential backoff.
+        assert slept == [7.0]
+
+    def test_rate_limit_429_without_header_uses_exponential_backoff(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        body = json.dumps({"choices": [{"message": {"content": "ok"}}]})
+        _install_fake(
+            monkeypatch,
+            [
+                _FakeResponse(status=429, body="rl"),
+                _FakeResponse(status=200, body=body),
+            ],
+        )
+        client = OpenAICompatibleClient(_cfg())
+
+        slept: list[float] = []
+
+        async def _spy_sleep(t: float) -> None:
+            slept.append(t)
+
+        monkeypatch.setattr(
+            "apps.extraction.llm_client.asyncio.sleep",
+            _spy_sleep,
+        )
+
+        asyncio.run(client.chat([{"role": "user", "content": "hi"}]))
+        # attempt 1 → backoff base * 1 = 2.0s (no Retry-After header sent).
+        assert slept == [2.0]
 
     def test_invalid_json_raises_connector_fetch_error(
         self,

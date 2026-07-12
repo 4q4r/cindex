@@ -44,6 +44,45 @@ logger = structlog.get_logger(__name__)
 # dependency on the connector class hierarchy.
 _MAX_ATTEMPTS = 3
 _HTTP_ERROR_THRESHOLD = 400
+_HTTP_RATE_LIMITED = 429
+# Backoff base (seconds) for 429 retries when the provider sends no
+# ``Retry-After`` hint. Z.AI's free tier returns 1302 for concurrency/rate
+# spikes that typically clear within a couple of seconds, so a short
+# exponential (2s, 4s, ...) is enough without burning the 5-hour quota window.
+_RATE_LIMIT_BACKOFF_BASE = 2.0
+
+
+class LLMRateLimitedError(ConnectorFetchError):
+    """HTTP 429 from the upstream — retryable with backoff.
+
+    Rate limits (Z.AI code 1302 concurrency / 1303 frequency) are transient:
+    the request is rejected not because it is malformed but because the
+    account momentarily exceeded its concurrency/frequency budget. Unlike a
+    400/500, retrying after a short wait is the correct response. Carries the
+    provider's ``Retry-After`` hint (seconds) when present so the caller can
+    honour it instead of guessing.
+    """
+
+    def __init__(self, message: str, *, retry_after: float | None = None) -> None:
+        """Store the upstream message and optional ``Retry-After`` (seconds)."""
+        super().__init__(message)
+        self.retry_after = retry_after
+
+
+def _parse_retry_after(header: str | None) -> float | None:
+    """Parse an HTTP ``Retry-After`` header as seconds, or ``None``.
+
+    Only the delta-seconds form is handled; the HTTP-date form is intentionally
+    not parsed (parsing it robustly needs an HTTP-date parser we do not have
+    on hand) — the caller falls back to exponential backoff instead of
+    guessing.
+    """
+    if not header:
+        return None
+    try:
+        return max(0.0, float(header))
+    except ValueError:
+        return None
 
 
 class OpenAICompatibleClient:
@@ -123,12 +162,43 @@ class OpenAICompatibleClient:
 
         await self._enforce_rate_limit()
 
+        return await self._request_with_retry(url, headers, body, cfg.timeout)
+
+    async def _request_with_retry(
+        self,
+        url: str,
+        headers: dict[str, str],
+        body: dict,
+        timeout: float,  # noqa: ASYNC109  # upstream request timeout
+    ) -> dict:
+        """POST with bounded retry on transient (429 / network) failures.
+
+        ``LLMRateLimitedError`` (429) backs off honouring ``Retry-After`` or an
+        exponential base; ``aiohttp.ClientError`` / ``OSError`` backs off with a
+        linear delay. Any other :class:`ConnectorFetchError` is terminal (non-429
+        HTTP error / invalid JSON) and propagates immediately.
+        """
         last_error: Exception | None = None
         for attempt in range(1, _MAX_ATTEMPTS + 1):
             try:
-                message = await self._post_json(url, headers, body, cfg.timeout)
+                return await self._post_json(url, headers, body, timeout)
+            except LLMRateLimitedError as exc:
+                # 429 is transient (concurrency/frequency cap). Back off and
+                # retry the SAME request so a single rate-limit blip does not
+                # zero out an article's quotes. Honour ``Retry-After`` when
+                # the provider sends it, else exponential backoff.
+                last_error = exc
+                if attempt < _MAX_ATTEMPTS:
+                    delay = (
+                        exc.retry_after
+                        if exc.retry_after is not None
+                        else _RATE_LIMIT_BACKOFF_BASE * attempt
+                    )
+                    await asyncio.sleep(delay)
+                    continue
+                raise
             except ConnectorFetchError:
-                # Terminal (HTTP error / invalid JSON) — stop the retry loop.
+                # Terminal (non-429 HTTP error / invalid JSON) — stop the loop.
                 raise
             except (aiohttp.ClientError, OSError) as exc:
                 last_error = exc
@@ -137,7 +207,6 @@ class OpenAICompatibleClient:
                     continue
                 msg = f"llm: transient failure after {attempt} attempts: {exc}"
                 raise ConnectorFetchError(msg) from exc
-            return message
         # Unreachable: the loop either returns or raises on every path.
         if last_error is not None:  # pragma: no cover - defensive
             raise ConnectorFetchError(str(last_error))
@@ -185,6 +254,14 @@ class OpenAICompatibleClient:
             ) as session,
             session.post(url, headers=headers, json=body) as response,
         ):
+            if response.status == _HTTP_RATE_LIMITED:
+                # Rate limit / concurrency cap (Z.AI code 1302/1303) — transient.
+                # Retry with backoff rather than failing the whole extraction
+                # turn: a single 429 must not zero out an article's quotes.
+                text = await response.text()
+                retry_after = _parse_retry_after(response.headers.get("Retry-After"))
+                msg = f"llm: HTTP 429: {text[:200]}"
+                raise LLMRateLimitedError(msg, retry_after=retry_after)
             if response.status >= _HTTP_ERROR_THRESHOLD:
                 text = await response.text()
                 msg = f"llm: HTTP {response.status}: {text[:200]}"
