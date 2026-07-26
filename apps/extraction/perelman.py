@@ -236,6 +236,31 @@ If a region is unreadable even after zooming, transcribe what you can and \
 note the uncertainty in the caption. If the article has no extractable \
 content, return all three lists empty."""
 
+# Resume clause appended to the system prompt when the previous agent loop
+# exhausted its tool turns without emitting a final JSON object. Mirrors the
+# OpenAI Agents SDK «compaction + fresh turn budget» resume pattern: a fresh
+# chat is started that carries a compact memory of the prior steps (how many
+# inspection turns were spent, which images were inspected) instead of the
+# full bloated tool-call history, so the model gets a clean turn budget and a
+# small payload (the original images, not the zoomed derivatives) to produce
+# the final JSON. The model is told NOT to call tools again — it already
+# inspected enough; now it must transcribe and emit.
+_RESUME_CLAUSE = """\
+
+You are continuing an extraction that already used {prior_turns} inspection \
+turns (zoom / crop / rotate on images: {inspected}) in a previous chat that \
+ended without a final JSON object. Do NOT call any tools again — you have \
+already inspected the article enough. Using what you already gathered, \
+transcribe the formulas and figures and extract the verbatim quotes from the \
+article text and images below, then emit the final JSON object."""
+
+_RESUME_INSTRUCTION = (
+    "Output ONLY the final JSON object (no prose, no code fences) using "
+    "exactly the shape from the system prompt. Every backslash inside a "
+    "string value (e.g. LaTeX) MUST be doubled (write \\\\alpha, not \\alpha) "
+    "so the JSON is valid."
+)
+
 
 class PerelmanExtractor:
     """Drive the PERELMAN agent loop for one article (never raises).
@@ -268,7 +293,7 @@ class PerelmanExtractor:
             return ExtractionResult()
         reg = self._register_images(parts)
         messages = self._build_messages(parts, article, reg)
-        final_content = await self._agent_loop(messages, reg)
+        final_content = await self._agent_loop(messages, reg, parts, article)
         return self._parse(final_content)
 
     def _register_images(self, parts: ContentParts) -> ImageRegistry:
@@ -337,6 +362,8 @@ class PerelmanExtractor:
         self,
         messages: list[dict],
         reg: ImageRegistry,
+        parts: ContentParts,
+        article: Article,
     ) -> str:
         """Run the bounded tool-calling loop, returning the final content string.
 
@@ -345,8 +372,12 @@ class PerelmanExtractor:
         loop runs at most ``cfg.max_tool_turns + 1`` chat calls: a turn that
         returns ``tool_calls`` dispatches them and continues; a turn without
         ``tool_calls`` is the final answer. If the loop exhausts turns while
-        the model keeps calling tools, the last content (possibly empty) is
-        returned and parsed to an empty result.
+        the model keeps calling tools, a FRESH chat with a compact memory of the
+        prior steps (:meth:`_resume_with_memory`) is started so the model gets a
+        clean turn budget and a small payload to emit the final JSON — the
+        bloated tool-call history is dropped. ``_force_finalize`` on the full
+        zoomed history is the last-resort fallback when the resume yields
+        nothing.
         """
         cfg = self._cfg
         max_turns = cfg.max_tool_turns
@@ -375,8 +406,117 @@ class PerelmanExtractor:
                     "perelman: max_tool_turns reached with pending tool_calls",
                     max_turns=max_turns,
                 )
-                return await self._force_finalize(messages)
+                return await self._finalize_after_exhaustion(
+                    messages,
+                    parts,
+                    article,
+                    reg,
+                    max_turns,
+                )
         return ""  # pragma: no cover - loop always returns or raises above
+
+    async def _finalize_after_exhaustion(
+        self,
+        messages: list[dict],
+        parts: ContentParts,
+        article: Article,
+        reg: ImageRegistry,
+        prior_turns: int,
+    ) -> str:
+        """Resume in a fresh chat with memory; fall back to zoomed-history finalize.
+
+        The fresh-chat resume is primary (matches the OpenAI Agents SDK
+        «compaction + fresh turn budget» pattern: a small, clean payload — the
+        original images, not the zoomed derivatives — with a compact memory of
+        the prior inspection turns, no tools, and ``json_object``). If the
+        resume yields nothing, :meth:`_force_finalize` on the full tool-call
+        history is the last resort: it carries the zoomed detail the resume
+        dropped, at the cost of a larger payload more likely to hit 1305.
+        """
+        content = await self._resume_with_memory(parts, article, reg, prior_turns)
+        if content and content.strip():
+            return content
+        logger.info(
+            "perelman: resume empty, falling back to zoomed-history finalize",
+        )
+        return await self._force_finalize(messages)
+
+    async def _resume_with_memory(
+        self,
+        parts: ContentParts,
+        article: Article,
+        reg: ImageRegistry,
+        prior_turns: int,
+    ) -> str:
+        r"""Start a FRESH tool-free chat that resumes the exhausted extraction.
+
+        Builds a brand-new 2-message list (system + user) — NOT appended to the
+        bloated tool-call history — so the model gets a clean turn budget and a
+        small payload. The system prompt carries a resume clause summarizing
+        the prior steps (turns spent + which images were inspected); the user
+        message re-sends the original images and the article text plus an
+        explicit «output only JSON, double backslashes» instruction. Tools are
+        stripped (``tools=None``), so the model physically cannot call them.
+
+        ``response_format={"type": "json_object"}`` makes the provider validate
+        the output and double LaTeX backslashes (``\\alpha``), the robust fix
+        for vision models that otherwise emit single-backslash LaTeX and break
+        ``json.loads``. The lax scanner in :meth:`_parse` is the fallback.
+
+        Returns the final content string (possibly empty). Never raises.
+        """
+        system = (
+            _SYSTEM_PROMPT.format(max_quotes=self._cfg.max_quotes)
+            + "\n\n"
+            + _RESUME_CLAUSE.format(
+                prior_turns=prior_turns,
+                inspected=", ".join(img.id for img in parts.images) or "(none)",
+            )
+        )
+        image_index = self._image_index(parts)
+        metadata = self._metadata(article)
+        user_text = (
+            f"{metadata}\n\n{image_index}\n\nARTICLE TEXT:\n{parts.text}\n\n"
+            f"{_RESUME_INSTRUCTION}"
+        )
+        user_content: list[dict] = [{"type": "text", "text": user_text}]
+        user_content.extend(
+            {
+                "type": "image_url",
+                "image_url": {
+                    "url": reg.data_uri(img.id),
+                    "detail": self._cfg.image_detail,
+                },
+            }
+            for img in parts.images
+        )
+        resume_messages = [
+            {"role": "system", "content": system},
+            {"role": "user", "content": user_content},
+        ]
+        try:
+            msg = await self._client.chat(
+                resume_messages,
+                response_format={"type": "json_object"},
+            )
+        except Exception as exc:  # noqa: BLE001 - per-result isolation
+            # Some providers reject ``response_format`` with a 400. Retry once
+            # without it; the lenient scanner in :meth:`_parse` still copes.
+            logger.warning(
+                "perelman: json_object resume rejected, retrying plain",
+                error=str(exc),
+            )
+            try:
+                msg = await self._client.chat(resume_messages)
+            except Exception as exc2:  # noqa: BLE001 - per-result isolation
+                logger.warning("perelman: resume chat failed", error=str(exc2))
+                return ""
+        if msg.get("tool_calls"):
+            logger.warning(
+                "perelman: resume call returned tool_calls despite stripped tools",
+            )
+        content = msg.get("content")
+        return content if isinstance(content, str) else ""
 
     async def _force_finalize(self, messages: list[dict]) -> str:
         r"""Force a tool-free final answer when the tool loop is exhausted.
