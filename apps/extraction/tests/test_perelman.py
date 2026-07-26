@@ -31,6 +31,7 @@ from apps.articles.models import Article, Journal, Source
 from apps.extraction.config import LLMConfig
 from apps.extraction.content_fetcher import ContentParts, ImageInput
 from apps.extraction.image_ops import TOOL_SCHEMAS
+from apps.extraction.llm_client import LLMRateLimitedError
 from apps.extraction.models import (
     STATUS_DONE,
     STATUS_FAILED,
@@ -39,6 +40,7 @@ from apps.extraction.models import (
     ArticleQuotes,
 )
 from apps.extraction.perelman import (
+    _MAX_TURN_RETRIES,
     ExtractionResult,
     Formula,
     PerelmanExtractor,
@@ -159,9 +161,15 @@ class _FakeFetcher:
 class _FakeClient:
     """Scripted async chat client: returns queued messages, records kwargs."""
 
-    def __init__(self, messages: list[dict], raises_on: int | None = None) -> None:
+    def __init__(
+        self,
+        messages: list[dict],
+        raises_on: int | None = None,
+        rate_limits: dict[int, LLMRateLimitedError] | None = None,
+    ) -> None:
         self._messages = list(messages)
         self._raises_on = raises_on
+        self._rate_limits = rate_limits or {}
         self.chat_calls: list[dict[str, Any]] = []
         self.kwargs: list[dict[str, Any]] = []
 
@@ -185,6 +193,8 @@ class _FakeClient:
                 "tool_choice": tool_choice,
             },
         )
+        if idx in self._rate_limits:
+            raise self._rate_limits[idx]
         if self._raises_on is not None and idx == self._raises_on:
             msg = "simulated HTTP 500"
             raise ConnectorFetchError(msg)
@@ -577,6 +587,87 @@ class TestAgentLoop:
         result = asyncio.run(extractor.extract(_StubArticle()))
 
         assert len(result.quotes) == 1
+
+    def test_transient_overload_retries_same_turn_then_succeeds(self) -> None:
+        # 1305 server overload is transient: the client exhausts its per-request
+        # backoff, surfaces ``LLMRateLimitedError``, and the agent loop retries
+        # the SAME turn a few more times (fresh per-request budget each time)
+        # rather than abandoning the article («Временная недоступность? Ждем,
+        # повторяем»). Three transient errors on turn 0 are retried, then the
+        # 4th attempt returns the final JSON — quotes recovered, no abandonment.
+        rate_limits = {
+            i: LLMRateLimitedError(
+                "llm: HTTP 429: 1305 overload",
+                code="1305",
+                terminal=False,
+            )
+            for i in range(3)
+        }
+        # The first 3 attempts raise; the 4th (idx 3) returns the final JSON. The
+        # client indexes its message queue by call count, so pad with dummies
+        # that are never returned (errors raise before the return).
+        queue = [
+            _assistant(),
+            _assistant(),
+            _assistant(),
+            _assistant(content=_FINAL_JSON),
+        ]
+        client = _FakeClient(queue, rate_limits=rate_limits)
+        fetcher = _FakeFetcher(_parts())
+        extractor = _extractor(client, fetcher)
+
+        result = asyncio.run(extractor.extract(_StubArticle()))
+
+        # 3 retried failures + 1 success on the same turn 0.
+        assert len(client.chat_calls) == 4
+        assert len(result.quotes) == 1
+        assert (
+            result.quotes[0].text == "We demonstrate a verbatim result worth quoting."
+        )
+
+    def test_transient_overload_exhausting_turn_retries_yields_empty(self) -> None:
+        # If the overload outlasts the per-turn retry budget too, the loop gives
+        # up gracefully (empty result, no raise) — the article is marked for a
+        # later retry by the cache layer, never crashes the batch.
+        rate_limits = {
+            i: LLMRateLimitedError(
+                "llm: HTTP 429: 1305 overload",
+                code="1305",
+                terminal=False,
+            )
+            for i in range(_MAX_TURN_RETRIES + 1)
+        }
+        client = _FakeClient([_assistant(content=_FINAL_JSON)], rate_limits=rate_limits)
+        fetcher = _FakeFetcher(_parts())
+        extractor = _extractor(client, fetcher)
+
+        result = asyncio.run(extractor.extract(_StubArticle()))
+
+        assert result.is_empty
+        # Exactly _MAX_TURN_RETRIES + 1 attempts on turn 0, then abandonment.
+        assert len(client.chat_calls) == _MAX_TURN_RETRIES + 1
+
+    def test_terminal_rate_limit_aborts_extraction_immediately(self) -> None:
+        # Terminal codes (1304/1308/1309/1310 — quota / window / plan) must NOT
+        # be retried: retrying burns the window for nothing. The loop aborts the
+        # article on the first terminal error (one chat call, empty result).
+        client = _FakeClient(
+            [_assistant(content=_FINAL_JSON)],
+            rate_limits={
+                0: LLMRateLimitedError(
+                    "llm: HTTP 429: 1308 usage window",
+                    code="1308",
+                    terminal=True,
+                ),
+            },
+        )
+        fetcher = _FakeFetcher(_parts())
+        extractor = _extractor(client, fetcher)
+
+        result = asyncio.run(extractor.extract(_StubArticle()))
+
+        assert result.is_empty
+        assert len(client.chat_calls) == 1
 
 
 class TestBuildMessages:

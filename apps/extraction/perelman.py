@@ -40,6 +40,7 @@ import pymupdf
 import structlog
 
 from .image_ops import TOOL_SCHEMAS, ImageRegistry, ToolError, dispatch
+from .llm_client import LLMRateLimitedError
 
 if TYPE_CHECKING:
     from apps.articles.models import Article
@@ -52,6 +53,17 @@ logger = structlog.get_logger(__name__)
 
 # Final-JSON fence stripper: tolerates ```json ... ``` / ``` ... ``` / bare JSON.
 _JSON_FENCE_RE = re.compile(r"^```(?:json)?\s*\n?|\n?```\s*$", re.IGNORECASE)
+
+# Per-turn retries on a TRANSIENT upstream rate limit (Z.AI 1302 concurrency /
+# 1303 frequency / 1305 server overload). The client already backs off per
+# request (up to 5 attempts for 1305); if the whole route is still throttled
+# after that, the request surfaces as ``LLMRateLimitedError``. Rather than
+# abandon the article («Временная недоступность? Ждем, повторяем»), we retry
+# the SAME turn a few more times — each retry gets a fresh per-request backoff
+# budget, so a long overload spike (tens of seconds) can clear without losing
+# the article. Terminal codes (1304/1308/1309/1310 — quota / window / plan) are
+# NOT retried here: they propagate immediately so we don't burn the window.
+_MAX_TURN_RETRIES = 3
 
 # Raw control char -> its JSON short escape, used inside string values only.
 # Other control bytes fall back to ``\uXXXX``. Structural whitespace (newlines
@@ -381,16 +393,53 @@ class PerelmanExtractor:
         """
         cfg = self._cfg
         max_turns = cfg.max_tool_turns
-        for turn in range(max_turns + 1):
+        turn = 0
+        turn_retries = 0
+        while turn <= max_turns:
             try:
                 msg = await self._client.chat(
                     messages,
                     tools=TOOL_SCHEMAS,
                     tool_choice="auto",
                 )
+            except LLMRateLimitedError as exc:
+                # Terminal quota / window / plan exhaustion (1304/1308/1309/
+                # 1310) — retrying only burns the window. Abort the article.
+                if exc.terminal:
+                    logger.warning(
+                        "perelman: terminal rate limit, aborting extraction",
+                        turn=turn,
+                        code=exc.code,
+                        error=str(exc)[:150],
+                    )
+                    return ""
+                # Transient (1302/1303/1305): the client already exhausted its
+                # per-request backoff budget. Retry the SAME turn a bounded
+                # number of times so a long overload spike can clear instead
+                # of zeroing the article («Временная недоступность? Ждем,
+                # повторяем»). Each retry gets a fresh per-request budget.
+                if turn_retries >= _MAX_TURN_RETRIES:
+                    logger.warning(
+                        "perelman: transient overload exhausted turn retries",
+                        turn=turn,
+                        retries=turn_retries,
+                        code=exc.code,
+                    )
+                    return ""
+                turn_retries += 1
+                logger.info(
+                    "perelman: transient overload, retrying turn",
+                    turn=turn,
+                    retry=turn_retries,
+                    code=exc.code,
+                )
+                continue
             except Exception as exc:  # noqa: BLE001 - per-result isolation
                 logger.warning("perelman: llm call failed", turn=turn, error=str(exc))
                 return ""
+            # Successful chat call — reset the transient-retry budget for the
+            # next turn.
+            turn_retries = 0
             messages.append(msg)
             tool_calls = msg.get("tool_calls")
             if not tool_calls:
@@ -413,6 +462,7 @@ class PerelmanExtractor:
                     reg,
                     max_turns,
                 )
+            turn += 1
         return ""  # pragma: no cover - loop always returns or raises above
 
     async def _finalize_after_exhaustion(
