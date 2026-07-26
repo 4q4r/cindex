@@ -419,13 +419,31 @@ class PerelmanExtractor:
                 # of zeroing the article («Временная недоступность? Ждем,
                 # повторяем»). Each retry gets a fresh per-request budget.
                 if turn_retries >= _MAX_TURN_RETRIES:
+                    # Per the user directive ("at the limit, start a new chat
+                    # with a memory of the prior steps"): when the turn retry
+                    # budget is also exhausted, do NOT abandon the article —
+                    # start a FRESH tool-free chat with a compact memory of the
+                    # prior inspection turns. The resume payload is tiny
+                    # (original images, no zoomed derivatives, no tool history)
+                    # and is a single request, so it is far more likely to
+                    # clear a lingering 1302/1305 than another retry of the
+                    # bloated tool-call history. ``prior_turns=turn`` because
+                    # this turn never produced an assistant message (chat
+                    # raised first).
                     logger.warning(
-                        "perelman: transient overload exhausted turn retries",
+                        "perelman: transient overload exhausted turn retries, "
+                        "falling back to fresh-chat resume",
                         turn=turn,
                         retries=turn_retries,
                         code=exc.code,
                     )
-                    return ""
+                    return await self._finalize_after_exhaustion(
+                        messages,
+                        parts,
+                        article,
+                        reg,
+                        turn,
+                    )
                 turn_retries += 1
                 logger.info(
                     "perelman: transient overload, retrying turn",

@@ -625,10 +625,64 @@ class TestAgentLoop:
             result.quotes[0].text == "We demonstrate a verbatim result worth quoting."
         )
 
-    def test_transient_overload_exhausting_turn_retries_yields_empty(self) -> None:
-        # If the overload outlasts the per-turn retry budget too, the loop gives
-        # up gracefully (empty result, no raise) — the article is marked for a
-        # later retry by the cache layer, never crashes the batch.
+    def test_transient_overload_exhausting_turn_retries_falls_back_to_resume(
+        self,
+    ) -> None:
+        # If the overload outlasts the per-turn retry budget, the loop does NOT
+        # abandon the article — per the user directive ("at the limit, start a
+        # new chat with a memory of the prior steps") it starts a FRESH
+        # tool-free chat (resume-with-memory). The resume is a single small
+        # request, far more likely to clear a lingering 1302/1305; its JSON is
+        # parsed → quotes recovered despite the exhausted tool loop.
+        rate_limits = {
+            i: LLMRateLimitedError(
+                "llm: HTTP 429: 1302 concurrency",
+                code="1302",
+                terminal=False,
+            )
+            for i in range(_MAX_TURN_RETRIES + 1)
+        }
+        # First _MAX_TURN_RETRIES + 1 attempts raise on turn 0; the next call
+        # (idx _MAX_TURN_RETRIES + 1) is the resume chat and returns the final
+        # JSON. Pad the queue with dummies that are never returned (errors
+        # raise before the return).
+        queue = [_assistant() for _ in range(_MAX_TURN_RETRIES + 1)] + [
+            _assistant(content=_FINAL_JSON),
+        ]
+        client = _FakeClient(queue, rate_limits=rate_limits)
+        fetcher = _FakeFetcher(_parts())
+        extractor = _extractor(client, fetcher)
+
+        result = asyncio.run(extractor.extract(_StubArticle()))
+
+        # _MAX_TURN_RETRIES + 1 failed turn attempts + 1 resume chat call.
+        assert len(client.chat_calls) == _MAX_TURN_RETRIES + 2
+        # The resume call is tool-free and asks for json_object.
+        resume_kwargs = client.kwargs[_MAX_TURN_RETRIES + 1]
+        assert resume_kwargs["tools"] is None
+        assert resume_kwargs["tool_choice"] is None
+        assert resume_kwargs["response_format"] == {"type": "json_object"}
+        # Resume is a fresh 2-message chat (system + user), not the bloated
+        # tool-call history.
+        resume_msgs = client.chat_calls[_MAX_TURN_RETRIES + 1]
+        assert len(resume_msgs) == 2
+        assert resume_msgs[0]["role"] == "system"
+        assert "inspection turns" in resume_msgs[0]["content"]
+        # prior_turns = 0 (the transient error hit on turn 0 before any tool
+        # call completed).
+        assert "0" in resume_msgs[0]["content"]
+        # Quotes recovered via the resume.
+        assert len(result.quotes) == 1
+        assert (
+            result.quotes[0].text == "We demonstrate a verbatim result worth quoting."
+        )
+
+    def test_transient_overload_resume_empty_falls_back_to_force_finalize(
+        self,
+    ) -> None:
+        # Both the turn retries AND the fresh-chat resume yield nothing (model
+        # refuses even the clean payload) — the zoomed-history force_finalize is
+        # the last-resort fallback. Both empty → empty result, no raise.
         rate_limits = {
             i: LLMRateLimitedError(
                 "llm: HTTP 429: 1305 overload",
@@ -637,15 +691,22 @@ class TestAgentLoop:
             )
             for i in range(_MAX_TURN_RETRIES + 1)
         }
-        client = _FakeClient([_assistant(content=_FINAL_JSON)], rate_limits=rate_limits)
+        # Turn attempts raise; resume (idx N+1) returns None; force_finalize
+        # (idx N+2) returns None. Pad with dummies for the raising attempts.
+        n = _MAX_TURN_RETRIES + 1
+        queue = [_assistant() for _ in range(n)] + [
+            _assistant(content=None),
+            _assistant(content=None),
+        ]
+        client = _FakeClient(queue, rate_limits=rate_limits)
         fetcher = _FakeFetcher(_parts())
         extractor = _extractor(client, fetcher)
 
         result = asyncio.run(extractor.extract(_StubArticle()))
 
+        # n failed turn attempts + 1 resume (empty) + 1 force_finalize (empty).
+        assert len(client.chat_calls) == n + 2
         assert result.is_empty
-        # Exactly _MAX_TURN_RETRIES + 1 attempts on turn 0, then abandonment.
-        assert len(client.chat_calls) == _MAX_TURN_RETRIES + 1
 
     def test_terminal_rate_limit_aborts_extraction_immediately(self) -> None:
         # Terminal codes (1304/1308/1309/1310 — quota / window / plan) must NOT
