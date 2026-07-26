@@ -69,7 +69,6 @@ _RATE_LIMIT_BACKOFF_BASE = 2.0
 #   1308 — usage-window limit (resets at next_flush_time, e.g. 5h)
 #   1309 — Coding Plan package expired
 #   1310 — insufficient balance
-_ZAI_TRANSIENT_CODES = frozenset({"1302", "1303", "1305"})
 _ZAI_TERMINAL_CODES = frozenset({"1304", "1308", "1309", "1310"})
 _ZAI_OVERLOAD_CODE = "1305"
 
