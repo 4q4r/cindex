@@ -392,6 +392,7 @@ class IngestionService:
             ValueError,
             RuntimeError,
             ConnectionError,
+            TimeoutError,
             ConnectorFetchError,
             RequestException,
             aiohttp.ClientError,
