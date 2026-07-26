@@ -358,10 +358,121 @@ class TestOpenAICompatibleClient:
             "apps.extraction.llm_client.asyncio.sleep",
             _spy_sleep,
         )
+        # Pin jitter to identity so the backoff math is deterministic.
+        monkeypatch.setattr(
+            "apps.extraction.llm_client._apply_jitter",
+            lambda d: d,
+        )
 
         asyncio.run(client.chat([{"role": "user", "content": "hi"}]))
-        # attempt 1 → backoff base * 1 = 2.0s (no Retry-After header sent).
+        # attempt 1 → backoff base * 2**0 = 2.0s (no Retry-After header sent).
         assert slept == [2.0]
+
+    def test_rate_limit_1305_uses_longer_backoff_and_more_attempts(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        # Z.AI code 1305 (server overload) is transient but clears slowly, so
+        # it gets a longer backoff base (4s), a higher cap (30s), and more
+        # attempts (5) than the default 1302/1303 path (3 attempts, base 2s).
+        overload = json.dumps(
+            {"error": {"code": "1305", "message": "service overloaded"}},
+        )
+        body = json.dumps({"choices": [{"message": {"content": "ok"}}]})
+        fake = _install_fake(
+            monkeypatch,
+            [
+                _FakeResponse(status=429, body=overload),
+                _FakeResponse(status=429, body=overload),
+                _FakeResponse(status=429, body=overload),
+                _FakeResponse(status=429, body=overload),
+                _FakeResponse(status=200, body=body),
+            ],
+        )
+        client = OpenAICompatibleClient(_cfg())
+
+        slept: list[float] = []
+
+        async def _spy_sleep(t: float) -> None:
+            slept.append(t)
+
+        monkeypatch.setattr(
+            "apps.extraction.llm_client.asyncio.sleep",
+            _spy_sleep,
+        )
+        monkeypatch.setattr(
+            "apps.extraction.llm_client._apply_jitter",
+            lambda d: d,
+        )
+
+        message = asyncio.run(client.chat([{"role": "user", "content": "hi"}]))
+        # 4 backoffs before the 5th attempt succeeds: 4, 8, 16, capped at 30.
+        assert slept == [4.0, 8.0, 16.0, 30.0]
+        assert message["content"] == "ok"
+        # All 5 responses consumed (4 retries + 1 success).
+        assert fake._responses == []
+
+    def test_rate_limit_1305_exhausts_overload_attempts_raises(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        # 1305 gets 5 attempts; the 5th 429 re-raises (not the default 3).
+        overload = json.dumps(
+            {"error": {"code": "1305", "message": "service overloaded"}},
+        )
+        fake = _install_fake(
+            monkeypatch,
+            [_FakeResponse(status=429, body=overload) for _ in range(5)],
+        )
+        client = OpenAICompatibleClient(_cfg())
+
+        async def _no_sleep(_t: float) -> None:
+            return None
+
+        monkeypatch.setattr(
+            "apps.extraction.llm_client.asyncio.sleep",
+            _no_sleep,
+        )
+        monkeypatch.setattr(
+            "apps.extraction.llm_client._apply_jitter",
+            lambda d: d,
+        )
+
+        with pytest.raises(LLMRateLimitedError, match="HTTP 429"):
+            asyncio.run(client.chat([{"role": "user", "content": "hi"}]))
+        # 5 attempts fired, not 3.
+        assert fake._responses == []
+
+    def test_terminal_quota_error_1308_not_retried(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        # Z.AI code 1308 (usage-window limit) is terminal quota exhaustion —
+        # retrying is futile and burns the window, so it must NOT retry.
+        terminal = json.dumps(
+            {"error": {"code": "1308", "message": "window limit reached"}},
+        )
+        fake = _install_fake(
+            monkeypatch,
+            [_FakeResponse(status=429, body=terminal)],
+        )
+        client = OpenAICompatibleClient(_cfg())
+
+        slept: list[float] = []
+
+        async def _spy_sleep(t: float) -> None:
+            slept.append(t)
+
+        monkeypatch.setattr(
+            "apps.extraction.llm_client.asyncio.sleep",
+            _spy_sleep,
+        )
+
+        with pytest.raises(LLMRateLimitedError, match="HTTP 429"):
+            asyncio.run(client.chat([{"role": "user", "content": "hi"}]))
+        # Only the one response consumed — no retry, no sleep.
+        assert fake._responses == []
+        assert slept == []
 
     def test_invalid_json_raises_connector_fetch_error(
         self,
