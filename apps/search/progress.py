@@ -2,9 +2,19 @@
 
 from __future__ import annotations
 
+from django.core.cache import cache
+
 from apps.articles.models import Source
 from apps.ingestion.connectors import CONNECTORS
 from apps.search.models import SearchWaitStat
+
+# Source health (circuit-breaker state) changes slowly, and ``get_source_stats``
+# is called on every search-job poll (apps/search/views.py). Caching collapses
+# a per-poll DB query (~1/s/user) into one query per TTL — a meaningful cut of
+# DB load under concurrent polling, which was a contributor to the connection
+# exhaustion that caused HTTP 500 on the poll endpoint.
+_SOURCE_STATS_CACHE_KEY = "search:source_stats"
+_SOURCE_STATS_TTL_SECONDS = 15
 
 
 def _round_half_up(value: float) -> int:
@@ -17,8 +27,8 @@ def _round_half_up(value: float) -> int:
     return int(value + 0.5)
 
 
-def get_source_stats() -> dict:
-    """Return the shared source stats."""
+def _compute_source_stats() -> dict:
+    """Query the DB for the shared source stats (uncached)."""
     total = len(CONNECTORS)
     indexed = {
         item.key: item for item in Source.objects.filter(key__in=CONNECTORS.keys())
@@ -36,6 +46,20 @@ def get_source_stats() -> dict:
         "live": live,
         "failed": failed_names,
     }
+
+
+def get_source_stats() -> dict:
+    """Return the shared source stats, cached for a short TTL.
+
+    Source health changes slowly (circuit-breaker cooldown is minutes), so a
+    15s TTL is safe and removes a per-poll DB query. Backed by Redis in prod
+    (``django_redis``) and LocMem in tests (``USE_LOCAL_CACHE``).
+    """
+    return cache.get_or_set(
+        _SOURCE_STATS_CACHE_KEY,
+        _compute_source_stats,
+        _SOURCE_STATS_TTL_SECONDS,
+    )
 
 
 def get_search_wait_stats() -> dict[str, int | None]:

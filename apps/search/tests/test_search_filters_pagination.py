@@ -484,7 +484,7 @@ def test_create_search_job_attaches_to_pending_reserved(monkeypatch, db) -> None
     reserved = uuid.uuid4()
     monkeypatch.setattr("apps.search.views.cache.add", lambda *a, **k: False)
 
-    def fake_get(key, default=None):
+    def fake_get(key, default=None, **kwargs):
         if isinstance(key, str) and "pending" in key:
             return str(reserved)
         return default
@@ -510,7 +510,7 @@ def test_create_search_job_creates_when_lock_held_invalid_pending(
     """An unparseable pending id falls back to creating a fresh job."""
     monkeypatch.setattr("apps.search.views.cache.add", lambda *a, **k: False)
 
-    def fake_get(key, default=None):
+    def fake_get(key, default=None, **kwargs):
         if isinstance(key, str) and "pending" in key:
             return "not-a-uuid"
         return default
