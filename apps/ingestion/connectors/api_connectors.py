@@ -22,6 +22,7 @@ from xml.etree import ElementTree as ET
 import aiohttp
 import structlog
 
+from apps.articles.services import TIER_A, TIER_B
 from apps.core.text import normalize_scholarly_text
 
 from .base import (
@@ -59,6 +60,29 @@ def _extract_epmc_journal(rec: dict) -> str:
     if not isinstance(journal, dict):
         return ""
     return (journal.get("title") or "").strip()
+
+
+# Europe PMC ``pubTypeList.pubType`` values that denote a published, peer-reviewed
+# article (as opposed to a preprint, editorial, letter, or meeting abstract).
+_EPMC_JOURNAL_PUBTYPES = frozenset({"journal article", "research-article"})
+
+
+def _epmc_tier_evidence(pub_types: list[str]) -> tuple[str, str]:
+    """Return ``(peer_review_evidence, preprint_evidence)`` for an Europe PMC record.
+
+    Europe PMC exposes ``pubTypeList.pubType`` per record. A preprint is marked
+    explicitly there (tierA preprint). A ``Journal Article`` / ``research-article``
+    pubType is a published peer-reviewed article (tierA peer-review). Anything
+    else (editorial, letter, conference abstract) is left empty so the
+    classifier falls back to the conservative Europe-PMC source reputation
+    default rather than silently asserting peer-review from a weak signal.
+    """
+    lowered = [str(t).lower() for t in (pub_types or [])]
+    if any("preprint" in t for t in lowered):
+        return "", f"{TIER_A} Europe PMC: preprint"
+    if any(t in _EPMC_JOURNAL_PUBTYPES for t in lowered):
+        return f"{TIER_A} Europe PMC: Journal Article", ""
+    return "", ""
 
 
 class EuropePMCConnector(AsyncApiConnector):
@@ -128,6 +152,8 @@ class EuropePMCConnector(AsyncApiConnector):
                 )
             if not title or not url_value or not abstract:
                 continue
+            pub_types = (rec.get("pubTypeList") or {}).get("pubType") or []
+            peer_ev, preprint_ev = _epmc_tier_evidence(pub_types)
             items.append(
                 self._raw(
                     title=title,
@@ -138,6 +164,9 @@ class EuropePMCConnector(AsyncApiConnector):
                     year=int(year) if str(year).isdigit() else None,
                     journal=journal,
                     authors=authors,
+                    peer_review_evidence=peer_ev,
+                    preprint_evidence=preprint_ev,
+                    indexing_evidence=f"{TIER_B} Europe PMC (MEDLINE/PubMed)",
                 ),
             )
         return items
@@ -244,6 +273,7 @@ class OpenAlexConnector(AsyncApiConnector):
             if pub_date_str:
                 with contextlib.suppress(ValueError):
                     year = int(datetime.strptime(pub_date_str, "%Y-%m-%d").year)  # noqa: DTZ007  # only .year is used; timezone irrelevant
+            peer_ev, preprint_ev = self._openalex_tier_evidence(item, primary_location)
             items.append(
                 self._raw(
                     title=title,
@@ -254,9 +284,36 @@ class OpenAlexConnector(AsyncApiConnector):
                     year=year,
                     journal=journal,
                     authors=tuple(authors),
+                    peer_review_evidence=peer_ev,
+                    preprint_evidence=preprint_ev,
+                    indexing_evidence=f"{TIER_B} OpenAlex",
                 ),
             )
         return items
+
+    @staticmethod
+    def _openalex_tier_evidence(
+        item: dict,
+        primary_location: dict | None,
+    ) -> tuple[str, str]:
+        """Return ``(peer_review_evidence, preprint_evidence)`` for an OpenAlex work.
+
+        OpenAlex ``work.type`` distinguishes preprints from articles; a work is
+        only asserted peer-reviewed (tierB) when it is an ``article`` hosted by a
+        venue of type ``journal``. Books, datasets, theses, and journal-less
+        articles stay unverified rather than silently marked peer-reviewed.
+        """
+        work_type = (item.get("type") or "").lower()
+        venue_type = ""
+        if isinstance(primary_location, dict):
+            venue_src = primary_location.get("source")
+            if isinstance(venue_src, dict):
+                venue_type = (venue_src.get("type") or "").lower()
+        if work_type == "preprint":
+            return "", f"{TIER_A} OpenAlex: preprint"
+        if work_type == "article" and venue_type == "journal":
+            return f"{TIER_B} OpenAlex: journal article", ""
+        return "", ""
 
 
 class CrossrefConnector(AsyncApiConnector):
@@ -330,6 +387,7 @@ class CrossrefConnector(AsyncApiConnector):
             volume = str(item.get("volume", "") or "").strip()
             issue = str(item.get("issue", "") or "").strip()
             pages = str(item.get("page", "") or "").strip()
+            peer_ev, preprint_ev = self._crossref_tier_evidence(item)
             items.append(
                 self._raw(
                     title=title,
@@ -343,9 +401,36 @@ class CrossrefConnector(AsyncApiConnector):
                     volume=volume,
                     issue=issue,
                     pages=pages,
+                    peer_review_evidence=peer_ev,
+                    preprint_evidence=preprint_ev,
+                    indexing_evidence=f"{TIER_B} Crossref (DOI registry)",
                 ),
             )
         return items
+
+    @staticmethod
+    def _crossref_tier_evidence(item: dict) -> tuple[str, str]:
+        """Return ``(peer_review_evidence, preprint_evidence)`` for a Crossref work.
+
+        ``posted-content`` is a preprint (tierA). A ``journal-article`` with a
+        Received/Accepted assertion carries explicit peer-review dates (tierA);
+        any other ``journal-article`` is a peer-reviewed venue record by default
+        (tierB). Proceedings, book-chapters, and other types stay unverified.
+        """
+        work_type = (item.get("type") or "").lower()
+        if work_type == "posted-content":
+            return "", f"{TIER_A} Crossref: posted-content (preprint)"
+        if work_type == "journal-article":
+            assertions = item.get("assertion") or []
+            names = {
+                str(a.get("name", "")).lower()
+                for a in assertions
+                if isinstance(a, dict)
+            }
+            if {"received", "accepted"} & names:
+                return f"{TIER_A} Crossref: received/accepted assertion", ""
+            return f"{TIER_B} Crossref: journal-article", ""
+        return "", ""
 
 
 class PubMedConnector(AsyncApiConnector):
@@ -468,6 +553,8 @@ class PubMedConnector(AsyncApiConnector):
                     year=year,
                     journal=journal,
                     authors=authors,
+                    peer_review_evidence=f"{TIER_B} MEDLINE-indexed (PubMed)",
+                    indexing_evidence=f"{TIER_B} medline pubmed",
                 ),
             )
         return items
@@ -514,6 +601,8 @@ class PubMedConnector(AsyncApiConnector):
                     year=year,
                     journal=journal,
                     authors=tuple(authors),
+                    peer_review_evidence=f"{TIER_B} MEDLINE-indexed (PubMed)",
+                    indexing_evidence=f"{TIER_B} medline pubmed",
                 ),
             )
         return items
@@ -662,6 +751,8 @@ class DOAJConnector(AsyncApiConnector):
             year=year,
             journal=journal,
             authors=tuple(authors),
+            peer_review_evidence=f"{TIER_B} DOAJ journal (peer-reviewed by policy)",
+            indexing_evidence=f"{TIER_B} doaj",
         )
 
     def _extract_from_payload(
@@ -897,6 +988,17 @@ class PMCConnector(AsyncApiConnector):
                     if author_string
                     else ()
                 )
+            pub_types = (rec.get("pubTypeList") or {}).get("pubType") or []
+            epmc_peer, preprint_ev = _epmc_tier_evidence(pub_types)
+            # PMC hosts the published-article version of MEDLINE records: a
+            # record without an explicit preprint marker is peer-reviewed by
+            # reputation (tierB). An explicit Journal Article pubType upgrades
+            # it to tierA; a preprint marker sets preprint and clears peer-review.
+            peer_ev = (
+                ""
+                if preprint_ev
+                else epmc_peer or f"{TIER_B} PubMed Central (published article)"
+            )
             items.append(
                 self._raw(
                     title=title,
@@ -907,6 +1009,9 @@ class PMCConnector(AsyncApiConnector):
                     year=year,
                     journal=journal,
                     authors=authors,
+                    peer_review_evidence=peer_ev,
+                    preprint_evidence=preprint_ev,
+                    indexing_evidence=f"{TIER_B} pmc pubmed central",
                 ),
             )
         return items
@@ -1024,6 +1129,7 @@ class ArXivConnector(AsyncApiConnector):
                     year=year,
                     journal="arXiv",
                     authors=authors,
+                    preprint_evidence=f"{TIER_A} arXiv preprint",
                 ),
             )
         return items
@@ -1069,6 +1175,7 @@ class ArXivConnector(AsyncApiConnector):
                     year=year,
                     journal="arXiv",
                     authors=tuple(authors),
+                    preprint_evidence=f"{TIER_A} arXiv preprint",
                 ),
             )
             if len(items) >= limit:
@@ -1155,7 +1262,8 @@ class HALConnector(AsyncApiConnector):
     def _api_url(self, query: str, limit: int) -> str:
         fields = (
             "halId_s,title_s,authFullName_s,abstract_s,"
-            "doiId_s,publicationDateY_i,uri_s,journalTitle_s,language_s"
+            "doiId_s,publicationDateY_i,uri_s,journalTitle_s,language_s,"
+            "peerReviewing_s,docType_s"
         )
         return (
             f"{self.profile.search_url}"
@@ -1209,6 +1317,16 @@ class HALConnector(AsyncApiConnector):
             # many English-language works indexed by this French repository.
             langs = doc.get("language_s", [])
             language = langs[0].strip() if isinstance(langs, list) and langs else ""
+            # HAL exposes an explicit ``peerReviewing_s`` boolean ("1" = the
+            # deposited version was peer-reviewed). Only that explicit signal
+            # asserts peer-review (tierA); HAL is a mixed repository hosting
+            # preprints and theses, so anything else stays unverified rather
+            # than being marked peer-reviewed from a weak docType guess.
+            peer_ev = (
+                f"{TIER_A} HAL: peerReviewing=1"
+                if str(doc.get("peerReviewing_s", "")).strip() == "1"
+                else ""
+            )
             items.append(
                 self._raw(
                     title=title,
@@ -1220,6 +1338,7 @@ class HALConnector(AsyncApiConnector):
                     journal=journal,
                     authors=authors,
                     language=language,
+                    peer_review_evidence=peer_ev,
                 ),
             )
         return items
@@ -1435,7 +1554,7 @@ class IACRConnector(AsyncApiConnector):
                     year=year,
                     journal="IACR ePrint",
                     authors=tuple(authors),
-                    preprint_evidence="iacr cryptology eprint",
+                    preprint_evidence=f"{TIER_A} IACR ePrint (preprint)",
                 ),
             )
             if len(items) >= limit:

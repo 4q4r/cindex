@@ -13,6 +13,51 @@ if TYPE_CHECKING:
 
 _MAX_SHORT_AUTHORS = 3
 
+# --- Peer-review / indexing tier protocol -------------------------------------
+# Connectors encode the strength of the per-record signal as a leading tier
+# prefix on the ``*_evidence`` text fields. The classifier evaluates tiers in
+# order of authority (explicit per-record > source reputation > keyword scan)
+# and never lets a weaker signal override a stronger one. Prefixes are plain
+# ASCII so they survive ``normalize_scholarly_text`` and are stable in the DB.
+#
+#   tierA: explicit per-record confirmation from the source API
+#          (HAL ``peerReviewing=1``, Crossref Received/Accepted assertion,
+#           Europe PMC ``Journal Article`` pubType, OpenAlex ``preprint`` work
+#           type). confidence 1.0.
+#   tierB: venue / source-reputation inference (OpenAlex venue=journal,
+#          Crossref journal-article+ISSN, MEDLINE/PubMed/PMC, DOAJ policy).
+#          confidence 0.7.
+#
+# The classifier also keeps a conservative source-reputation fallback (see
+# ``PEER_REVIEWED_BY_DEFAULT``) so the one-shot backfill can reclassify the
+# pre-existing corpus (whose ``peer_review_evidence`` is empty because it was
+# ingested before the connectors emitted tier signals). confidence 0.6.
+TIER_A = "tierA:"
+TIER_B = "tierB:"
+
+# Sources whose entire corpus is peer-reviewed by reputation. Used only as a
+# Tier B fallback when no per-record evidence is present (mainly the backfill
+# of pre-existing articles). Conservative: only sources that are *by policy*
+# peer-reviewed belong here -- mixed repositories (Zenodo, CORE, HAL, DBLP)
+# are deliberately omitted so their records stay "unverified" rather than
+# silently marked peer-reviewed.
+PEER_REVIEWED_BY_DEFAULT: frozenset[str] = frozenset(
+    {"pubmed", "pmc", "europe_pmc", "doaj", "scielo", "mathnet"},
+)
+
+# Sources whose entire corpus is preprints (never peer-reviewed).
+PREPRINT_SOURCES: frozenset[str] = frozenset({"arxiv", "iacr"})
+
+# Confidence assigned per decision path. Lower than the explicit tiers, the
+# source-default and keyword-scan paths still surface a result so the
+# ``peer_reviewed_only`` / ``indexed_only`` filters return real matches
+# instead of the near-empty results seen before this fix.
+_CONFIDENCE_TIER_A = 1.0
+_CONFIDENCE_TIER_B = 0.7
+_CONFIDENCE_SOURCE_DEFAULT = 0.6
+_CONFIDENCE_KEYWORD = 0.3
+_CONFIDENCE_NONE = 0.0
+
 INDEXING_KEYWORDS = [
     "scopus",
     "web of science",
@@ -43,6 +88,11 @@ PEER_REVIEW_KEYWORDS = [
 DOI_PATTERN = re.compile(r"10\.\d{4,9}/[-._;()/:A-Z0-9]+", re.IGNORECASE)
 
 
+def _has_tier(evidence: str | None, tier: str) -> bool:
+    """Return whether ``evidence`` carries the given tier prefix."""
+    return bool(evidence) and evidence.startswith(tier)
+
+
 @dataclass
 class EligibilityDecision:
     """Boolean and confidence outcome for article eligibility filtering."""
@@ -55,6 +105,12 @@ class EligibilityDecision:
     indexing_confidence: float
     doi_and_card_confidence: float
     not_preprint_confidence: float
+    # Human-readable Russian reason for the peer-review / preprint call. The
+    # classifier fills these only on the source-default and keyword paths (the
+    # connector-set tier evidence is preserved verbatim) so a teacher reading
+    # the evidence field can see *why* an article was marked peer-reviewed.
+    peer_review_reason: str = ""
+    preprint_reason: str = ""
 
     @property
     def eligible(self) -> bool:
@@ -92,30 +148,124 @@ class ArticleEligibilityService:
         matched = sum(1 for token in tokens if token in text)
         return round(min(1.0, matched / cap), 4)
 
+    @staticmethod
+    def _source_key(article: Article) -> str:
+        """Return the connector source key for ``article`` (``""`` if unknown)."""
+        source = getattr(article, "source", None)
+        return getattr(source, "key", "") or ""
+
+    @classmethod
+    def _decide_preprint(
+        cls,
+        preprint_ev: str,
+        scan_text: str,
+        source_key: str,
+    ) -> tuple[bool, str]:
+        """Return ``(is_preprint, reason)``.
+
+        A preprint verdict is reached on any of: explicit tierA preprint
+        evidence, a preprint keyword in the article text, or membership in a
+        preprint-only source (arXiv/IACR). The reason is filled only on the
+        non-explicit paths so connector evidence is preserved verbatim.
+        """
+        if _has_tier(preprint_ev, TIER_A):
+            return True, ""
+        if source_key in PREPRINT_SOURCES:
+            return True, f"препринт-источник: {source_key}"
+        if any(tok in scan_text for tok in PREPRINT_KEYWORDS):
+            return True, "упоминание препринта в тексте"
+        return False, ""
+
+    @classmethod
+    def _decide_peer_review(
+        cls,
+        peer_ev: str,
+        scan_text: str,
+        source_key: str,
+        is_preprint: bool,  # noqa: FBT001  # boolean flag is the semantic input
+    ) -> tuple[bool, float, str]:
+        """Return ``(peer_reviewed, confidence, reason)`` by tier precedence.
+
+        Precedence: preprint override > tierA > tierB > source default >
+        keyword scan > unverified. A preprint is never peer-reviewed.
+        """
+        if is_preprint:
+            return False, _CONFIDENCE_TIER_A, ""
+        if _has_tier(peer_ev, TIER_A):
+            return True, _CONFIDENCE_TIER_A, ""
+        if _has_tier(peer_ev, TIER_B):
+            return True, _CONFIDENCE_TIER_B, ""
+        if source_key in PEER_REVIEWED_BY_DEFAULT:
+            return (
+                True,
+                _CONFIDENCE_SOURCE_DEFAULT,
+                f"рецензируемый источник по репутации: {source_key}",
+            )
+        if any(tok in scan_text for tok in PEER_REVIEW_KEYWORDS):
+            return True, _CONFIDENCE_KEYWORD, "упоминание рецензирования в тексте"
+        return False, _CONFIDENCE_NONE, ""
+
     @classmethod
     def evaluate(cls, article: Article) -> EligibilityDecision:
-        """Evaluate."""
-        text = " ".join(
+        """Evaluate peer-review / preprint / indexed eligibility by tiers.
+
+        Precedence (strongest signal wins; a weaker signal never overrides a
+        stronger one):
+
+        1. Explicit preprint tierA evidence  -> preprint (overrides peer-review).
+        2. Explicit peer-review tierA evidence -> peer-reviewed, conf 1.0.
+        3. Explicit peer-review tierB evidence -> peer-reviewed, conf 0.7.
+        4. Source-reputation default           -> peer-reviewed, conf 0.6.
+        5. Keyword scan of title/abstract/text  -> peer-reviewed, conf 0.3.
+        6. Otherwise                           -> unverified (False), conf 0.0.
+        """
+        peer_ev = article.peer_review_evidence or ""
+        index_ev = article.indexing_evidence or ""
+        preprint_ev = article.preprint_evidence or ""
+        source_key = cls._source_key(article)
+
+        # Keyword scan runs over title/abstract/fulltext only -- NOT over the
+        # evidence fields -- so a Russian reason we wrote on a prior pass (or a
+        # connector tier string) cannot fabricate a keyword match.
+        scan_text = " ".join(
             [
                 article.title or "",
                 article.abstract or "",
                 article.full_text[:5000] if article.full_text else "",
-                article.peer_review_evidence or "",
-                article.indexing_evidence or "",
-                article.preprint_evidence or "",
             ],
         ).lower()
 
-        peer_reviewed = any(token in text for token in PEER_REVIEW_KEYWORDS)
-        indexed = any(token in text for token in INDEXING_KEYWORDS)
-        peer_review_confidence = cls._token_confidence(
-            text,
-            PEER_REVIEW_KEYWORDS,
-            cap=1,
+        # --- preprint (overrides peer-review) --------------------------------
+        is_preprint, preprint_reason = cls._decide_preprint(
+            preprint_ev,
+            scan_text,
+            source_key,
         )
-        indexing_confidence = cls._token_confidence(text, INDEXING_KEYWORDS, cap=2)
+        not_preprint = not is_preprint
+
+        # --- peer-reviewed ---------------------------------------------------
+        peer_reviewed, peer_review_confidence, peer_review_reason = (
+            cls._decide_peer_review(peer_ev, scan_text, source_key, is_preprint)
+        )
+
+        # --- indexed in a reputable DB --------------------------------------
+        if _has_tier(index_ev, TIER_A) or _has_tier(index_ev, TIER_B):
+            indexed = True
+            indexing_confidence = (
+                _CONFIDENCE_TIER_A
+                if _has_tier(index_ev, TIER_A)
+                else _CONFIDENCE_TIER_B
+            )
+        else:
+            indexed = any(tok in scan_text for tok in INDEXING_KEYWORDS)
+            indexing_confidence = (
+                cls._token_confidence(scan_text, INDEXING_KEYWORDS, cap=2)
+                if indexed
+                else _CONFIDENCE_NONE
+            )
+
         has_doi = bool(article.doi and DOI_PATTERN.search(article.doi)) or bool(
-            DOI_PATTERN.search(text),
+            DOI_PATTERN.search(scan_text),
         )
         journal_card = bool(
             article.journal_id and article.journal and article.journal.name,
@@ -124,8 +274,8 @@ class ArticleEligibilityService:
         doi_confidence = 1.0 if has_doi else 0.0
         journal_confidence = 1.0 if journal_card else 0.0
         doi_and_card_confidence = round((doi_confidence + journal_confidence) / 2.0, 4)
-        not_preprint = not any(token in text for token in PREPRINT_KEYWORDS)
         not_preprint_confidence = 1.0 if not_preprint else 0.0
+
         return EligibilityDecision(
             peer_reviewed=peer_reviewed,
             indexed=indexed,
@@ -135,11 +285,20 @@ class ArticleEligibilityService:
             indexing_confidence=indexing_confidence,
             doi_and_card_confidence=doi_and_card_confidence,
             not_preprint_confidence=not_preprint_confidence,
+            peer_review_reason=peer_review_reason,
+            preprint_reason=preprint_reason,
         )
 
     @classmethod
     def apply(cls, article: Article) -> Article:
-        """Apply the computed result to the domain object."""
+        """Apply the computed result to the domain object.
+
+        Connector-set tier evidence is preserved verbatim. When the classifier
+        reached its verdict via the source-default or keyword path, it fills a
+        human-readable Russian reason into the (empty) evidence field so a
+        teacher can verify *why* an article was marked peer-reviewed -- the
+        transparency the high-trust audience requires.
+        """
         decision = cls.evaluate(article)
         article.is_peer_reviewed_or_refereed = decision.peer_reviewed
         article.is_indexed_in_reputable_db = decision.indexed
@@ -151,21 +310,28 @@ class ArticleEligibilityService:
         article.doi_and_card_confidence = decision.doi_and_card_confidence
         article.not_preprint_confidence = decision.not_preprint_confidence
         article.eligibility_confidence = decision.overall_confidence
-        article.save(
-            update_fields=[
-                "is_peer_reviewed_or_refereed",
-                "is_indexed_in_reputable_db",
-                "has_doi_and_journal_card",
-                "is_not_preprint_or_author_manuscript",
-                "is_eligible",
-                "peer_review_confidence",
-                "indexing_confidence",
-                "doi_and_card_confidence",
-                "not_preprint_confidence",
-                "eligibility_confidence",
-                "updated_at",
-            ],
-        )
+
+        update_fields = [
+            "is_peer_reviewed_or_refereed",
+            "is_indexed_in_reputable_db",
+            "has_doi_and_journal_card",
+            "is_not_preprint_or_author_manuscript",
+            "is_eligible",
+            "peer_review_confidence",
+            "indexing_confidence",
+            "doi_and_card_confidence",
+            "not_preprint_confidence",
+            "eligibility_confidence",
+        ]
+        if decision.peer_review_reason and not article.peer_review_evidence:
+            article.peer_review_evidence = decision.peer_review_reason
+            update_fields.append("peer_review_evidence")
+        if decision.preprint_reason and not article.preprint_evidence:
+            article.preprint_evidence = decision.preprint_reason
+            update_fields.append("preprint_evidence")
+
+        update_fields.append("updated_at")
+        article.save(update_fields=update_fields)
         return article
 
 
