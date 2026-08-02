@@ -19,6 +19,7 @@ surfaced as a per-source ``ConnectorFetchError`` (never as an uncaught
 from __future__ import annotations
 
 import asyncio
+import json
 from types import SimpleNamespace
 from typing import Any, Self
 
@@ -241,4 +242,28 @@ def test_invalid_json_payload_type_is_terminal(
         asyncio.run(connector._fetch_async("machine learning", 1))
 
     # The invalid payload short-circuits before any retry.
+    assert session.calls == 1
+
+
+def test_malformed_json_body_is_terminal(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A JSON body that does not decode surfaces as ConnectorFetchError.
+
+    aiohttp's ``response.json()`` does not wrap ``json.JSONDecodeError`` (a
+    ``ValueError`` subclass), so without the explicit ``except ValueError``
+    clause it would escape the loop. The clause mirrors
+    ``ExaConnector._cs_post_json`` and is terminal (no retry).
+    """
+    session = _patch_session(
+        monkeypatch,
+        [
+            _FakeResponse(json_exc=json.JSONDecodeError("msg", "doc", 0)),
+            _FakeResponse(payload=_OK_PAYLOAD),
+        ],
+    )
+    connector = OpenAlexConnector()
+
+    with pytest.raises(ConnectorFetchError, match="invalid JSON body"):
+        asyncio.run(connector._fetch_async("machine learning", 1))
+
+    # Terminal: one attempt, no retry.
     assert session.calls == 1

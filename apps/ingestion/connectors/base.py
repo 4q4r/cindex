@@ -1367,6 +1367,13 @@ class AsyncApiConnector(BaseConnector):
                 status = getattr(exc, "status", None) or getattr(exc, "code", None)
                 msg = f"{self.profile.source_key}: HTTP {status} for {url}: {exc}"
                 raise ConnectorFetchError(msg) from exc
+            except ValueError as exc:
+                # Terminal: a JSON body that does not decode (aiohttp's
+                # ``response.json()`` does not wrap ``json.JSONDecodeError``)
+                # — mirror ``ExaConnector._cs_post_json`` and surface it as a
+                # per-source failure rather than relying on the outer handler.
+                msg = f"{self.profile.source_key}: invalid JSON body for {url}: {exc}"
+                raise ConnectorFetchError(msg) from exc
             except (aiohttp.ClientError, OSError) as exc:
                 # Covers aiohttp.ClientError AND asyncio.TimeoutError
                 # (builtin TimeoutError is an OSError subclass). Transient.
