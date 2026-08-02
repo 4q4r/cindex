@@ -179,6 +179,23 @@ def test_indexed_keyword_scan(db) -> None:
     assert article.indexing_confidence > 0
 
 
+def test_indexed_keyword_confidence_capped_at_keyword_tier(db) -> None:
+    """Multiple indexing keywords must NOT raise confidence above 0.3.
+
+    A pure keyword scan is the weakest signal; it must never equal tierA (1.0)
+    or exceed tierB (0.7), which would invert the tier model.
+    """
+    article = _make_article(
+        db,
+        source_key="test",
+        abstract="indexed in pubmed scopus ieee doi",
+    )
+    ArticleEligibilityService.apply(article)
+    article.refresh_from_db()
+    assert article.is_indexed_in_reputable_db is True
+    assert article.indexing_confidence == pytest.approx(0.3)
+
+
 def test_preprint_keyword_in_text(db) -> None:
     """A preprint keyword in the text marks the article a preprint."""
     article = _make_article(

@@ -141,14 +141,6 @@ class ArticleEligibilityService:
     """Compute and persist article eligibility decisions."""
 
     @staticmethod
-    def _token_confidence(text: str, tokens: list[str], cap: int) -> float:
-        """Compute token-level confidence for the article."""
-        if cap <= 0:
-            return 0.0
-        matched = sum(1 for token in tokens if token in text)
-        return round(min(1.0, matched / cap), 4)
-
-    @staticmethod
     def _source_key(article: Article) -> str:
         """Return the connector source key for ``article`` (``""`` if unknown)."""
         source = getattr(article, "source", None)
@@ -257,12 +249,11 @@ class ArticleEligibilityService:
                 else _CONFIDENCE_TIER_B
             )
         else:
+            # Keyword-tier fallback: a single keyword hit is the weakest signal
+            # (conf 0.3), never 1.0 -- otherwise a pure keyword scan could equal
+            # an explicit tierA connector signal, inverting the tier model.
             indexed = any(tok in scan_text for tok in INDEXING_KEYWORDS)
-            indexing_confidence = (
-                cls._token_confidence(scan_text, INDEXING_KEYWORDS, cap=2)
-                if indexed
-                else _CONFIDENCE_NONE
-            )
+            indexing_confidence = _CONFIDENCE_KEYWORD if indexed else _CONFIDENCE_NONE
 
         has_doi = bool(article.doi and DOI_PATTERN.search(article.doi)) or bool(
             DOI_PATTERN.search(scan_text),
