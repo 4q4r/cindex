@@ -151,7 +151,15 @@ if APP.database_url.startswith("postgres"):
             "PASSWORD": parsed.password,
             "HOST": parsed.hostname,
             "PORT": parsed.port or 5432,
-            "CONN_MAX_AGE": 60,
+            # ASGI (gunicorn UvicornWorker): persistent connections must be
+            # disabled — per Django docs, under ASGI each request-цикл closes
+            # its connection (close_old_connections) instead of holding a
+            # per-thread conn for CONN_MAX_AGE seconds. CONN_MAX_AGE=60 let
+            # idle conns accumulate to ~96/100 (max_connections=100) and
+            # triggered ``FATAL: sorry, too many clients already`` → HTTP 500
+            # on the search-job poll endpoint. 0 = close at end of every
+            # request. (Scale via PgBouncer, not persistent conns — see plan.)
+            "CONN_MAX_AGE": 0,
             "CONN_HEALTH_CHECKS": True,
         },
     }

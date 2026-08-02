@@ -472,6 +472,12 @@ class SearchJobDetailView(APIView):
 
     permission_classes = (AllowAny,)
     authentication_classes = ()
+    # This is a read-only poll endpoint the frontend hits ~1/s while a job
+    # runs. The default ``anon: 60/min`` throttle equals that cadence and
+    # produces intermittent 429s mid-poll. Throttling a status read is
+    # pointless — the costly work is the celery job, created (and throttled)
+    # at ``SearchJobCreateView``. Disable throttling here only.
+    throttle_classes: list[type] = ()
 
     def get(self, request: Request, job_id: uuid.UUID) -> Response:
         """Handle the GET request."""

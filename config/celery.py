@@ -9,8 +9,9 @@ from typing import Any
 
 import structlog
 from celery import Celery
-from celery.signals import setup_logging, worker_ready
+from celery.signals import setup_logging, task_postrun, task_prerun, worker_ready
 from django.conf import settings
+from django.db import close_old_connections
 from django_structlog.celery.steps import DjangoStructLogInitStep
 
 os.environ.setdefault("DJANGO_SETTINGS_MODULE", "config.settings")
@@ -22,6 +23,33 @@ if app.steps is None:
 app.steps["worker"].add(DjangoStructLogInitStep)
 app.config_from_object("django.conf:settings", namespace="CELERY")
 app.autodiscover_tasks()
+
+# Recycle prefork children after a bounded number of tasks so any DB
+# connections they hold (or leak) are released back to postgres. With
+# CONN_MAX_AGE=0 + per-task close_old_connections (see handlers below) this
+# is belt-and-suspenders against connection accumulation under ASGI/celery.
+app.conf.worker_max_tasks_per_child = 200
+
+
+@task_prerun.connect
+def _close_old_connections_prerun(**_: object) -> None:
+    """Close stale DB connections before a celery task runs.
+
+    Django's request-цикл normally calls ``close_old_connections`` per
+    request, but celery prefork children have no such цикл — without this
+    signal a child holds its Django DB connection for the whole process
+    lifetime. Under CONN_MAX_AGE=0 this releases the connection back to
+    postgres after every task, preventing the pool exhaustion that caused
+    ``FATAL: sorry, too many clients already`` → HTTP 500 on the poll
+    endpoint. (Canonical django+celery pattern.)
+    """
+    close_old_connections()
+
+
+@task_postrun.connect
+def _close_old_connections_postrun(**_: object) -> None:
+    """Close stale DB connections after a celery task finishes."""
+    close_old_connections()
 
 
 def _build_beat_schedule() -> dict[str, dict[str, object]]:

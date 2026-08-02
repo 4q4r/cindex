@@ -277,8 +277,22 @@ export default function App() {
         const POLL_INTERVAL_MS = 1000;
         const POLL_FAILURE_BACKOFF_MS = 5000;
         const POLL_FAILURE_RETRY_LIMIT = 10;
+        // Optional hard ceiling on total poll duration, independent of
+        // ``consecutivePollFailures`` (which any intermittent 200 resets to
+        // 0). 0 = disabled (default): some sources are slow and a search may
+        // legitimately run for many minutes, so we do NOT cap polling by
+        // default. Set a positive value (ms) to bound the loop for degraded
+        // backends that return intermittent 500s forever.
+        const POLL_MAX_DURATION_MS = 0;
+        const pollStartedAt = Date.now();
         let consecutivePollFailures = 0;
         while (searchSeqRef.current === searchSeq) {
+          if (
+            POLL_MAX_DURATION_MS > 0 &&
+            Date.now() - pollStartedAt > POLL_MAX_DURATION_MS
+          ) {
+            throw new Error("Search timed out waiting for the job to finish");
+          }
           let payload: Awaited<ReturnType<typeof getSearchJob>>;
           try {
             payload = await getSearchJob(
