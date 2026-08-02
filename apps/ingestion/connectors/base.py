@@ -1332,36 +1332,59 @@ class AsyncApiConnector(BaseConnector):
         return asyncio.run(self._fetch_async(query, limit))
 
     async def _fetch_async(self, query: str, limit: int) -> list[RawArticle]:
-        """Async fetch using aiohttp."""
+        """Async fetch using aiohttp with transient-failure retry.
+
+        Transient network/timeout failures are retried with backoff before
+        degrading the whole source. aiohttp's ``ClientTimeout`` timer raises
+        ``asyncio.TimeoutError`` (the builtin ``TimeoutError``, an ``OSError``
+        subclass), which is NOT a subclass of ``aiohttp.ClientError`` — so it
+        must be caught explicitly alongside ``ClientError``. Without this, a
+        single slow upstream API kills the entire search job (the uncaught
+        ``TimeoutError`` bubbles past ``_process_single_source`` and aborts
+        the celery task with an empty error string). Mirrors the canonical
+        retry loop in ``ExaConnector._fetch_single_lang``: a terminal
+        :class:`ConnectorFetchError` (HTTP >= 400, invalid JSON) stops the
+        loop immediately and is surfaced as a per-source failure.
+        """
         url = self._api_url(query, limit)
-        try:
-            async with (
-                aiohttp.ClientSession(trust_env=True) as session,
-                session.get(
-                    url,
-                    timeout=aiohttp.ClientTimeout(
-                        total=self.REQUEST_TIMEOUT_SECONDS,
-                    ),
-                ) as response,
-            ):
-                response.raise_for_status()
-                payload = await response.json()
-        except aiohttp.ClientResponseError as exc:
-            status = getattr(exc, "status", None) or getattr(exc, "code", None)
-            msg = f"{self.profile.source_key}: HTTP {status} for {url}: {exc}"
-            raise ConnectorFetchError(
-                msg,
-            ) from exc
-        except aiohttp.ClientError as exc:
-            msg = f"{self.profile.source_key}: request failed: {exc}"
-            raise ConnectorFetchError(
-                msg,
-            ) from exc
+        payload: object = None
+        for attempt in range(1, self.MAX_ATTEMPTS + 1):
+            try:
+                async with (
+                    aiohttp.ClientSession(trust_env=True) as session,
+                    session.get(
+                        url,
+                        timeout=aiohttp.ClientTimeout(
+                            total=self.REQUEST_TIMEOUT_SECONDS,
+                        ),
+                    ) as response,
+                ):
+                    response.raise_for_status()
+                    payload = await response.json()
+                break
+            except aiohttp.ClientResponseError as exc:
+                # Terminal: HTTP >= 400 — do not retry.
+                status = getattr(exc, "status", None) or getattr(exc, "code", None)
+                msg = f"{self.profile.source_key}: HTTP {status} for {url}: {exc}"
+                raise ConnectorFetchError(msg) from exc
+            except ValueError as exc:
+                # Terminal: a JSON body that does not decode (aiohttp's
+                # ``response.json()`` does not wrap ``json.JSONDecodeError``)
+                # — mirror ``ExaConnector._cs_post_json`` and surface it as a
+                # per-source failure rather than relying on the outer handler.
+                msg = f"{self.profile.source_key}: invalid JSON body for {url}: {exc}"
+                raise ConnectorFetchError(msg) from exc
+            except (aiohttp.ClientError, OSError) as exc:
+                # Covers aiohttp.ClientError AND asyncio.TimeoutError
+                # (builtin TimeoutError is an OSError subclass). Transient.
+                if attempt < self.MAX_ATTEMPTS:
+                    await asyncio.sleep(0.6 * attempt)
+                else:
+                    msg = f"{self.profile.source_key}: request failed: {exc}"
+                    raise ConnectorFetchError(msg) from exc
         if not isinstance(payload, dict):
             msg = f"{self.profile.source_key}: invalid JSON payload type"
-            raise ConnectorFetchError(
-                msg,
-            )
+            raise ConnectorFetchError(msg)
         return self._extract_from_payload(query, payload, limit)
 
     def _api_url(self, query: str, limit: int) -> str:
