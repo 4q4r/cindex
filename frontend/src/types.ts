@@ -221,7 +221,7 @@ export interface SearchProgress {
 export const DEFAULT_FILTERS: Filters = {
   citationStyle: "gost_7_0_108_2022",
   peerReviewedOnly: true,
-  indexedOnly: true,
+  indexedOnly: false,
   excludePreprints: true,
   dateFrom: "",
   dateTo: "",

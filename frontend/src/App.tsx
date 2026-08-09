@@ -288,6 +288,9 @@ export default function App() {
         let consecutivePollFailures = 0;
         while (searchSeqRef.current === searchSeq) {
           if (
+            // POLL_MAX_DURATION_MS=0 disables the give-up ceiling (PR #92);
+            // the guard is kept so a non-zero limit can be set without code changes.
+            // eslint-disable-next-line @typescript-eslint/no-unnecessary-condition
             POLL_MAX_DURATION_MS > 0 &&
             Date.now() - pollStartedAt > POLL_MAX_DURATION_MS
           ) {
