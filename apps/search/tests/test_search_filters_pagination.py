@@ -822,3 +822,98 @@ def test_determine_rescan_forced_and_empty_branches(db) -> None:
         True,
         "empty_index_hits",
     )
+
+
+def test_filters_signature_covers_exclude_retracted() -> None:
+    """exclude_retracted must participate in signature + default checks."""
+    assert (
+        SearchFilters(exclude_retracted=True).signature() != SearchFilters().signature()
+    )
+    assert SearchFilters(exclude_retracted=True).is_default() is False
+    assert SearchFilters().is_default() is True
+
+
+def test_search_service_exclude_retracted_filter(db) -> None:
+    """exclude_retracted must keep only non-retracted articles."""
+    _make_article(
+        title="CRISPR therapy review",
+        year=2024,
+        doi="10.1234/ret.1",
+    )
+    retracted = _make_article(
+        title="CRISPR therapy retracted",
+        year=2024,
+        doi="10.1234/ret.2",
+    )
+    retracted.is_retracted = True
+    retracted.retraction_note = "withdrawn"
+    retracted.save()
+
+    filtered = SearchService._run_index_search(
+        query="crispr therapy",
+        expression="",
+        size=10,
+        filters=SearchFilters(exclude_retracted=True),
+    )
+    assert [r["doi"] for r in filtered] == ["10.1234/ret.1"]
+
+    all_results = SearchService._run_index_search(
+        query="crispr therapy",
+        expression="",
+        size=10,
+        filters=SearchFilters(),
+    )
+    assert {r["doi"] for r in all_results} == {"10.1234/ret.1", "10.1234/ret.2"}
+
+
+def test_search_api_payload_carries_trust_fields(db) -> None:
+    """Search results expose retraction, citation and tier fields."""
+    article = _make_article(
+        title="Trust metadata work",
+        year=2025,
+        doi="10.1234/trust.1",
+        peer=True,
+        indexed=True,
+        not_preprint=True,
+    )
+    article.is_retracted = True
+    article.retraction_note = "https://doi.org/notice"
+    article.cited_by_count = 12
+    article.peer_review_confidence = 1.0
+    article.save()
+    get_user_model().objects.create(username="u-trust")
+
+    client = APIClient()
+    client.force_authenticate(user=get_user_model().objects.get(username="u-trust"))
+    response = client.post(
+        "/api/v1/search",
+        {"query": "trust metadata", "expression": "", "size": 10},
+        format="json",
+    )
+    assert response.status_code == 200
+    result = response.json()["results"][0]
+    assert result["is_retracted"] is True
+    assert result["retraction_note"] == "https://doi.org/notice"
+    assert result["cited_by_count"] == 12
+    assert result["tier"] == "A"
+
+
+def test_create_search_job_persists_exclude_retracted(monkeypatch, db) -> None:
+    """A job created with exclude_retracted persists it to the row."""
+    monkeypatch.setattr("apps.search.views.run_search_job.delay", lambda job_id: None)
+    client = APIClient()
+    user = get_user_model().objects.create(username="u-retract-job")
+    client.force_authenticate(user=user)
+
+    response = client.post(
+        "/api/v1/search/jobs",
+        {
+            "query": "retraction policy",
+            "expression": "",
+            "exclude_retracted": True,
+        },
+        format="json",
+    )
+    assert response.status_code == 202
+    job = SearchJob.objects.get(id=response.data["id"])
+    assert job.exclude_retracted is True

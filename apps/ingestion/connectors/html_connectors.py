@@ -1,4 +1,5 @@
-"""HTML-mode and WebSocket-mode source connectors.
+"""
+HTML-mode and WebSocket-mode source connectors.
 
 These connectors fetch HTML/XML/RSS payloads through the browser sidecar
 (``BrowserTransport`` → cloakbrowser Chromium), which solves JS challenges
@@ -134,7 +135,8 @@ _CYBERLENINKA_TITLE_OVERLAP_SLACK = 20
 
 
 def _cyberleninka_normalize(text: str) -> str:
-    """Lowercase, fold OCR variants, and collapse non-alphanumeric runs.
+    """
+    Lowercase, fold OCR variants, and collapse non-alphanumeric runs.
 
     The landing page sometimes renders the title with OCR variants (``й``
     flattened to ``и``, ``ё`` to ``e``), so both the raw title and the body
@@ -148,7 +150,8 @@ def _cyberleninka_normalize(text: str) -> str:
 
 
 def _find_cyberleninka_title(paragraphs: list[str], norm_title: str) -> int:
-    """Return the index of the paragraph matching the article title, or -1.
+    """
+    Return the index of the paragraph matching the article title, or -1.
 
     The landing page sometimes renders the title with OCR variants (e.g. ``й``
     flattened to ``и``), so beyond an exact prefix match we also accept a short
@@ -201,7 +204,8 @@ _CYBERLENINKA_PROSE_ABBREV_PREFIXES = frozenset({"табл", "рис", "см", "
 
 
 def _cyberleninka_issue_is_terminal(text: str) -> bool:
-    """Return True when an issue-number token sits at the end of a citation.
+    """
+    Return True when an issue-number token sits at the end of a citation.
 
     A journal citation that numbers by issue only -- without a volume,
     issue-word, ISSN, UDC, or DOI marker -- is not caught by
@@ -261,7 +265,8 @@ def _cyberleninka_issue_is_terminal(text: str) -> bool:
 
 
 def _classify_cyberleninka_paragraph(text: str, *, started: bool) -> str:
-    """Classify a body paragraph relative to the abstract run.
+    """
+    Classify a body paragraph relative to the abstract run.
 
     Returns ``"stop"`` when the paragraph ends the abstract (a journal
     citation, code snippet, numbered reference, or bibliography header),
@@ -320,7 +325,8 @@ logger = structlog.get_logger(__name__)
 
 
 class CiNiiConnector(BaseConnector):
-    """Ci Nii source connector.
+    """
+    Ci Nii source connector.
 
     Queries the OpenSearch ``/articles`` endpoint, not ``/all``: ``/all``
     mixes journal articles with conference proceedings, books and
@@ -364,7 +370,8 @@ class CiNiiConnector(BaseConnector):
         payload: dict,
         limit: int,
     ) -> list[RawArticle]:
-        """Extract from payload.
+        """
+        Extract from payload.
 
         CiNii OpenSearch items carry the publication date as
         ``prism:publicationDate`` (``dc:date`` is usually absent), the DOI as
@@ -427,7 +434,8 @@ class CiNiiConnector(BaseConnector):
 
     @classmethod
     def _infer_cinii_language(cls, text: str) -> str:
-        """Infer the record language from title/abstract script.
+        """
+        Infer the record language from title/abstract script.
 
         CiNii OpenSearch items omit ``dc:language``, and the source indexes
         both Japanese and English records, so a hardcoded ``ja`` profile
@@ -450,7 +458,8 @@ class CiNiiConnector(BaseConnector):
 
     @staticmethod
     def _extract_cinii_journal(entry: dict) -> str:
-        """Return the cleanest journal name from a CiNii item.
+        """
+        Return the cleanest journal name from a CiNii item.
 
         Prefers ``prism:publicationName``, then ``dc:publisher``, then a
         string-valued ``dc:source``. ``dc:source`` may be a dict (``@id`` URI)
@@ -497,7 +506,8 @@ class CiNiiConnector(BaseConnector):
 
 
 class SciEngineConnector(BaseConnector):
-    """Sci Engine source connector.
+    """
+    Sci Engine source connector.
 
     The public ``/search/search`` page is a JavaScript SPA shell that returns
     only navigation chrome (``Journals`` / ``Books`` / ``Collections`` ...),
@@ -519,7 +529,8 @@ class SciEngineConnector(BaseConnector):
     _MAX_PAGES = 20  # safety bound for pagination
 
     def fetch(self, query: str, limit: int = 5) -> list[RawArticle]:
-        """Fetch records from the upstream SciEngine search API.
+        """
+        Fetch records from the upstream SciEngine search API.
 
         Pages are concatenated until ``limit`` is satisfied or an empty/short
         page is returned. ``ConnectorFetchError`` propagates so the ingestion
@@ -567,7 +578,8 @@ class SciEngineConnector(BaseConnector):
         payload: dict,
         limit: int,
     ) -> list[RawArticle]:
-        """Extract from payload.
+        """
+        Extract from payload.
 
         Each ``relateList`` item carries ``doi`` (always present), ``pubYear``,
         ``title_en``/``title_cn``, ``fullname_en``/``fullname_cn`` (author
@@ -788,7 +800,8 @@ class CyberLeninkaConnector(BaseConnector):
         return super()._extract_from_html(query, soup, limit)
 
     def enrich_raw(self, raw: RawArticle) -> RawArticle:
-        """Enrich a CyberLeninka raw article, backfilling an empty abstract.
+        """
+        Enrich a CyberLeninka raw article, backfilling an empty abstract.
 
         The search API returns an ``annotation`` for most articles, but a
         minority come back with an empty one, and the article landing page
@@ -833,7 +846,8 @@ class CyberLeninkaConnector(BaseConnector):
 
     @staticmethod
     def _extract_cyberleninka_abstract(soup: BeautifulSoup, title: str) -> str:
-        """Locate the abstract paragraphs inside the article-body block.
+        """
+        Locate the abstract paragraphs inside the article-body block.
 
         The ``div.ocr`` block leads with a related-article preview, so the
         article's own paragraphs are found by matching the title against each
@@ -905,7 +919,8 @@ class MathNetConnector(BaseConnector):
         link: str,
         limit: int,  # noqa: ARG002  # required by base class signature
     ) -> tuple[RawArticle | None, bool]:
-        """Parse a single MathNet search result link into a RawArticle.
+        """
+        Parse a single MathNet search result link into a RawArticle.
 
         Returns (article, is_relevant) tuple. Article is None if link is invalid.
         """
@@ -934,7 +949,8 @@ class MathNetConnector(BaseConnector):
         return built, is_relevant
 
     def _post_mathnet_search(self, search_query: str) -> str:
-        """Post a search request to MathNet and return the HTML response.
+        """
+        Post a search request to MathNet and return the HTML response.
 
         Raises ``ConnectorFetchError`` if the sidecar transport fails; the
         ``BrowserTransport`` already retries transient sidecar/network errors.
@@ -1001,7 +1017,8 @@ class MathNetConnector(BaseConnector):
         return tuple(dict.fromkeys(parts))
 
     def enrich_raw(self, raw: RawArticle) -> RawArticle:
-        """Enrich a MathNet article with metadata parsed from its page.
+        """
+        Enrich a MathNet article with metadata parsed from its page.
 
         MathNet renders the citation head (``Authors, "Title", Journal``) in the
         ``<title>`` tag and the bibliographic line (journal, year, volume,
@@ -1070,7 +1087,8 @@ class MathNetConnector(BaseConnector):
 
     @staticmethod
     def _mathnet_citation_head(title_text: str) -> tuple[str, str]:
-        """Parse ``Authors, "Title", …`` from the MathNet ``<title>`` tag.
+        """
+        Parse ``Authors, "Title", …`` from the MathNet ``<title>`` tag.
 
         Returns ``(authors_blob, title)`` — authors are the comma-separated
         names before the first quoted title; empty strings when the ``<title>``
@@ -1088,7 +1106,8 @@ class MathNetConnector(BaseConnector):
     def _mathnet_italics_meta(
         soup: BeautifulSoup,
     ) -> tuple[str, str, str, str, str, str]:
-        """Parse the bibliographic ``<i>`` line on a MathNet article page.
+        """
+        Parse the bibliographic ``<i>`` line on a MathNet article page.
 
         The first ``<i>`` carrying the bibliographic line holds either
         ``Journal Full, Forthcoming paper`` (no volume/year/pages) or
@@ -1132,7 +1151,8 @@ class MathNetConnector(BaseConnector):
 
     @staticmethod
     def _mathnet_labeled_value(soup: BeautifulSoup, label: str) -> str:
-        """Return the text following a ``<b>Label:</b>`` field on a MathNet page.
+        """
+        Return the text following a ``<b>Label:</b>`` field on a MathNet page.
 
         Labeled metadata (Abstract, Keywords, Language, …) is rendered as a
         ``<b>Label:</b>`` element followed by the value in sibling text/inline
@@ -1224,7 +1244,8 @@ class SciELOConnector(BaseConnector):
     _RSS_URL = "https://search.scielo.org/"
 
     def fetch(self, query: str, limit: int = 5) -> list[RawArticle]:
-        """Fetch records from the upstream source.
+        """
+        Fetch records from the upstream source.
 
         Prefer the SciELO RSS keyword search (real relevance) over the
         date-only OAI harvest, which returns arbitrary recent articles
@@ -1267,7 +1288,8 @@ class SciELOConnector(BaseConnector):
         query: str,  # noqa: ARG002  # RSS is a real keyword search; relevance is inherent
         limit: int,
     ) -> list[RawArticle]:
-        """Parse SciELO RSS items into RawArticles.
+        """
+        Parse SciELO RSS items into RawArticles.
 
         Titles are multilingual ``primary / secondary / tertiary`` strings;
         the first segment is the article's primary title. The publication
@@ -1316,7 +1338,8 @@ class SciELOConnector(BaseConnector):
 
     @staticmethod
     def _split_rss_authors(author_blob: str) -> tuple[str, ...]:
-        """Split a SciELO RSS ``<author>`` blob into individual authors.
+        """
+        Split a SciELO RSS ``<author>`` blob into individual authors.
 
         SciELO RSS author lists are semicolon-separated, each entry a
         ``Last, First`` pair (e.g. ``Cervantes-Guerrero, Mario Daniel;
@@ -1333,7 +1356,8 @@ class SciELOConnector(BaseConnector):
 
     @staticmethod
     def _clean_rss_abstract(desc: str) -> str:
-        """Strip the leading author list and language label from an RSS description.
+        """
+        Strip the leading author list and language label from an RSS description.
 
         SciELO RSS descriptions are structured as::
 
@@ -1368,7 +1392,8 @@ class SciELOConnector(BaseConnector):
 
     @staticmethod
     def _query_terms(query: str) -> list[str]:
-        """Return normalized query terms for OAI post-filtering.
+        """
+        Return normalized query terms for OAI post-filtering.
 
         OAI-PMH ``ListRecords`` has no text-search parameter, so relevance
         is enforced client-side by matching query terms against each
@@ -1385,7 +1410,8 @@ class SciELOConnector(BaseConnector):
 
     @staticmethod
     def _clean_oai_journal(raw: str) -> str:
-        """Strip the volume/issue/year tail from a SciELO OAI ``dc:source``.
+        """
+        Strip the volume/issue/year tail from a SciELO OAI ``dc:source``.
 
         SciELO OAI records encode the venue as ``<journal title> v.24
         n.4 2017`` — the volume, issue and year belong on the article,
@@ -1403,7 +1429,8 @@ class SciELOConnector(BaseConnector):
 
     @staticmethod
     def _article_matches_terms(article: RawArticle, terms: list[str]) -> bool:
-        """Return True if every query term appears in the article's text fields.
+        """
+        Return True if every query term appears in the article's text fields.
 
         ``all`` (AND) semantics, not ``any``: a ``machine learning`` query
         must surface records containing both ``machine`` and ``learning``.
@@ -1423,7 +1450,8 @@ class SciELOConnector(BaseConnector):
         return all(term in haystack for term in terms)
 
     def _parse_oai_record(self, rec: ET.Element) -> RawArticle | None:
-        """Parse a single OAI-PMH record into a RawArticle.
+        """
+        Parse a single OAI-PMH record into a RawArticle.
 
         Returns None if the record is deleted, missing a title, or not article-like.
         """
@@ -1470,7 +1498,8 @@ class SciELOConnector(BaseConnector):
         )
 
     def _fetch_oai(self, query: str, limit: int) -> list[RawArticle]:
-        """Fetch OAI.
+        """
+        Fetch OAI.
 
         OAI-PMH ``ListRecords`` is date-based and carries no text-search
         parameter, so records are post-filtered against the query terms:
@@ -1525,7 +1554,8 @@ class SciELOConnector(BaseConnector):
         )
 
     def _request_xml_text(self, url: str) -> str:
-        """Send a request for XML text.
+        """
+        Send a request for XML text.
 
         Transport failures (read timeout, connection reset, DNS failure,
         sidecar 502/504) are raised as ``ConnectorFetchError`` by
@@ -1642,7 +1672,8 @@ class SciELOConnector(BaseConnector):
     _COLLECTION_RE = re.compile(r"^(S.*)-([a-z]{2,5})$")
 
     def enrich_raw(self, raw: RawArticle) -> RawArticle:
-        """Enrich a SciELO raw article via the ArticleMeta REST API.
+        """
+        Enrich a SciELO raw article via the ArticleMeta REST API.
 
         SciELO RSS carries the title, authors and a Spanish abstract but
         hardcodes ``journal="SciELO"`` (RSS has no journal field) and lacks
@@ -1706,7 +1737,8 @@ class SciELOConnector(BaseConnector):
 
     @classmethod
     def _scielo_pid_from_url(cls, url: str) -> tuple[str, str | None] | None:
-        """Extract the SciELO PID code and optional collection from a URL.
+        """
+        Extract the SciELO PID code and optional collection from a URL.
 
         Two URL shapes carry a PID:
 
@@ -1738,7 +1770,8 @@ class SciELOConnector(BaseConnector):
         code: str,
         collection: str | None,
     ) -> dict | None:
-        """Fetch the ArticleMeta record for a SciELO PID via aiohttp.
+        """
+        Fetch the ArticleMeta record for a SciELO PID via aiohttp.
 
         Returns the parsed JSON document, or ``None`` on any network, HTTP or
         parse failure so the caller can fall back to the RSS payload. Uses an
@@ -1822,7 +1855,8 @@ class SciELOConnector(BaseConnector):
         return None
 
     def _articlemeta_abstract(self, data: dict) -> str:
-        """Return the cleanest abstract from ArticleMeta ``article.v83``.
+        """
+        Return the cleanest abstract from ArticleMeta ``article.v83``.
 
         ``v83`` entries carry a language-prefixed label (``Abstract `` /
         ``Resumen `` / ``Resumo ``) in the ``a`` field. Prefer the English
@@ -1855,7 +1889,8 @@ class SciELOConnector(BaseConnector):
         return text[:8000]
 
     def _articlemeta_authors(self, data: dict) -> tuple[str, ...]:
-        """Return authors from ArticleMeta ``article.v10`` as ``surname, given``.
+        """
+        Return authors from ArticleMeta ``article.v10`` as ``surname, given``.
 
         ``v10`` entries use ``s`` for the surname and ``n`` for the given
         name; both are optional. Entries missing both are dropped. Order is
@@ -1902,7 +1937,8 @@ class PerseeConnector(BaseConnector):
     )
 
     def fetch(self, query: str, limit: int = 5) -> list[RawArticle]:
-        """Fetch records from the upstream source.
+        """
+        Fetch records from the upstream source.
 
         Persee exposes a real keyword HTML search at ``/search?q=`` which
         returns article-level results with relevance ranking. The legacy OAI
@@ -1917,7 +1953,8 @@ class PerseeConnector(BaseConnector):
         soup: BeautifulSoup,
         limit: int,
     ) -> list[RawArticle]:
-        """Parse Persee ``.doc-result`` containers into article records.
+        """
+        Parse Persee ``.doc-result`` containers into article records.
 
         Each result card exposes the article title as ``a.title`` (whose
         ``href`` carries a ``?q=`` search suffix that must be stripped),
@@ -1976,7 +2013,8 @@ class PerseeConnector(BaseConnector):
 
 
 class OpenEditionConnector(BaseConnector):
-    """Open Edition source connector.
+    """
+    Open Edition source connector.
 
     OpenEdition exposes no text search over its OAI-PMH endpoint
     (``oai.openedition.org``): ``ListRecords`` returns the chronologically
@@ -2024,7 +2062,8 @@ class OpenEditionConnector(BaseConnector):
     )
 
     def fetch(self, query: str, limit: int = 5) -> list[RawArticle]:
-        """Fetch query-relevant journal articles and book chapters.
+        """
+        Fetch query-relevant journal articles and book chapters.
 
         Requests journals (``platform=OJ``) and books (``platform=OB``)
         separately and merges the feeds. If a platform fails but the other
@@ -2153,7 +2192,8 @@ class OpenEditionConnector(BaseConnector):
 
     @classmethod
     def _derive_openedition_doi(cls, url: str) -> str:
-        """Derive the deterministic OpenEdition DOI from the article URL.
+        """
+        Derive the deterministic OpenEdition DOI from the article URL.
 
         OpenEdition mints DOIs as ``10.4000/<slug>.<id>`` for both journals
         (``journals.openedition.org/<slug>/<id>``) and books
@@ -2170,7 +2210,8 @@ class OpenEditionConnector(BaseConnector):
 
     @staticmethod
     def _parse_openedition_authors(creator: str) -> tuple[str, ...]:
-        """Parse ``dc:creator`` into ``Firstname Surname`` author names.
+        """
+        Parse ``dc:creator`` into ``Firstname Surname`` author names.
 
         The feed encodes authors as a single comma-separated string of
         ``Surname, Firstname`` pairs (e.g. ``"Artigas Herold, Maria Fernanda,
@@ -2236,7 +2277,8 @@ class MedknowConnector(BaseConnector):
     )
 
     def fetch(self, query: str, limit: int = 5) -> list[RawArticle]:
-        """Fetch records from the upstream source.
+        """
+        Fetch records from the upstream source.
 
         Let ``ConnectorFetchError`` propagate so the ingestion service
         marks this source as failed instead of silently reporting zero
@@ -2245,7 +2287,8 @@ class MedknowConnector(BaseConnector):
         return self._fetch_openalex(query, limit)
 
     def enrich_raw(self, raw: RawArticle) -> RawArticle:
-        """Return the OpenAlex record as-is — no landing-page fetch.
+        """
+        Return the OpenAlex record as-is — no landing-page fetch.
 
         The OpenAlex API already carries the authoritative title, abstract
         (reconstructed from the inverted index), authors, year, DOI, journal
@@ -2330,7 +2373,8 @@ class DergiParkConnector(BaseConnector):
             return super()._fetch_html(query, limit)
 
     def _fetch_via_oai(self, query: str, limit: int) -> list[RawArticle]:
-        """Fetch via OAI.
+        """
+        Fetch via OAI.
 
         Per-set ListRecords requests intermittently hit Cloudflare challenges;
         one failing set must not abort the whole harvest. Failed sets are
@@ -2395,7 +2439,8 @@ class DergiParkConnector(BaseConnector):
         return sets
 
     def enrich_raw(self, raw: RawArticle) -> RawArticle:
-        """Return the OAI record as-is — no landing-page fetch.
+        """
+        Return the OAI record as-is — no landing-page fetch.
 
         The OAI-PMH oai_dc metadata already carries the authoritative title,
         abstract (``dc:description``), authors (``dc:creator``), journal
@@ -2415,7 +2460,8 @@ class DergiParkConnector(BaseConnector):
         set_name: str,
         remaining: int,
     ) -> list[RawArticle]:
-        """Parse OAI records, keeping only query-relevant ones.
+        """
+        Parse OAI records, keeping only query-relevant ones.
 
         OAI-PMH has no keyword search, so DergiPark's sets are harvested by
         date and filtered here against the query tokens to avoid returning
@@ -2448,7 +2494,8 @@ class DergiParkConnector(BaseConnector):
         set_name: str,
         ns: dict[str, str],
     ) -> RawArticle | None:
-        """Build a :class:`RawArticle` from one OAI record, or ``None``.
+        """
+        Build a :class:`RawArticle` from one OAI record, or ``None``.
 
         Returns ``None`` when the record is off-topic, lacks a usable URL, or
         fails the article-like sanity check.
@@ -2527,7 +2574,8 @@ class DergiParkConnector(BaseConnector):
 
     @staticmethod
     def _dergipark_journal(sources: list[str], set_name: str) -> str:
-        """Derive the journal title from ``dc:source`` entries.
+        """
+        Derive the journal title from ``dc:source`` entries.
 
         DergiPark OAI-PMH ``dc:source`` carries ``"Journal title, Vol. X No. Y"``;
         strip the volume/issue suffix from the first entry and fall back to the
@@ -2556,7 +2604,8 @@ class HrcakConnector(BaseConnector):
     )
 
     def fetch(self, query: str, limit: int = 5) -> list[RawArticle]:
-        """Fetch records from the upstream source.
+        """
+        Fetch records from the upstream source.
 
         Hrčak exposes no keyword search API and its HTML search is
         Cloudflare-gated, so we harvest recent records via OAI-PMH (using a
@@ -2583,7 +2632,8 @@ class HrcakConnector(BaseConnector):
         return items[:limit]
 
     def enrich_raw(self, raw: RawArticle) -> RawArticle:
-        """Return the OAI record as-is — no landing-page fetch.
+        """
+        Return the OAI record as-is — no landing-page fetch.
 
         The OAI-PMH oai_dc metadata already carries the authoritative title,
         abstract (``dc:description``), authors (``dc:creator``), journal
@@ -2702,7 +2752,8 @@ class HrcakConnector(BaseConnector):
 
     @staticmethod
     def _hrcak_language(code: str) -> str:
-        """Map a Hrčak ``dc:language`` ISO 639-3 code to ISO 639-1.
+        """
+        Map a Hrčak ``dc:language`` ISO 639-3 code to ISO 639-1.
 
         Hrčak OAI-PMH records carry 3-letter language codes (``eng``,
         ``hrv``, ``deu`` ...); the rest of the pipeline expects 2-letter
@@ -2981,7 +3032,8 @@ class AJOLConnector(BaseConnector):
             return enriched
 
     def _extract_article_abstract(self, soup: BeautifulSoup) -> str:
-        """Return the article-page abstract text, or ``""`` if absent.
+        """
+        Return the article-page abstract text, or ``""`` if absent.
 
         AJOL article pages render the abstract inside
         ``div.article-abstract`` (and sometimes ``div.abstract`` / a
@@ -3005,7 +3057,8 @@ class AJOLConnector(BaseConnector):
         return self._extract_meta_content(soup, ["citation_abstract"])
 
     def _extract_citation_authors(self, soup: BeautifulSoup) -> tuple[str, ...]:
-        """Return ordered, de-duplicated author names from Highwire citation meta.
+        """
+        Return ordered, de-duplicated author names from Highwire citation meta.
 
         AJOL article landing pages list each author in a separate
         ``<meta name="citation_author" content="...">`` tag. Names are
@@ -3025,7 +3078,8 @@ class AJOLConnector(BaseConnector):
 
     @staticmethod
     def _looks_like_page_range(text: str) -> bool:
-        """Return ``True`` when ``text`` is just a page range like ``"8-16"``.
+        """
+        Return ``True`` when ``text`` is just a page range like ``"8-16"``.
 
         AJOL OAI ``dc:description`` is occasionally populated with the article
         page span instead of an abstract; such a value is not a usable

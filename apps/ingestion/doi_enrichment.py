@@ -59,7 +59,8 @@ class DoiEnrichmentService:
         cls,
         candidates: list[tuple[Article, set[str]]],
     ) -> dict[int, list[dict]]:
-        """Fetch metadata from all three APIs for candidate articles.
+        """
+        Fetch metadata from all three APIs for candidate articles.
 
         Returns ``{article.pk: [enrichment_dict, ...]}``.
 

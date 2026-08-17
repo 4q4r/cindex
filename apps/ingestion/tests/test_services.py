@@ -229,6 +229,46 @@ def test_save_article_upserts_by_doi(db) -> None:
     assert Article.objects.filter(doi="10.5555/shared").count() == 1
 
 
+def test_save_article_retraction_flag_is_monotonic(db) -> None:
+    """_save_article never clears a retraction flag set by another source.
+
+    A retraction is irreversible: a connector unaware of it must not reset
+    ``is_retracted`` from True back to False on re-ingest.
+    """
+    raw_flagged = RawArticle(
+        source_key="src-a",
+        title="Retracted work",
+        url="https://a/2",
+        abstract="",
+        full_text="a",
+        language="en",
+        year=2024,
+        doi="10.5555/retracted",
+        journal="J",
+        is_retracted=True,
+        retraction_note="https://doi.org/notice",
+    )
+    raw_clean = RawArticle(
+        source_key="src-b",
+        title="Retracted work",
+        url="https://b/2",
+        abstract="",
+        full_text="b",
+        language="en",
+        year=2024,
+        doi="10.5555/retracted",
+        journal="J",
+        is_retracted=False,
+    )
+    first = IngestionService._save_article(raw_flagged)
+    assert first.is_retracted is True
+    assert first.retraction_note == "https://doi.org/notice"
+    second = IngestionService._save_article(raw_clean)
+    assert second.is_retracted is True
+    assert second.retraction_note == "https://doi.org/notice"
+    assert second.pk == first.pk
+
+
 class FailingConnector:
     """Connector whose fetch raises ConnectorFetchError.
 

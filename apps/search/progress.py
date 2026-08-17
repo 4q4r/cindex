@@ -18,7 +18,8 @@ _SOURCE_STATS_TTL_SECONDS = 15
 
 
 def _round_half_up(value: float) -> int:
-    """Round a non-negative float to the nearest int, half away from zero.
+    """
+    Round a non-negative float to the nearest int, half away from zero.
 
     Python's built-in ``round`` uses banker's rounding (half to even), so
     ``round(32.5)`` returns ``32``. Search wait times are display values and
@@ -49,7 +50,8 @@ def _compute_source_stats() -> dict:
 
 
 def get_source_stats() -> dict:
-    """Return the shared source stats, cached for a short TTL.
+    """
+    Return the shared source stats, cached for a short TTL.
 
     Source health changes slowly (circuit-breaker cooldown is minutes), so a
     15s TTL is safe and removes a per-poll DB query. Backed by Redis in prod

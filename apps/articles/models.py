@@ -78,6 +78,17 @@ class Article(models.Model):
     issue = models.CharField(max_length=32, blank=True)
     pages = models.CharField(max_length=32, blank=True)
     is_open_access = models.BooleanField(default=True)
+    # Set by connectors (OpenAlex ``is_retracted`` is the authoritative per-work
+    # flag; Crossref assertions/relations and Europe PMC pubTypes are secondary
+    # signals). A retracted article is never eligible, regardless of its
+    # peer-review flags, and can be excluded from results via the
+    # ``exclude_retracted`` search filter (default search keeps it, badge-marked).
+    is_retracted = models.BooleanField(default=False)
+    retraction_note = models.TextField(blank=True)
+    # Citation count captured at fetch time (Crossref ``is-referenced-by-count``,
+    # OpenAlex ``cited_by_count``, Europe PMC ``citedByCount``). Stale by design:
+    # the forward-citations link in the UI points at the live OpenAlex record.
+    cited_by_count = models.IntegerField(default=0)
 
     is_peer_reviewed_or_refereed = models.BooleanField(default=False)
     is_indexed_in_reputable_db = models.BooleanField(default=False)

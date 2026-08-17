@@ -1,4 +1,5 @@
-"""Environment-driven configuration for the PERELMAN LLM extraction pipeline.
+"""
+Environment-driven configuration for the PERELMAN LLM extraction pipeline.
 
 Mirrors the established ``CINDEX_*`` ``os.getenv`` pattern (e.g.
 ``CINDEX_BROWSER_URL`` in ``apps/ingestion/connectors/base.py``). No default is
@@ -16,7 +17,8 @@ from dataclasses import dataclass, field
 
 
 class LLMNotConfiguredError(RuntimeError):
-    """Raised when the LLM endpoint is not fully configured via env.
+    """
+    Raised when the LLM endpoint is not fully configured via env.
 
     A loud failure — the caller (``QuoteExtractionService``) catches it once,
     logs a single warning, and degrades to the real abstract-preview fallback
@@ -60,7 +62,8 @@ def _env_json(key: str, default: dict) -> dict:
 
 @dataclass(frozen=True, slots=True)
 class LLMConfig:
-    """Resolved LLM endpoint configuration (env-driven, immutable).
+    """
+    Resolved LLM endpoint configuration (env-driven, immutable).
 
     Required (no defaults): ``base_url``, ``api_key``, ``model``.
     Optional: tuning + multimodal/vision knobs. The ``extra_body`` mapping is
@@ -122,7 +125,8 @@ class LLMConfig:
 
 
 def load_config() -> LLMConfig:
-    """Build an :class:`LLMConfig` from the current environment.
+    """
+    Build an :class:`LLMConfig` from the current environment.
 
     Always returns a config object (never raises) so callers can cheaply probe
     :meth:`LLMConfig.is_configured` / call :meth:`LLMConfig.require` as needed.

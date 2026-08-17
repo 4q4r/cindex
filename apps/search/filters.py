@@ -1,4 +1,5 @@
-"""Server-side search filter and sort parameters.
+"""
+Server-side search filter and sort parameters.
 
 These parameters are applied inside :class:`apps.search.services.SearchService`
 *before* the top-K truncation so that strict filters do not discard eligible
@@ -19,13 +20,15 @@ SORT_CHOICES: tuple[str, ...] = (SORT_RELEVANCE, SORT_NEWEST, SORT_METADATA)
 
 @dataclass(frozen=True, slots=True)
 class SearchFilters:
-    """Server-side filter and sort parameters for article search.
+    """
+    Server-side filter and sort parameters for article search.
 
     Attributes:
         peer_reviewed_only: Keep only articles flagged as peer-reviewed/refereed.
         indexed_only: Keep only articles flagged as indexed in a reputable DB.
         exclude_preprints: Keep only articles flagged as not a preprint or
             author manuscript.
+        exclude_retracted: Keep only articles not flagged as retracted.
         year_from: Inclusive lower bound on ``publication_year`` (None = unbounded).
         year_to: Inclusive upper bound on ``publication_year`` (None = unbounded).
         sort_by: Ranking key -- one of :data:`SORT_CHOICES`.
@@ -35,6 +38,7 @@ class SearchFilters:
     peer_reviewed_only: bool = False
     indexed_only: bool = False
     exclude_preprints: bool = False
+    exclude_retracted: bool = False
     year_from: int | None = None
     year_to: int | None = None
     sort_by: str = SORT_RELEVANCE
@@ -49,13 +53,15 @@ class SearchFilters:
             not self.peer_reviewed_only
             and not self.indexed_only
             and not self.exclude_preprints
+            and not self.exclude_retracted
             and self.year_from is None
             and self.year_to is None
             and self.normalized_sort() == SORT_RELEVANCE
         )
 
     def signature(self) -> str:
-        """Return a stable string used to deduplicate concurrent search jobs.
+        """
+        Return a stable string used to deduplicate concurrent search jobs.
 
         Two jobs with the same query/expression but different filters must not
         attach to each other, so the filter signature participates in the
@@ -66,6 +72,7 @@ class SearchFilters:
                 str(int(self.peer_reviewed_only)),
                 str(int(self.indexed_only)),
                 str(int(self.exclude_preprints)),
+                str(int(self.exclude_retracted)),
                 "" if self.year_from is None else str(self.year_from),
                 "" if self.year_to is None else str(self.year_to),
                 self.normalized_sort(),

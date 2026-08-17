@@ -1,4 +1,5 @@
-"""Local markdown store for PERELMAN-processed articles + freeze-on-save.
+"""
+Local markdown store for PERELMAN-processed articles + freeze-on-save.
 
 A published article that has been processed by the PERELMAN extractor is frozen
 to a ``.md`` file under :attr:`LLMConfig.articles_dir`
@@ -54,7 +55,8 @@ def _sanitize_filename(name: str) -> str:
 
 
 class LocalArticleStore:
-    """Filesystem-backed markdown store for PERELMAN-processed articles.
+    """
+    Filesystem-backed markdown store for PERELMAN-processed articles.
 
     All lookups key off the article's DOI (the ``Article.doi`` field is unique
     and always present, though it may not start with ``10.``). A DOI-shaped key
@@ -64,7 +66,8 @@ class LocalArticleStore:
 
     @staticmethod
     def _path(doi_or_key: str) -> Path:
-        """Return the absolute ``.md`` path for ``doi_or_key``.
+        """
+        Return the absolute ``.md`` path for ``doi_or_key``.
 
         A ``10.``-prefixed key is treated as a DOI: ``/`` → ``_`` (preserving
         the DOI's readable shape). Any other key is sanitized to
@@ -85,7 +88,8 @@ class LocalArticleStore:
 
     @classmethod
     def to_raw(cls, doi: str, fallback_raw: RawArticle) -> RawArticle | None:
-        """Build a :class:`RawArticle` for a frozen article from its local md.
+        """
+        Build a :class:`RawArticle` for a frozen article from its local md.
 
         Merges the md content onto ``fallback_raw``: textual fields
         (``abstract`` / ``full_text``) and front-matter metadata
@@ -143,7 +147,8 @@ class LocalArticleStore:
 
     @classmethod
     def read_quotes(cls, doi: str) -> list[dict] | None:
-        """Return the parsed ``## Извлечённые цитаты`` section, or ``None``.
+        """
+        Return the parsed ``## Извлечённые цитаты`` section, or ``None``.
 
         Each quote is restored as a ``{text, location, relevance, rationale}``
         dict. Returns ``None`` when no frozen md exists (cache-warm callers
@@ -180,7 +185,8 @@ class LocalArticleStore:
         formulas: list[dict] = (),
         figures: list[dict] = (),
     ) -> str:
-        """Write the article's frozen md and return its relative path.
+        """
+        Write the article's frozen md and return its relative path.
 
         The md has a YAML-style front-matter (title / authors / year / journal
         / doi / url / source_key / ``is_preprint: false``) and a body with
@@ -203,7 +209,8 @@ class LocalArticleStore:
 
 
 class ArticleMarkdownService:
-    """Façade that freezes an article via :class:`LocalArticleStore`.
+    """
+    Façade that freezes an article via :class:`LocalArticleStore`.
 
     Writes the md and stamps ``article.local_md_path`` (relative to
     ``CINDEX_ARTICLES_DIR``), persisting only that one field. Only published
@@ -340,7 +347,8 @@ def _render_front_matter(article: Article) -> str:
 
 
 def _article_authors(article: Article) -> list[str]:
-    """Return ordered author full names from the ``article_authors`` relation.
+    """
+    Return ordered author full names from the ``article_authors`` relation.
 
     Defensive against non-Django stubs (returns ``[]`` when the relation is
     absent) so the renderer can be unit-tested without an ORM round-trip.
@@ -363,7 +371,8 @@ def _article_authors(article: Article) -> list[str]:
 
 
 def _parse_md(text: str) -> tuple[dict, str] | None:
-    """Split ``text`` into ``(front_matter_dict, body)``.
+    """
+    Split ``text`` into ``(front_matter_dict, body)``.
 
     Returns ``None`` when the front-matter delimiters are malformed. The body
     is everything after the closing ``---``. Front-matter values are typed:
@@ -423,7 +432,8 @@ def _coerce_front_value(key: str, value: str) -> object:
 
 
 def _section_body(body: str, header: str) -> str | None:
-    """Return the text under ``header`` up to the next ``## `` section.
+    """
+    Return the text under ``header`` up to the next ``## `` section.
 
     Returns ``None`` when the header is absent. Leading/trailing blank lines
     are stripped.
@@ -439,7 +449,8 @@ def _section_body(body: str, header: str) -> str | None:
 
 
 def _parse_quotes_section(text: str) -> list[dict]:
-    """Parse the ``## Извлечённые цитаты`` body into a list of quote dicts.
+    """
+    Parse the ``## Извлечённые цитаты`` body into a list of quote dicts.
 
     Each quote is a ``- text: ...`` item followed by indented
     ``location:`` / ``relevance:`` / ``rationale:`` sub-fields.

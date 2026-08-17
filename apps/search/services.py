@@ -11,6 +11,7 @@ from django.db.models import Case, FloatField, IntegerField, Q, QuerySet, Value,
 from django.db.models.expressions import RawSQL
 
 from apps.articles.models import Article
+from apps.articles.services import tier_label
 from apps.core.text import canonical_text_key, normalize_doi, normalize_scholarly_text
 from apps.core.translate import expand_search_terms
 from apps.ingestion.services import IngestionService
@@ -110,6 +111,10 @@ class SearchService:
                 "not_preprint": article.not_preprint_confidence,
                 "overall": article.eligibility_confidence,
             },
+            "is_retracted": article.is_retracted,
+            "retraction_note": article.retraction_note or "",
+            "cited_by_count": article.cited_by_count or 0,
+            "tier": tier_label(article),
             "url": article.url,
             "rerank_score": rerank_score,
             # PERELMAN quotes are filled in by ``QuoteExtractionService.enrich``
@@ -134,7 +139,8 @@ class SearchService:
         queryset: QuerySet[Article],
         filters: SearchFilters,
     ) -> QuerySet[Article]:
-        """Apply server-side eligibility and year-range filters to a queryset.
+        """
+        Apply server-side eligibility and year-range filters to a queryset.
 
         Filtering happens before the top-K truncation so strict eligibility
         filters do not discard eligible articles that ranked just outside the
@@ -146,6 +152,8 @@ class SearchService:
             queryset = queryset.filter(is_indexed_in_reputable_db=True)
         if filters.exclude_preprints:
             queryset = queryset.filter(is_not_preprint_or_author_manuscript=True)
+        if filters.exclude_retracted:
+            queryset = queryset.filter(is_retracted=False)
         if filters.year_from is not None:
             queryset = queryset.filter(publication_year__gte=filters.year_from)
         if filters.year_to is not None:
@@ -158,7 +166,8 @@ class SearchService:
         queryset: QuerySet[Article],
         sort_by: str,
     ) -> QuerySet[Article]:
-        """Apply the requested ordering to a scored queryset.
+        """
+        Apply the requested ordering to a scored queryset.
 
         ``relevance`` keeps the existing score-descending ordering; ``newest``
         orders by publication year; ``metadata`` ranks by a metadata
@@ -301,7 +310,8 @@ class SearchService:
         terms: list[str],
         cross_lingual: list[str] | None = None,
     ) -> Value | Case:
-        """Build a database-side score expression for ranked search.
+        """
+        Build a database-side score expression for ranked search.
 
         Args:
             search_text: The original combined query string.
@@ -328,7 +338,8 @@ class SearchService:
 
     @staticmethod
     def _pg_fts_vector() -> RawSQL:
-        """Return a raw tsvector expression matching the GIN index in 0009.
+        """
+        Return a raw tsvector expression matching the GIN index in 0009.
 
         The expression is intentionally written as raw SQL so it stays
         byte-identical to the index definition in migration
@@ -349,7 +360,8 @@ class SearchService:
         search_text: str,
         cross_lingual: list[str],
     ) -> SearchQuery:
-        """Build a tsquery combining the main text and cross-lingual terms.
+        """
+        Build a tsquery combining the main text and cross-lingual terms.
 
         Cross-lingual translations are OR-ed into the query so an article
         written in a different language than the query still matches.
@@ -425,7 +437,8 @@ class SearchService:
         cross_lingual_tokens: list[str],
         filters: SearchFilters,
     ) -> QuerySet[Article]:
-        """Build the PostgreSQL full-text queryset using a GIN-indexed tsvector.
+        """
+        Build the PostgreSQL full-text queryset using a GIN-indexed tsvector.
 
         The primary filter is ``vector @@ tsquery`` (index-accelerated); the
         existing Case/When scoring expression is applied on top so DOI exact
@@ -457,7 +470,8 @@ class SearchService:
         expression: str,
         filters: SearchFilters = DEFAULT_FILTERS,
     ) -> tuple[QuerySet[Article], str, list[str]]:
-        """Build the article queryset for the current search.
+        """
+        Build the article queryset for the current search.
 
         On PostgreSQL the primary filter is a GIN-indexed full-text search over
         title, abstract, and full_text; on other backends (used for the SQLite
@@ -533,7 +547,8 @@ class SearchService:
 
     @classmethod
     def index_hit_count(cls, query: str, expression: str) -> int:
-        """Return the number of indexed hits for the current query.
+        """
+        Return the number of indexed hits for the current query.
 
         Intentionally unfiltered: this count drives the rescan-decision logic
         in ``run_search_job`` (empty corpus -> rescan), which must reflect the

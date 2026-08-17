@@ -15,7 +15,8 @@ RESUME_LOCK_TIMEOUT_SECONDS: Final[int] = 300
 
 
 def resume_running_search_jobs() -> list[str]:
-    """Requeue interrupted search jobs after a worker restart.
+    """
+    Requeue interrupted search jobs after a worker restart.
 
     Returns:
         The list of job IDs that were requeued for resumption.

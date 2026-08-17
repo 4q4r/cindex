@@ -26,6 +26,7 @@ def _filters_from_job(job: SearchJob) -> SearchFilters:
         peer_reviewed_only=job.peer_reviewed_only,
         indexed_only=job.indexed_only,
         exclude_preprints=job.exclude_preprints,
+        exclude_retracted=job.exclude_retracted,
         year_from=job.year_from,
         year_to=job.year_to,
         sort_by=job.sort_by,
@@ -103,7 +104,8 @@ def _determine_rescan(
     hits_before: int,
     freshness_days: int,
 ) -> tuple[bool, str]:
-    """Determine whether a live rescan is needed and why.
+    """
+    Determine whether a live rescan is needed and why.
 
     Returns (rescan_triggered, rescan_reason).
     """

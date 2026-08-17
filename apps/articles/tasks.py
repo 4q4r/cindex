@@ -24,7 +24,8 @@ def reapply_eligibility(
     source_keys: list[str] | None = None,
     chunk_size: int = _CHUNK_SIZE,
 ) -> dict[str, int]:
-    """Re-run ``ArticleEligibilityService.apply`` over the persisted corpus.
+    """
+    Re-run ``ArticleEligibilityService.apply`` over the persisted corpus.
 
     Re-applies the tiered eligibility classifier to existing articles without
     re-fetching from sources. Used to backfill articles ingested before the

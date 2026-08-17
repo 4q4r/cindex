@@ -70,6 +70,7 @@ export interface SearchJobParams {
   peer_reviewed_only?: boolean;
   indexed_only?: boolean;
   exclude_preprints?: boolean;
+  exclude_retracted?: boolean;
   year_from?: number | null;
   year_to?: number | null;
   sort_by?: "relevance" | "newest" | "metadata";
@@ -136,6 +137,10 @@ export interface ApiSearchResult {
     overall: number;
   };
   url: string;
+  is_retracted: boolean;
+  retraction_note: string;
+  cited_by_count: number;
+  tier: "A" | "B" | "source-default" | "keyword" | "none";
   rerank_score?: number;
   quotes?: Quote[];
 }
@@ -168,6 +173,10 @@ export interface SearchResult {
     overall: number;
   };
   url: string;
+  isRetracted: boolean;
+  retractionNote: string;
+  citedByCount: number;
+  tier: "A" | "B" | "source-default" | "keyword" | "none";
   rerankScore?: number;
   quotes: Quote[];
 }
@@ -177,6 +186,7 @@ export interface Filters {
   peerReviewedOnly: boolean;
   indexedOnly: boolean;
   excludePreprints: boolean;
+  excludeRetracted: boolean;
   dateFrom: string;
   dateTo: string;
   sortBy: "relevance" | "newest" | "metadata";
@@ -223,6 +233,7 @@ export const DEFAULT_FILTERS: Filters = {
   peerReviewedOnly: true,
   indexedOnly: false,
   excludePreprints: true,
+  excludeRetracted: true,
   dateFrom: "",
   dateTo: "",
   sortBy: "relevance",

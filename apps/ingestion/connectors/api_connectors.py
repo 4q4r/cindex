@@ -1,4 +1,5 @@
-"""API-mode connectors adapted from paper-search-mcp.
+"""
+API-mode connectors adapted from paper-search-mcp.
 
 These connectors talk to explicit JSON REST endpoints over aiohttp; they do
 not need the browser sidecar because API endpoints serve real JSON rather
@@ -45,8 +46,19 @@ if TYPE_CHECKING:
 logger = structlog.get_logger(__name__)
 
 
+def _to_int(value: int | str | None) -> int:
+    """Coerce a citation count to int, tolerating malformed upstream values."""
+    if value is None:
+        return 0
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return 0
+
+
 def _extract_epmc_journal(rec: dict) -> str:
-    """Return the journal title from a EuropePMC core record.
+    """
+    Return the journal title from a EuropePMC core record.
 
     EuropePMC's ``resultType=core`` response carries no top-level
     ``journalTitle`` field; the journal title lives at
@@ -68,7 +80,8 @@ _EPMC_JOURNAL_PUBTYPES = frozenset({"journal article", "research-article"})
 
 
 def _epmc_tier_evidence(pub_types: list[str]) -> tuple[str, str]:
-    """Return ``(peer_review_evidence, preprint_evidence)`` for an Europe PMC record.
+    """
+    Return ``(peer_review_evidence, preprint_evidence)`` for an Europe PMC record.
 
     Europe PMC exposes ``pubTypeList.pubType`` per record. A preprint is marked
     explicitly there (tierA preprint). A ``Journal Article`` / ``research-article``
@@ -154,6 +167,11 @@ class EuropePMCConnector(AsyncApiConnector):
                 continue
             pub_types = (rec.get("pubTypeList") or {}).get("pubType") or []
             peer_ev, preprint_ev = _epmc_tier_evidence(pub_types)
+            # ``Retracted Publication`` marks the work itself as retracted; the
+            # ``Retraction of Publication`` type marks a *notice* about another
+            # work and must not flag this record.
+            lowered_types = [str(t).lower() for t in (pub_types or [])]
+            is_retracted = any("retracted" in t for t in lowered_types)
             items.append(
                 self._raw(
                     title=title,
@@ -167,6 +185,8 @@ class EuropePMCConnector(AsyncApiConnector):
                     peer_review_evidence=peer_ev,
                     preprint_evidence=preprint_ev,
                     indexing_evidence=f"{TIER_B} Europe PMC (MEDLINE/PubMed)",
+                    is_retracted=is_retracted,
+                    cited_by_count=_to_int(rec.get("citedByCount")),
                 ),
             )
         return items
@@ -287,6 +307,8 @@ class OpenAlexConnector(AsyncApiConnector):
                     peer_review_evidence=peer_ev,
                     preprint_evidence=preprint_ev,
                     indexing_evidence=f"{TIER_B} OpenAlex",
+                    is_retracted=bool(item.get("is_retracted")),
+                    cited_by_count=_to_int(item.get("cited_by_count")),
                 ),
             )
         return items
@@ -296,7 +318,8 @@ class OpenAlexConnector(AsyncApiConnector):
         item: dict,
         primary_location: dict | None,
     ) -> tuple[str, str]:
-        """Return ``(peer_review_evidence, preprint_evidence)`` for an OpenAlex work.
+        """
+        Return ``(peer_review_evidence, preprint_evidence)`` for an OpenAlex work.
 
         OpenAlex ``work.type`` distinguishes preprints from articles; a work is
         only asserted peer-reviewed (tierB) when it is an ``article`` hosted by a
@@ -388,6 +411,7 @@ class CrossrefConnector(AsyncApiConnector):
             issue = str(item.get("issue", "") or "").strip()
             pages = str(item.get("page", "") or "").strip()
             peer_ev, preprint_ev = self._crossref_tier_evidence(item)
+            is_retracted, retraction_note = self._crossref_retraction(item)
             items.append(
                 self._raw(
                     title=title,
@@ -404,13 +428,17 @@ class CrossrefConnector(AsyncApiConnector):
                     peer_review_evidence=peer_ev,
                     preprint_evidence=preprint_ev,
                     indexing_evidence=f"{TIER_B} Crossref (DOI registry)",
+                    is_retracted=is_retracted,
+                    retraction_note=retraction_note,
+                    cited_by_count=_to_int(item.get("is-referenced-by-count")),
                 ),
             )
         return items
 
     @staticmethod
     def _crossref_tier_evidence(item: dict) -> tuple[str, str]:
-        """Return ``(peer_review_evidence, preprint_evidence)`` for a Crossref work.
+        """
+        Return ``(peer_review_evidence, preprint_evidence)`` for a Crossref work.
 
         ``posted-content`` is a preprint (tierA). A ``journal-article`` with a
         Received/Accepted assertion carries explicit peer-review dates (tierA);
@@ -431,6 +459,38 @@ class CrossrefConnector(AsyncApiConnector):
                 return f"{TIER_A} Crossref: received/accepted assertion", ""
             return f"{TIER_B} Crossref: journal-article", ""
         return "", ""
+
+    @staticmethod
+    def _crossref_retraction(item: dict) -> tuple[bool, str]:
+        """
+        Return ``(is_retracted, note)`` for a Crossref work.
+
+        Crossref records retractions three ways: an ``assertion`` named
+        ``retraction`` on the retracted work, a canonical
+        ``relation.retraction`` pointing at the retraction notice, and an
+        ``is-update-to`` relation whose ``assertion-type`` mentions a
+        retraction. All are secondary signals -- OpenAlex ``is_retracted`` is
+        the authoritative per-work flag -- so a miss here never marks a work
+        non-retracted when OpenAlex already flagged it.
+        """
+        assertions = item.get("assertion") or []
+        for assertion in assertions:
+            if not isinstance(assertion, dict):
+                continue
+            name = str(assertion.get("name", "")).lower()
+            if "retract" in name:
+                return True, str(assertion.get("value", "") or "").strip()
+        relations = item.get("relation") or {}
+        for rel in relations.get("retraction") or []:
+            if isinstance(rel, dict):
+                return True, str(rel.get("id", "") or "").strip()
+        for rel in relations.get("is-update-to") or []:
+            if not isinstance(rel, dict):
+                continue
+            assertion_type = str(rel.get("assertion-type", "")).lower()
+            if "retract" in assertion_type:
+                return True, str(rel.get("id", "") or "").strip()
+        return False, ""
 
 
 class PubMedConnector(AsyncApiConnector):
@@ -657,7 +717,8 @@ class DOAJConnector(AsyncApiConnector):
 
     @staticmethod
     def _strip_abstract_label(abstract: str) -> str:
-        """Strip a leading ``Abstract`` label some publishers prepend.
+        """
+        Strip a leading ``Abstract`` label some publishers prepend.
 
         BMC / BioData Central and similar publishers emit the abstract field
         with a literal ``"Abstract"`` heading, e.g. ``"Abstract Background
@@ -681,7 +742,8 @@ class DOAJConnector(AsyncApiConnector):
         return abstract
 
     def _extract_doaj_doi(self, bibjson: dict, title: str, abstract: str) -> str:
-        """Extract DOI from DOAJ bibjson identifiers or text.
+        """
+        Extract DOI from DOAJ bibjson identifiers or text.
 
         Args:
             bibjson: The DOAJ bibjson record.
@@ -698,7 +760,8 @@ class DOAJConnector(AsyncApiConnector):
         return self._extract_doi(title + " " + abstract)
 
     def _extract_doaj_url(self, bibjson: dict, doi: str) -> str:
-        """Extract fulltext URL from DOAJ bibjson links.
+        """
+        Extract fulltext URL from DOAJ bibjson links.
 
         Args:
             bibjson: The DOAJ bibjson record.
@@ -719,7 +782,8 @@ class DOAJConnector(AsyncApiConnector):
         return ""
 
     def _extract_doaj_item(self, bibjson: dict) -> RawArticle | None:
-        """Extract a single RawArticle from a DOAJ bibjson record.
+        """
+        Extract a single RawArticle from a DOAJ bibjson record.
 
         Returns None if the record is missing required fields.
         """
@@ -999,6 +1063,11 @@ class PMCConnector(AsyncApiConnector):
                 if preprint_ev
                 else epmc_peer or f"{TIER_B} PubMed Central (published article)"
             )
+            # ``Retracted Publication`` marks the work itself as retracted; the
+            # ``Retraction of Publication`` type marks a *notice* about another
+            # work and must not flag this record.
+            lowered_types = [str(t).lower() for t in (pub_types or [])]
+            is_retracted = any("retracted" in t for t in lowered_types)
             items.append(
                 self._raw(
                     title=title,
@@ -1012,13 +1081,16 @@ class PMCConnector(AsyncApiConnector):
                     peer_review_evidence=peer_ev,
                     preprint_evidence=preprint_ev,
                     indexing_evidence=f"{TIER_B} pmc pubmed central",
+                    is_retracted=is_retracted,
+                    cited_by_count=_to_int(rec.get("citedByCount")),
                 ),
             )
         return items
 
     @staticmethod
     def _clean_pmc_title(rec: dict) -> str:
-        """Return the article title with conference-abstract numbers stripped.
+        """
+        Return the article title with conference-abstract numbers stripped.
 
         Europe PMC concatenates the poster/abstract number into the ``title``
         field for conference-supplement records (``pubType`` containing
@@ -1040,7 +1112,8 @@ class PMCConnector(AsyncApiConnector):
 
     @staticmethod
     def _extract_pmc_year(rec: dict) -> int | None:
-        """Return the publication year from ``pubYear`` or ``firstPublicationDate``.
+        """
+        Return the publication year from ``pubYear`` or ``firstPublicationDate``.
 
         Conference-supplement and accepted-manuscript records often omit
         ``pubYear`` while carrying ``firstPublicationDate`` (``YYYY-MM-DD``),
@@ -1410,7 +1483,8 @@ class ZenodoConnector(AsyncApiConnector):
 
 
 class IACRConnector(AsyncApiConnector):
-    """IACR ePrint Archive connector via the public RSS feed.
+    """
+    IACR ePrint Archive connector via the public RSS feed.
 
     The ePrint search page (``/search``) is guarded by an aggressive
     anti-bot "tin foil hat" wall that returns a block page even to real
@@ -1439,7 +1513,8 @@ class IACRConnector(AsyncApiConnector):
     )
 
     def fetch(self, query: str, limit: int = 5) -> list[RawArticle]:
-        """Fetch the ePrint RSS feed via the browser sidecar and filter it.
+        """
+        Fetch the ePrint RSS feed via the browser sidecar and filter it.
 
         The RSS endpoint is bot-walled (a direct aiohttp GET receives HTTP
         403), so the feed is fetched through the cloakbrowser browser sidecar
@@ -1464,7 +1539,8 @@ class IACRConnector(AsyncApiConnector):
         query: str,
         limit: int,
     ) -> list[RawArticle]:
-        """Reject the inherited async path; IACR fetches via the sidecar.
+        """
+        Reject the inherited async path; IACR fetches via the sidecar.
 
         The inherited ``AsyncApiConnector._fetch_async`` would GET the
         bot-walled RSS over aiohttp (HTTP 403). It is explicitly disabled so a
@@ -1485,7 +1561,8 @@ class IACRConnector(AsyncApiConnector):
 
     @classmethod
     def _parse_rss_xml(cls, xml_text: str) -> list[dict]:
-        """Parse the IACR RSS feed into a list of record dicts.
+        """
+        Parse the IACR RSS feed into a list of record dicts.
 
         Raises :class:`ConnectorFetchError` if the body is not well-formed
         XML or is not an RSS document (e.g. a bot-wall challenge page served
@@ -1563,7 +1640,8 @@ class IACRConnector(AsyncApiConnector):
 
 
 class ExaConnector(AsyncApiConnector):
-    """Exa source connector via REST API (async aiohttp transport).
+    """
+    Exa source connector via REST API (async aiohttp transport).
 
     ``api.exa.ai`` is a documented REST endpoint authenticated with
     ``x-api-key``. It sits behind Cloudflare. aiohttp defaults to
@@ -1632,7 +1710,8 @@ class ExaConnector(AsyncApiConnector):
 
     @classmethod
     def _is_non_scholarly_domain(cls, url: str) -> bool:
-        """Return whether ``url`` points at a known non-scholarly host.
+        """
+        Return whether ``url`` points at a known non-scholarly host.
 
         Exa's ``research paper`` category still surfaces encyclopedia and
         consumer-health pages (Wikipedia, Mayo Clinic, Merck Manuals,
@@ -1659,7 +1738,8 @@ class ExaConnector(AsyncApiConnector):
         payload: dict,
         timeout: float,  # noqa: ASYNC109  # upstream request timeout
     ) -> dict:
-        """POST JSON to Exa via async aiohttp.
+        """
+        POST JSON to Exa via async aiohttp.
 
         ``ClientSession(trust_env=True)`` makes aiohttp honour
         ``https_proxy``/``HTTPS_PROXY`` (it ignores them by default) so the
@@ -1705,7 +1785,8 @@ class ExaConnector(AsyncApiConnector):
         payload: dict,
         per_lang: int,
     ) -> tuple[list[RawArticle], Exception | None]:
-        """Fetch results for a single language query with retry logic.
+        """
+        Fetch results for a single language query with retry logic.
 
         Transient network/timeout failures are retried with backoff. aiohttp
         ``ClientError`` (``ClientConnectionError``, ``ClientPayloadError``,
@@ -1738,7 +1819,8 @@ class ExaConnector(AsyncApiConnector):
         return [], None
 
     async def _fetch_async(self, query: str, limit: int) -> list[RawArticle]:
-        """Fetch records from Exa across multiple languages.
+        """
+        Fetch records from Exa across multiple languages.
 
         Exa auto-detects query language and only returns results in that language.
         To get 20-30 multilingual results, we translate the query and make one
@@ -1885,7 +1967,8 @@ class ExaConnector(AsyncApiConnector):
 
     @staticmethod
     def _extract_doi(text: str) -> str:
-        """Extract DOI from text, stripping trailing noise specific to Exa payloads.
+        """
+        Extract DOI from text, stripping trailing noise specific to Exa payloads.
 
         The base DOI_PATTERN can over-match trailing parentheses like (2017)
         and incomplete parentheticals like (ref.  Override to clean these up.
@@ -1910,7 +1993,8 @@ class ExaConnector(AsyncApiConnector):
         urls: list[str],
         query: str,
     ) -> dict[str, dict]:
-        """Enrich articles with structured metadata via Exa deep-lite outputSchema.
+        """
+        Enrich articles with structured metadata via Exa deep-lite outputSchema.
 
         Makes a single deep-lite call requesting authors, year, DOI, journal,
         and peer-reviewed status for each URL. Returns a dict mapping URL to
@@ -2138,7 +2222,8 @@ class ExaConnector(AsyncApiConnector):
 
     @staticmethod
     def _validate_journal(journal: str) -> bool:
-        """Return True if a candidate journal name looks credible.
+        """
+        Return True if a candidate journal name looks credible.
 
         Free-text page dumps from Exa routinely contain section headers,
         citation fragments and publisher boilerplate that regexes mistake
@@ -2226,7 +2311,8 @@ class ExaConnector(AsyncApiConnector):
 
     @staticmethod
     def _extract_citation_from_text(text: str) -> dict[str, str]:
-        """Extract structured citation metadata from text.
+        """
+        Extract structured citation metadata from text.
 
         Tries a combined citation pattern first
         (e.g. "J Med Chem 2023;15(3):123-145"),

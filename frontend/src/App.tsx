@@ -32,6 +32,7 @@ function buildParams(filters: Filters): SearchJobParams {
     peer_reviewed_only: filters.peerReviewedOnly,
     indexed_only: filters.indexedOnly,
     exclude_preprints: filters.excludePreprints,
+    exclude_retracted: filters.excludeRetracted,
     year_from: parseYear(filters.dateFrom),
     year_to: parseYear(filters.dateTo),
     sort_by: filters.sortBy,
@@ -88,6 +89,12 @@ function parseUrlState(): UrlState {
       DEFAULT_FILTERS.excludePreprints,
     );
   }
+  if (params.has("retracted")) {
+    filters.excludeRetracted = parseBooleanParam(
+      params.get("retracted"),
+      DEFAULT_FILTERS.excludeRetracted,
+    );
+  }
 
   const from = params.get("from");
   if (from !== null && /^\d{4}$/.test(from)) filters.dateFrom = from;
@@ -131,6 +138,9 @@ function serializeUrlState(state: UrlState): string {
   }
   if (f.excludePreprints !== DEFAULT_FILTERS.excludePreprints) {
     params.set("preprints", f.excludePreprints ? "1" : "0");
+  }
+  if (f.excludeRetracted !== DEFAULT_FILTERS.excludeRetracted) {
+    params.set("retracted", f.excludeRetracted ? "1" : "0");
   }
   if (f.dateFrom) params.set("from", f.dateFrom);
   if (f.dateTo) params.set("to", f.dateTo);

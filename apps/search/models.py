@@ -38,6 +38,7 @@ class SearchJob(models.Model):
     peer_reviewed_only = models.BooleanField(default=False)
     indexed_only = models.BooleanField(default=False)
     exclude_preprints = models.BooleanField(default=False)
+    exclude_retracted = models.BooleanField(default=False)
     year_from = models.IntegerField(null=True, blank=True, default=None)
     year_to = models.IntegerField(null=True, blank=True, default=None)
     sort_by = models.CharField(max_length=16, default="relevance")
@@ -101,7 +102,8 @@ class SearchWaitStat(models.Model):
         *,
         exclude_job_id: str | None = None,  # noqa: ARG003  # kept for caller compatibility
     ) -> None:
-        """Update the rolling average after a search job completes.
+        """
+        Update the rolling average after a search job completes.
 
         On each completion, the running average is updated as
         ``new_avg = (old_avg + duration) / 2``.
