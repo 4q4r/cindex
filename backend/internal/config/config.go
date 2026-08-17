@@ -30,6 +30,7 @@ type Config struct {
 
 	Search struct {
 		DefaultFreshnessDays int
+		FinalTopK            int
 		RateLimitPerIP       int
 		RateLimitWindow      time.Duration
 	}
@@ -63,6 +64,7 @@ func Load() (*Config, error) {
 	c.LLM.Timeout = durationOrDefault("CINDEX_LLM_TIMEOUT", 180*time.Second)
 
 	c.Search.DefaultFreshnessDays = intOrDefault("CINDEX_SEARCH_DEFAULT_FRESHNESS_DAYS", 14)
+	c.Search.FinalTopK = intOrDefault("CINDEX_SEARCH_FINAL_TOP_K", 30)
 	c.Search.RateLimitPerIP = intOrDefault("CINDEX_SEARCH_RATE_LIMIT_PER_IP", 10)
 	c.Search.RateLimitWindow = durationOrDefault("CINDEX_SEARCH_RATE_LIMIT_WINDOW", 60*time.Second)
 

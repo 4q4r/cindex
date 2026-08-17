@@ -14,6 +14,8 @@ import (
 	"github.com/4q4r/cindex/backend/internal/httpapi"
 	"github.com/4q4r/cindex/backend/internal/platform/db"
 	"github.com/4q4r/cindex/backend/internal/platform/redis"
+	"github.com/riverqueue/river"
+	"github.com/riverqueue/river/riverdriver/riverpgxv5"
 )
 
 func main() {
@@ -46,9 +48,14 @@ func run(logger *slog.Logger) error {
 	}
 	defer func() { _ = rds.Close() }()
 
+	riverClient, err := river.NewClient(riverpgxv5.New(pool), &river.Config{})
+	if err != nil {
+		return err
+	}
+
 	srv := &http.Server{
 		Addr:              cfg.HTTPAddr,
-		Handler:           httpapi.NewRouter(httpapi.Dependencies{Logger: logger, DB: pool, Redis: rds}),
+		Handler:           httpapi.NewRouter(httpapi.Dependencies{Logger: logger, DB: pool, Redis: rds, River: riverClient, Config: cfg}),
 		ReadHeaderTimeout: 5_000_000_000, // 5s
 	}
 
