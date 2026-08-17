@@ -1,0 +1,50 @@
+version: "2"
+
+run:
+  timeout: 5m
+
+formatters:
+  enable:
+    - gofmt
+    - goimports
+
+linters:
+  default: standard
+  enable:
+    - errcheck
+    - govet
+    - ineffassign
+    - staticcheck
+    - unused
+    - gosec
+    - misspell
+    - revive
+    - errorlint
+    - nilerr
+    - nilnil
+    - perfsprint
+    - unconvert
+    - usestdlibvars
+    - forcetypeassert
+    - testifylint
+    - loggercheck
+    - whitespace
+  settings:
+    revive:
+      rules:
+        - name: exported
+          severity: warning
+    gosec:
+      excludes:
+        - G115 # int conversion overflow: guarded by explicit bounds in this codebase
+  exclusions:
+    rules:
+      - path: _test\.go
+        linters:
+          - gosec
+          - dupl
+          - forcetypeassert
+      - text: "SA1019"
+        linters:
+          - staticcheck
+    generated: lax
