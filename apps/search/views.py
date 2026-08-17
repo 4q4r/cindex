@@ -59,6 +59,7 @@ def _filters_from_validated(data: Mapping[str, object]) -> SearchFilters:
         peer_reviewed_only=bool(data.get("peer_reviewed_only", False)),
         indexed_only=bool(data.get("indexed_only", False)),
         exclude_preprints=bool(data.get("exclude_preprints", False)),
+        exclude_retracted=bool(data.get("exclude_retracted", False)),
         year_from=_coerce_optional_int(data.get("year_from")),
         year_to=_coerce_optional_int(data.get("year_to")),
         sort_by=str(data.get("sort_by", SORT_RELEVANCE)),
@@ -78,6 +79,7 @@ def _filters_from_job(job: SearchJob) -> SearchFilters:
         peer_reviewed_only=job.peer_reviewed_only,
         indexed_only=job.indexed_only,
         exclude_preprints=job.exclude_preprints,
+        exclude_retracted=job.exclude_retracted,
         year_from=job.year_from,
         year_to=job.year_to,
         sort_by=job.sort_by,
@@ -90,7 +92,8 @@ def _serialize_job(
     results: list[dict] | None = None,
     pagination: Mapping[str, int] | None = None,
 ) -> dict:
-    """Serialize a search job into the public API payload shape.
+    """
+    Serialize a search job into the public API payload shape.
 
     Args:
         job: The persisted (or in-memory placeholder) search job.
@@ -132,6 +135,7 @@ def _serialize_job(
             "peer_reviewed_only": job.peer_reviewed_only,
             "indexed_only": job.indexed_only,
             "exclude_preprints": job.exclude_preprints,
+            "exclude_retracted": job.exclude_retracted,
             "year_from": job.year_from,
             "year_to": job.year_to,
             "sort_by": job.sort_by,
@@ -160,7 +164,8 @@ def _search_job_key_material(
     force_refresh: bool,  # noqa: FBT001  # internal helper
     filters: SearchFilters,
 ) -> str:
-    """Build the normalized search-job key material.
+    """
+    Build the normalized search-job key material.
 
     The filter signature participates in the key so that two jobs sharing a
     query/expression but requesting different filters do not attach to each
@@ -212,7 +217,8 @@ def _find_active_search_job(
     force_refresh: bool,  # noqa: FBT001  # internal helper
     filters: SearchFilters,
 ) -> SearchJob | None:
-    """Return the latest matching active search job if one exists.
+    """
+    Return the latest matching active search job if one exists.
 
     A match requires the same normalized query/expression, the same
     ``force_refresh`` flag, and the same filter signature -- different filters
@@ -272,6 +278,7 @@ def _build_pending_search_job(
         peer_reviewed_only=filters.peer_reviewed_only,
         indexed_only=filters.indexed_only,
         exclude_preprints=filters.exclude_preprints,
+        exclude_retracted=filters.exclude_retracted,
         year_from=filters.year_from,
         year_to=filters.year_to,
         sort_by=filters.normalized_sort(),
@@ -403,6 +410,7 @@ class SearchJobCreateView(APIView):
                         peer_reviewed_only=filters.peer_reviewed_only,
                         indexed_only=filters.indexed_only,
                         exclude_preprints=filters.exclude_preprints,
+                        exclude_retracted=filters.exclude_retracted,
                         year_from=filters.year_from,
                         year_to=filters.year_to,
                         sort_by=filters.normalized_sort(),
@@ -444,6 +452,7 @@ class SearchJobCreateView(APIView):
                         peer_reviewed_only=filters.peer_reviewed_only,
                         indexed_only=filters.indexed_only,
                         exclude_preprints=filters.exclude_preprints,
+                        exclude_retracted=filters.exclude_retracted,
                         year_from=filters.year_from,
                         year_to=filters.year_to,
                         sort_by=filters.normalized_sort(),

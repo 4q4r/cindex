@@ -12,7 +12,8 @@ from .filters import SORT_CHOICES, SORT_RELEVANCE
 
 
 class SearchFiltersSerializerMixin(serializers.Serializer):
-    """Shared server-side filter and sort fields for search endpoints.
+    """
+    Shared server-side filter and sort fields for search endpoints.
 
     These mirror :class:`apps.search.filters.SearchFilters` so the immediate
     and asynchronous search paths accept the same parameters. Filters are
@@ -22,6 +23,7 @@ class SearchFiltersSerializerMixin(serializers.Serializer):
     peer_reviewed_only = serializers.BooleanField(default=False)
     indexed_only = serializers.BooleanField(default=False)
     exclude_preprints = serializers.BooleanField(default=False)
+    exclude_retracted = serializers.BooleanField(default=False)
     year_from = serializers.IntegerField(
         required=False,
         allow_null=True,
@@ -78,7 +80,8 @@ class SearchJobDetailQuerySerializer(serializers.Serializer):
 
 
 class QuoteSerializer(serializers.Serializer):
-    """A verbatim quote extracted from an article by the PERELMAN agent.
+    """
+    A verbatim quote extracted from an article by the PERELMAN agent.
 
     Quotes are extracted query-agnostic (the article's own salient passages)
     and cached per-article in ``ArticleQuotes``; the search query is used only
@@ -113,6 +116,10 @@ class SearchResultSerializer(serializers.Serializer):
     identifiers = serializers.DictField(child=serializers.CharField(), required=False)
     eligibility_evidence = serializers.DictField(child=serializers.BooleanField())
     eligibility_confidence = serializers.DictField(child=serializers.FloatField())
+    is_retracted = serializers.BooleanField()
+    retraction_note = serializers.CharField(allow_blank=True)
+    cited_by_count = serializers.IntegerField()
+    tier = serializers.CharField()
     url = serializers.CharField()
     rerank_score = serializers.FloatField(required=False)
     quotes = QuoteSerializer(many=True, required=False, default=list)
@@ -170,6 +177,7 @@ class SearchJobSerializer(serializers.Serializer):
     peer_reviewed_only = serializers.BooleanField()
     indexed_only = serializers.BooleanField()
     exclude_preprints = serializers.BooleanField()
+    exclude_retracted = serializers.BooleanField()
     year_from = serializers.IntegerField(allow_null=True)
     year_to = serializers.IntegerField(allow_null=True)
     sort_by = serializers.CharField()

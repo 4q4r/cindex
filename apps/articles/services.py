@@ -93,6 +93,31 @@ def _has_tier(evidence: str | None, tier: str) -> bool:
     return bool(evidence) and evidence.startswith(tier)
 
 
+def tier_label(article: Article) -> str:
+    """
+    Return the peer-review trust tier label for a search-result card.
+
+    Labels mirror the classifier's confidence tiers: ``A`` for an explicit
+    per-record signal (conf 1.0), ``B`` for venue/reputation inference (conf
+    0.7), ``source-default`` for the source-reputation fallback (conf 0.6),
+    ``keyword`` for the text-scan inference (conf 0.3), and ``none`` for
+    unverified or non-peer-reviewed articles. The label is derived from the
+    persisted confidence so the frontend never re-implements the tier model.
+    """
+    if not article.is_peer_reviewed_or_refereed:
+        return "none"
+    confidence = article.peer_review_confidence
+    if confidence >= _CONFIDENCE_TIER_A:
+        return "A"
+    if confidence >= _CONFIDENCE_TIER_B:
+        return "B"
+    if confidence >= _CONFIDENCE_SOURCE_DEFAULT:
+        return "source-default"
+    if confidence >= _CONFIDENCE_KEYWORD:
+        return "keyword"
+    return "none"
+
+
 @dataclass
 class EligibilityDecision:
     """Boolean and confidence outcome for article eligibility filtering."""
@@ -111,12 +136,18 @@ class EligibilityDecision:
     # the evidence field can see *why* an article was marked peer-reviewed.
     peer_review_reason: str = ""
     preprint_reason: str = ""
+    # Set when the article carries a retraction flag (connector-provided).
+    # A retracted article is never eligible, regardless of its peer-review
+    # verdict, and can be excluded from results via the ``exclude_retracted``
+    # search filter (default search keeps it, badge-marked).
+    retracted: bool = False
 
     @property
     def eligible(self) -> bool:
         """Return whether the article is eligible for indexing."""
         return (
-            self.peer_reviewed
+            not self.retracted
+            and self.peer_reviewed
             and self.indexed
             and self.doi_and_card
             and self.not_preprint
@@ -153,7 +184,8 @@ class ArticleEligibilityService:
         scan_text: str,
         source_key: str,
     ) -> tuple[bool, str]:
-        """Return ``(is_preprint, reason)``.
+        """
+        Return ``(is_preprint, reason)``.
 
         A preprint verdict is reached on any of: explicit tierA preprint
         evidence, a preprint keyword in the article text, or membership in a
@@ -176,7 +208,8 @@ class ArticleEligibilityService:
         source_key: str,
         is_preprint: bool,  # noqa: FBT001  # boolean flag is the semantic input
     ) -> tuple[bool, float, str]:
-        """Return ``(peer_reviewed, confidence, reason)`` by tier precedence.
+        """
+        Return ``(peer_reviewed, confidence, reason)`` by tier precedence.
 
         Precedence: preprint override > tierA > tierB > source default >
         keyword scan > unverified. A preprint is never peer-reviewed.
@@ -199,7 +232,8 @@ class ArticleEligibilityService:
 
     @classmethod
     def evaluate(cls, article: Article) -> EligibilityDecision:
-        """Evaluate peer-review / preprint / indexed eligibility by tiers.
+        """
+        Evaluate peer-review / preprint / indexed eligibility by tiers.
 
         Precedence (strongest signal wins; a weaker signal never overrides a
         stronger one):
@@ -210,6 +244,12 @@ class ArticleEligibilityService:
         4. Source-reputation default           -> peer-reviewed, conf 0.6.
         5. Keyword scan of title/abstract/text  -> peer-reviewed, conf 0.3.
         6. Otherwise                           -> unverified (False), conf 0.0.
+
+        A retracted article is additionally never eligible: the retraction
+        flag is applied last (strongest signal) and flips ``is_eligible`` off
+        without touching the peer-review flags, which the search UI still
+        shows for transparency. Search keeps retracted articles by default
+        (badge-marked); the ``exclude_retracted`` filter drops them.
         """
         peer_ev = article.peer_review_evidence or ""
         index_ev = article.indexing_evidence or ""
@@ -278,11 +318,13 @@ class ArticleEligibilityService:
             not_preprint_confidence=not_preprint_confidence,
             peer_review_reason=peer_review_reason,
             preprint_reason=preprint_reason,
+            retracted=bool(article.is_retracted),
         )
 
     @classmethod
     def apply(cls, article: Article) -> Article:
-        """Apply the computed result to the domain object.
+        """
+        Apply the computed result to the domain object.
 
         Connector-set tier evidence is preserved verbatim. When the classifier
         reached its verdict via the source-default or keyword path, it fills a
@@ -320,6 +362,9 @@ class ArticleEligibilityService:
         if decision.preprint_reason and not article.preprint_evidence:
             article.preprint_evidence = decision.preprint_reason
             update_fields.append("preprint_evidence")
+        if decision.retracted and not article.retraction_note:
+            article.retraction_note = "статья отозвана (retraction)"
+            update_fields.append("retraction_note")
 
         update_fields.append("updated_at")
         article.save(update_fields=update_fields)

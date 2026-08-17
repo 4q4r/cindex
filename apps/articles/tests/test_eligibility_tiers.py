@@ -24,6 +24,11 @@ def _make_article(  # test fixture with explicit overrides
     peer_review_evidence: str = "",
     indexing_evidence: str = "",
     preprint_evidence: str = "",
+    is_retracted: bool = False,
+    retraction_note: str = "",
+    is_peer_reviewed: bool = False,
+    is_indexed: bool = False,
+    is_not_preprint: bool = False,
 ) -> Article:
     """Persist an article with the given source + evidence and return it."""
     source, _ = Source.objects.get_or_create(
@@ -42,6 +47,11 @@ def _make_article(  # test fixture with explicit overrides
         peer_review_evidence=peer_review_evidence,
         indexing_evidence=indexing_evidence,
         preprint_evidence=preprint_evidence,
+        is_retracted=is_retracted,
+        retraction_note=retraction_note,
+        is_peer_reviewed_or_refereed=is_peer_reviewed,
+        is_indexed_in_reputable_db=is_indexed,
+        is_not_preprint_or_author_manuscript=is_not_preprint,
     )
     return article
 
@@ -207,3 +217,68 @@ def test_preprint_keyword_in_text(db) -> None:
     article.refresh_from_db()
     assert article.is_not_preprint_or_author_manuscript is False
     assert article.is_peer_reviewed_or_refereed is False
+
+
+# --- Retraction override -----------------------------------------------------
+
+
+def test_retracted_tier_a_article_is_never_eligible(db) -> None:
+    """A retracted article is ineligible even with tierA peer-review evidence.
+
+    The retraction flag is the strongest signal and must flip eligibility
+    off while preserving the peer-review verdict the UI still shows.
+    """
+    article = _make_article(
+        db,
+        source_key="crossref",
+        peer_review_evidence=f"{TIER_A} Crossref: received/accepted assertion",
+        is_retracted=True,
+    )
+    ArticleEligibilityService.apply(article)
+    article.refresh_from_db()
+    assert article.is_peer_reviewed_or_refereed is True
+    assert article.is_eligible is False
+
+
+def test_apply_fills_empty_retraction_note(db) -> None:
+    """``apply`` writes a default note when the connector left it empty."""
+    article = _make_article(
+        db,
+        source_key="openalex",
+        peer_review_evidence=f"{TIER_B} OpenAlex",
+        is_retracted=True,
+    )
+    ArticleEligibilityService.apply(article)
+    article.refresh_from_db()
+    assert article.retraction_note != ""
+    assert article.is_eligible is False
+
+
+def test_apply_preserves_connector_retraction_note(db) -> None:
+    """``apply`` must not overwrite a connector-provided retraction notice."""
+    article = _make_article(
+        db,
+        source_key="openalex",
+        peer_review_evidence=f"{TIER_B} OpenAlex",
+        is_retracted=True,
+        retraction_note="https://doi.org/notice",
+    )
+    ArticleEligibilityService.apply(article)
+    article.refresh_from_db()
+    assert article.retraction_note == "https://doi.org/notice"
+    assert article.is_eligible is False
+
+
+def test_non_retracted_article_eligible_unchanged(db) -> None:
+    """Articles without a retraction flag keep their prior eligibility."""
+    article = _make_article(
+        db,
+        source_key="crossref",
+        peer_review_evidence=f"{TIER_A} Crossref: received/accepted assertion",
+        indexing_evidence=f"{TIER_B} Crossref (DOI registry)",
+        is_retracted=False,
+    )
+    ArticleEligibilityService.apply(article)
+    article.refresh_from_db()
+    assert article.is_retracted is False
+    assert article.is_eligible is True

@@ -247,6 +247,8 @@ function CheckboxItem({
   return (
     <button
       type="button"
+      role="checkbox"
+      aria-checked={checked}
       onClick={() => {
         onChange(!checked);
       }}
@@ -256,7 +258,7 @@ function CheckboxItem({
         className={`w-4 h-4 rounded border flex items-center justify-center transition-colors shrink-0 ${
           checked
             ? "bg-accent border-accent"
-            : "border-border-default group-hover:border-text-tertiary"
+            : "border-text-tertiary group-hover:border-accent-text"
         }`}
       >
         {checked && <Check className="w-3 h-3 text-white" />}
@@ -366,6 +368,13 @@ export function FilterPanel({
             checked={filters.excludePreprints}
             onChange={(v) => {
               updateFilter("excludePreprints", v);
+            }}
+          />
+          <CheckboxItem
+            label="Исключить отозванные"
+            checked={filters.excludeRetracted}
+            onChange={(v) => {
+              updateFilter("excludeRetracted", v);
             }}
           />
         </div>

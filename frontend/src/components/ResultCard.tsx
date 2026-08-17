@@ -11,6 +11,8 @@ import {
   Hash,
   FileText,
   Clock,
+  OctagonAlert,
+  BookOpen,
 } from "lucide-react";
 import type { CitationStyle, Quote, SearchResult, ViewMode } from "../types";
 import { buildCitation } from "../utils/citation";
@@ -116,21 +118,23 @@ function QuotesBlock({
   preview,
   onCopy,
   isCompact,
+  isRetracted,
 }: {
   quotes: Quote[];
   query: string;
   preview: string;
   onCopy: (text: string, type: string) => void;
   isCompact: boolean;
+  isRetracted: boolean;
 }) {
   if (quotes.length === 0) {
     // LLM not configured / no text / extraction failed — fall back to the
     // real abstract preview (a graceful degraded path, never fake).
     return (
       <div
-        className={`text-sm text-text-secondary leading-relaxed ${
-          isCompact ? "line-clamp-5" : ""
-        } mb-4`}
+        className={`text-sm ${
+          isRetracted ? "text-text-tertiary" : "text-text-secondary"
+        } leading-relaxed ${isCompact ? "line-clamp-5" : ""} mb-4`}
       >
         <HighlightedText text={preview} query={query} />
       </div>
@@ -150,7 +154,9 @@ function QuotesBlock({
         return (
           <blockquote
             key={i}
-            className="border-l-2 border-accent/60 pl-3 font-serif text-text-secondary leading-relaxed"
+            className={`border-l-2 border-accent/60 pl-3 font-serif ${
+              isRetracted ? "text-text-tertiary" : "text-text-secondary"
+            } leading-relaxed`}
           >
             <p className={isCompact ? "line-clamp-3" : ""}>
               <HighlightedText text={q.text} query={query} />
@@ -186,6 +192,39 @@ function QuotesBlock({
   );
 }
 
+interface TierConfig {
+  label: string;
+  srText: string;
+  className: string;
+}
+
+const TIER_CONFIG: Record<
+  "A" | "B" | "source-default" | "keyword" | "none",
+  TierConfig | null
+> = {
+  A: {
+    label: "Тир A",
+    srText: "прямое подтверждение рецензируемости от источника",
+    className: "bg-success-muted/40 text-success",
+  },
+  B: {
+    label: "Тир B",
+    srText: "вывод по репутации издания",
+    className: "bg-accent-subtle/40 text-accent-text",
+  },
+  "source-default": {
+    label: "По умолчанию",
+    srText: "предположение по репутации источника",
+    className: "bg-warning-muted/40 text-warning",
+  },
+  keyword: {
+    label: "По ключевым словам",
+    srText: "оценка по тексту",
+    className: "bg-bg-elevated text-text-tertiary",
+  },
+  none: null,
+};
+
 export const ResultCard = memo(function ResultCard({
   result,
   query,
@@ -197,6 +236,11 @@ export const ResultCard = memo(function ResultCard({
   const [showCitation, setShowCitation] = useState(false);
 
   const isCompact = viewMode === "compact";
+  const isRetracted = result.isRetracted;
+  const retractionTitle = result.retractionNote
+    ? `Отозвана: ${result.retractionNote}`
+    : "Отозвана";
+  const tierConfig = TIER_CONFIG[result.tier];
   const citation = useMemo(
     () => buildCitation(result, citationStyle),
     [citationStyle, result],
@@ -209,9 +253,11 @@ export const ResultCard = memo(function ResultCard({
 
   return (
     <article
-      className={`bg-bg-card border border-border-default rounded-xl transition-colors hover:border-border-default/80 animate-fade-in ${
-        isCompact ? "p-4" : "p-6"
-      }`}
+      className={`bg-bg-card border rounded-xl transition-colors animate-fade-in ${
+        isRetracted
+          ? "border-danger/60 hover:border-danger/70"
+          : "border-border-default hover:border-border-default/80"
+      } ${isCompact ? "p-4" : "p-6"}`}
     >
       <div className="flex items-start justify-between gap-3">
         <div className="flex-1 min-w-0">
@@ -219,7 +265,23 @@ export const ResultCard = memo(function ResultCard({
             <HighlightedText text={result.title} query={query} />
           </h3>
         </div>
-        <ConfidenceBadge score={result.eligibilityConfidence.overall} />
+        <div className="flex flex-wrap items-center justify-end gap-1.5 shrink-0">
+          {isRetracted && (
+            <div
+              title={retractionTitle}
+              className="flex items-center gap-1 px-2 py-0.5 rounded text-xs font-medium bg-danger-muted/60 text-danger"
+            >
+              <OctagonAlert className="w-3 h-3" aria-hidden="true" />
+              <span>Отозвана</span>
+              {result.retractionNote && (
+                <span className="sr-only">{result.retractionNote}</span>
+              )}
+            </div>
+          )}
+          {!isRetracted && (
+            <ConfidenceBadge score={result.eligibilityConfidence.overall} />
+          )}
+        </div>
       </div>
 
       <div
@@ -236,7 +298,19 @@ export const ResultCard = memo(function ResultCard({
           <span>Год не указан</span>
         )}
         <span className="text-text-tertiary"> · </span>
-        <span className="text-accent-text">{result.source}</span>
+        <span
+          className={isRetracted ? "text-text-tertiary" : "text-accent-text"}
+        >
+          {result.source}
+        </span>
+        {tierConfig && (
+          <span
+            className={`ml-1.5 inline-flex items-center gap-1 px-2 py-0.5 rounded text-xs font-medium ${tierConfig.className}`}
+          >
+            <span>{tierConfig.label}</span>
+            <span className="sr-only">{tierConfig.srText}</span>
+          </span>
+        )}
       </div>
 
       {identifiers.length > 0 && (
@@ -282,6 +356,7 @@ export const ResultCard = memo(function ResultCard({
         preview={result.preview}
         onCopy={onCopy}
         isCompact={isCompact}
+        isRetracted={isRetracted}
       />
 
       <div className="mb-3">
@@ -346,6 +421,20 @@ export const ResultCard = memo(function ResultCard({
             Проверка критериев: {result.eligibilityConfidence.overall}%
           </span>
         </div>
+        {doi && (
+          <a
+            href={`https://openalex.org/works?filter=cites:${encodeURIComponent(doi)}`}
+            target="_blank"
+            rel="noopener noreferrer"
+            title="Открыть список цитирующих работ в OpenAlex"
+            className="ml-auto flex items-center gap-1 text-text-tertiary hover:text-accent-text underline underline-offset-2 transition-colors"
+          >
+            <BookOpen className="w-3 h-3" aria-hidden="true" />
+            <span className="tabular-nums whitespace-nowrap">
+              Цитирований: {result.citedByCount.toLocaleString("ru-RU")}
+            </span>
+          </a>
+        )}
       </div>
 
       <button

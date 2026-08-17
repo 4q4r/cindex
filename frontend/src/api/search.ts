@@ -93,6 +93,10 @@ export function mapApiResult(
       overall: normalizeConfidence(item.eligibility_confidence.overall),
     },
     url: item.url,
+    isRetracted: item.is_retracted,
+    retractionNote: item.retraction_note,
+    citedByCount: item.cited_by_count,
+    tier: item.tier,
     rerankScore: item.rerank_score ?? 0,
     quotes: (item.quotes ?? []).map((q) => ({
       text: q.text,

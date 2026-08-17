@@ -1,4 +1,5 @@
-"""Django management command to reapply article eligibility in place.
+"""
+Django management command to reapply article eligibility in place.
 
 Re-runs ``ArticleEligibilityService.apply`` over the persisted corpus to
 backfill articles ingested before the connectors emitted peer-review /
