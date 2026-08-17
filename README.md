@@ -108,10 +108,6 @@ docker-compose.yml           production-like local topology
 docs/archive/                historical implementation notes
 ```
 
-The root `apps/`, `config/`, `manage.py`, Python Dockerfile, and legacy Python
-CI describe the pre-Go implementation. They remain for migration provenance
-but are not started by the current Compose stack.
-
 ## Search and ingestion
 
 The search entry point is `backend/internal/service/search.go`; SQL matching is
@@ -386,8 +382,7 @@ shellcheck -x -S style scripts/compose_up.sh nginx/entrypoint.sh
 ```
 
 `.github/workflows/backend.yml` runs Go lint, unit tests, migration tests, and
-repository Testcontainers tests. The root Python workflow remains active for
-legacy connector regression history; it is not the production backend gate.
+repository Testcontainers tests on backend changes.
 
 ## Documentation
 
