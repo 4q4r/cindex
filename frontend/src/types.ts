@@ -143,6 +143,7 @@ export interface ApiSearchResult {
   tier: "A" | "B" | "source-default" | "keyword" | "none";
   rerank_score?: number;
   quotes?: Quote[];
+  tldr?: string;
 }
 
 export interface SearchResult {
@@ -179,6 +180,7 @@ export interface SearchResult {
   tier: "A" | "B" | "source-default" | "keyword" | "none";
   rerankScore?: number;
   quotes: Quote[];
+  tldr: string;
 }
 
 export interface Filters {

@@ -74,11 +74,12 @@ class TestMarkDone:
     def test_persists_quotes_and_stamps_extracted_at(self, article) -> None:
         cache = ArticleQuotes.objects.create(article=article)
 
-        cache.mark_done(_QUOTES, model="test-model")
+        cache.mark_done(_QUOTES, tldr="Краткое резюме.", model="test-model")
 
         cache.refresh_from_db()
         assert cache.status == "done"
         assert cache.quotes == _QUOTES
+        assert cache.tldr == "Краткое резюме."
         assert cache.model == "test-model"
         assert cache.extracted_at is not None
         assert cache.error == ""
@@ -92,13 +93,16 @@ class TestMarkDone:
 
 class TestMarkNoText:
     def test_clears_quotes_and_sets_status(self, article) -> None:
-        cache = ArticleQuotes.objects.create(article=article, quotes=_QUOTES)
+        cache = ArticleQuotes.objects.create(
+            article=article, quotes=_QUOTES, tldr="Резюме."
+        )
 
         cache.mark_no_text()
 
         cache.refresh_from_db()
         assert cache.status == "no_text"
         assert cache.quotes == []
+        assert cache.tldr == ""
         assert cache.extracted_at is not None
 
 

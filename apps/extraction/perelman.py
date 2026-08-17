@@ -205,11 +205,12 @@ class ExtractionResult:
     quotes: list[Quote] = field(default_factory=list)
     formulas: list[Formula] = field(default_factory=list)
     figures: list[Figure] = field(default_factory=list)
+    tldr: str = ""
 
     @property
     def is_empty(self) -> bool:
         """Return ``True`` when nothing was extracted (no_text / failure)."""
-        return not (self.quotes or self.formulas or self.figures)
+        return not (self.quotes or self.formulas or self.figures or self.tldr)
 
 
 _SYSTEM_PROMPT = """\
@@ -231,7 +232,9 @@ location and an optional caption.
 figure, transcribe readable axis labels / legend / data points as a markdown \
 table where feasible, and include the caption. Mark the figure kind \
 (figure | graph | table).
-5. Use the zoom / crop / rotate tools to inspect any formula, graph region, \
+5. Write the article's TLDR: a concise 1-2 sentence summary of the core \
+contribution and main result, in Russian (the interface language).
+6. Use the zoom / crop / rotate tools to inspect any formula, graph region, \
 or table that is too small to read at the current resolution BEFORE \
 transcribing it. Each image is identified by its image_id and has known \
 pixel dimensions (given below); express crop regions and zoom factors in \
@@ -239,6 +242,7 @@ those source pixels.
 
 Return a single JSON object with exactly this shape:
 {{
+  "tldr": "...",
   "quotes": [{{"text": "...", "location": "...", "relevance": 0.0-1.0, \
 "rationale": "..."}}],
   "formulas": [{{"latex": "...", "location": "...", "caption": "..."}}],
@@ -248,7 +252,7 @@ Return a single JSON object with exactly this shape:
 
 If a region is unreadable even after zooming, transcribe what you can and \
 note the uncertainty in the caption. If the article has no extractable \
-content, return all three lists empty."""
+content, return all three lists empty and an empty string for tldr."""
 
 # Resume clause appended to the system prompt when the previous agent loop
 # exhausted its tool turns without emitting a final JSON object. Mirrors the
@@ -265,8 +269,9 @@ You are continuing an extraction that already used {prior_turns} inspection \
 turns (zoom / crop / rotate on images: {inspected}) in a previous chat that \
 ended without a final JSON object. Do NOT call any tools again — you have \
 already inspected the article enough. Using what you already gathered, \
-transcribe the formulas and figures and extract the verbatim quotes from the \
-article text and images below, then emit the final JSON object."""
+transcribe the formulas and figures, extract the verbatim quotes, and write \
+the TLDR from the article text and images below, then emit the final JSON \
+object."""
 
 _RESUME_INSTRUCTION = (
     "Output ONLY the final JSON object (no prose, no code fences) using "
@@ -621,7 +626,8 @@ class PerelmanExtractor:
                 "content": (
                     "You have used all available inspection turns. Stop calling "
                     "tools and return the final JSON object NOW with the quotes, "
-                    "formulas, and figures you have gathered so far. Use exactly "
+                    "formulas, figures, and the TLDR you have gathered so far. "
+                    "Use exactly "
                     "the shape from the system prompt and output ONLY the JSON "
                     "object (no prose, no code fences). Every backslash inside a "
                     "string value (e.g. LaTeX) MUST be doubled (write \\\\alpha, "
@@ -798,10 +804,13 @@ class PerelmanExtractor:
                 return ExtractionResult()
         if not isinstance(data, dict):
             return ExtractionResult()
+        raw_tldr = data.get("tldr")
+        tldr = raw_tldr.strip()[:2000] if isinstance(raw_tldr, str) else ""
         return ExtractionResult(
             quotes=_parse_quotes(data.get("quotes")),
             formulas=_parse_formulas(data.get("formulas")),
             figures=_parse_figures(data.get("figures")),
+            tldr=tldr,
         )
 
     async def extract_batch(

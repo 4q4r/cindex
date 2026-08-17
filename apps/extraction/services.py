@@ -104,6 +104,7 @@ class QuoteExtractionService:
         indexed: list[tuple[int, int]] = []
         for i, result in enumerate(results):
             result.setdefault("quotes", [])
+            result.setdefault("tldr", "")
             article_id = result.get("id")
             if article_id is None:
                 continue
@@ -121,17 +122,17 @@ class QuoteExtractionService:
         return {article.id: article for article in qs}
 
     @staticmethod
-    def _load_cache(ids: list[int]) -> dict[int, list]:
+    def _load_cache(ids: list[int]) -> dict[int, tuple[list, str]]:
         """Bulk-read done-cache rows, keyed by article id."""
         rows = ArticleQuotes.objects.filter(article_id__in=ids, status=STATUS_DONE)
-        return {row.article_id: (row.quotes or []) for row in rows}
+        return {row.article_id: ((row.quotes or []), row.tldr or "") for row in rows}
 
     @staticmethod
     def _claim_uncached(
         indexed: list[tuple[int, int]],
         results: list[dict],
         articles: dict[int, Article],
-        cache: dict[int, list],
+        cache: dict[int, tuple[list, str]],
     ) -> list[_PendingItem]:
         """
         Serve cache hits; claim published rows; collect items to extract.
@@ -145,7 +146,9 @@ class QuoteExtractionService:
         to_extract: list[_PendingItem] = []
         for i, article_id in indexed:
             if article_id in cache:
-                results[i]["quotes"] = list(cache[article_id])
+                cached_quotes, cached_tldr = cache[article_id]
+                results[i]["quotes"] = list(cached_quotes)
+                results[i]["tldr"] = cached_tldr
                 continue
             article = articles.get(article_id)
             if article is None:
@@ -212,6 +215,7 @@ class QuoteExtractionService:
         for item, result in zip(items, batch, strict=True):
             quotes_dicts = [asdict(q) for q in result.quotes]
             results[item.result_index]["quotes"] = quotes_dicts
+            results[item.result_index]["tldr"] = result.tldr
             if not item.is_published:
                 continue
             try:
@@ -246,8 +250,9 @@ class QuoteExtractionService:
                 quotes_dicts,
                 formulas_dicts,
                 figures_dicts,
+                tldr=result.tldr,
             )
-            item.row.mark_done(quotes_dicts, model=cfg.model)
+            item.row.mark_done(quotes_dicts, tldr=result.tldr, model=cfg.model)
 
 
 class _PendingItem:

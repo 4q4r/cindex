@@ -138,6 +138,18 @@ class TestSaveAndExists:
         assert "## Полный текст" in text
         assert "## Извлечённые цитаты" in text
         assert "We demonstrate a verbatim result." in text
+        assert "## TLDR" not in text
+
+    def test_save_writes_tldr_section_when_present(self, articles_dir) -> None:
+        relpath = LocalArticleStore.save(
+            _StubArticle(),
+            _quotes(),
+            tldr="Краткое резюме статьи.",
+        )
+
+        text = (articles_dir / relpath).read_text(encoding="utf-8")
+        assert text.index("## TLDR") < text.index("## Аннотация")
+        assert "Краткое резюме статьи." in text
 
     def test_save_creates_missing_directory(self, tmp_path, monkeypatch) -> None:
         nested = tmp_path / "nested" / "articles"

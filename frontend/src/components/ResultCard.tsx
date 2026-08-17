@@ -192,6 +192,36 @@ function QuotesBlock({
   );
 }
 
+function TldrBlock({
+  tldr,
+  isCompact,
+  isRetracted,
+}: {
+  tldr: string;
+  isCompact: boolean;
+  isRetracted: boolean;
+}) {
+  if (!tldr.trim()) return null;
+
+  return (
+    <section
+      aria-label="Краткое резюме статьи"
+      className={`mb-4 bg-bg-elevated border border-border-subtle rounded-lg p-3 animate-fade-in`}
+    >
+      <p className="text-[11px] uppercase tracking-wider text-accent-text font-medium mb-1">
+        TLDR
+      </p>
+      <p
+        className={`font-serif text-sm leading-relaxed ${
+          isRetracted ? "text-text-tertiary" : "text-text-secondary"
+        } ${isCompact ? "line-clamp-2" : ""}`}
+      >
+        {tldr}
+      </p>
+    </section>
+  );
+}
+
 interface TierConfig {
   label: string;
   srText: string;
@@ -349,6 +379,12 @@ export const ResultCard = memo(function ResultCard({
           icon={FileText}
         />
       </div>
+
+      <TldrBlock
+        tldr={result.tldr}
+        isCompact={isCompact}
+        isRetracted={isRetracted}
+      />
 
       <QuotesBlock
         quotes={result.quotes}

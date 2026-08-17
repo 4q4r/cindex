@@ -42,6 +42,7 @@ class ArticleQuotes(models.Model):
         related_name="quotes",
     )
     quotes = models.JSONField(default=list)
+    tldr = models.TextField(blank=True, default="")
     status = models.CharField(
         max_length=16,
         choices=STATUS_CHOICES,
@@ -63,9 +64,10 @@ class ArticleQuotes(models.Model):
         """Return the human-readable representation of the object."""
         return f"{self.article_id}:{self.status}:{len(self.quotes or [])}q"
 
-    def mark_done(self, quotes: list, *, model: str = "") -> None:
+    def mark_done(self, quotes: list, *, tldr: str = "", model: str = "") -> None:
         """Persist a successful extraction and stamp ``extracted_at``."""
         self.quotes = quotes
+        self.tldr = tldr
         self.status = STATUS_DONE
         self.model = model
         self.extracted_at = timezone.now()
@@ -73,6 +75,7 @@ class ArticleQuotes(models.Model):
         self.save(
             update_fields=[
                 "quotes",
+                "tldr",
                 "status",
                 "model",
                 "extracted_at",
@@ -84,10 +87,11 @@ class ArticleQuotes(models.Model):
     def mark_no_text(self) -> None:
         """Record that the article had no extractable text."""
         self.quotes = []
+        self.tldr = ""
         self.status = STATUS_NO_TEXT
         self.extracted_at = timezone.now()
         self.save(
-            update_fields=["quotes", "status", "extracted_at", "updated_at"],
+            update_fields=["quotes", "tldr", "status", "extracted_at", "updated_at"],
         )
 
     def mark_failed(self, error: str) -> None:
