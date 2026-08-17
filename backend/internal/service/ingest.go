@@ -42,17 +42,14 @@ type IngestOptions struct {
 	Profile             func(ProfileEvent)
 }
 
-// Ingestor performs corpus live scans and source-health reporting. The
-// stage-2 implementation is a no-op placeholder: the corpus is still
-// populated by the Django connectors sharing the same database. Real
-// connectors replace it in stage 4.
+// Ingestor performs corpus live scans and source-health reporting.
 type Ingestor interface {
 	// IngestQuery runs a live scan for a query. Returns (completedKeys,
 	// failedSources, error).
 	IngestQuery(ctx context.Context, query string, opts IngestOptions) ([]string, []string, error)
 }
 
-// NoopIngestor is the honest placeholder ingestor for stage 2.
+// NoopIngestor is an explicit test/degraded-mode ingestor.
 type NoopIngestor struct {
 	Logger *slog.Logger
 }

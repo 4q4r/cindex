@@ -5,13 +5,13 @@ A small FastAPI service that wraps [cloakbrowser](https://pypi.org/project/cloak
 HTML/XML/JSON/RSS from sources protected by JS challenges (BunnyCDN Shield,
 Cloudflare Turnstile, FingerprintJS) without importing a browser stack.
 
-The worker calls `POST /fetch` over the internal docker network; this service
-owns a single persistent Chromium context whose profile keeps challenge cookies
-warm across requests.
+The worker calls `POST /fetch` and `POST /pdf-text` over the internal docker
+network. This service owns a single persistent Chromium context whose profile
+keeps challenge cookies warm across requests.
 
 ## Architecture
 
-```
+```text
 distroless cindex worker
   BaseConnector._request_text/_request_xml_text/_request_json
       └─> BrowserTransport  ──HTTP POST──>  browser sidecar (this service)
@@ -44,6 +44,8 @@ Forward a fetch request through the stealth browser context.
 
 **Request body** (JSON):
 
+<!-- markdownlint-disable MD013 -->
+
 | field     | type                | default | notes                                                |
 | --------- | ------------------- | ------- | ---------------------------------------------------- |
 | `url`     | string (HttpUrl)    | —       | required, validated by pydantic                      |
@@ -54,6 +56,8 @@ Forward a fetch request through the stealth browser context.
 | `json`    | any                 | `null`  | POST JSON body (`application/json`)                  |
 | `accept`  | string              | `null`  | injected as `Accept` if not already set              |
 | `timeout` | float (seconds)     | `25.0`  | `0 < t ≤ 120`                                        |
+
+<!-- markdownlint-enable MD013 -->
 
 **Response** (`200`, `FetchResponse`):
 
@@ -80,12 +84,37 @@ to a PDF parser without corruption).
 | `502`          | browser pool / navigation failure     |
 | `504`          | fetch timed out                       |
 
+### `POST /pdf-text`
+
+Extract native text from base64-encoded PDF bytes, falling back to Tesseract
+OCR for empty or garbled pages. The OCR language is restricted to the language
+packs installed in the sidecar image.
+
+```json
+{
+  "body": "JVBERi0xLjQK...",
+  "ocr_language": "eng"
+}
+```
+
+Response:
+
+```json
+{"text": "Normalized article text..."}
+```
+
+Malformed base64 and unsupported OCR language values return `422`. Invalid or
+unreadable PDF documents return an empty `text` value, matching connector
+degradation behavior.
+
 ### `GET /healthz`
 
 Returns `{"status": "ok"}`. Used by the container `HEALTHCHECK` and docker
 compose health check.
 
 ## Configuration (environment)
+
+<!-- markdownlint-disable MD013 -->
 
 | variable                     | default               | notes                                           |
 | ---------------------------- | --------------------- | ----------------------------------------------- |
@@ -95,6 +124,8 @@ compose health check.
 | `CINDEX_BROWSER_CONCURRENCY` | `4`                   | max concurrent in-flight fetches (semaphore)    |
 | `CLOAKBROWSER_CACHE_DIR`     | `/opt/cloak-cache`    | where the pre-downloaded Chromium binary lives  |
 | `CLOAKBROWSER_AUTO_UPDATE`   | `false`               | do not phone home for binary updates at runtime |
+
+<!-- markdownlint-enable MD013 -->
 
 ## Build & run (local)
 

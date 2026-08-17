@@ -160,9 +160,7 @@ func (w *SearchJobWorker) Work(ctx context.Context, job *river.Job[SearchJobTask
 		return fail("Ошибка подсчёта результатов", err)
 	}
 
-	// PERELMAN quote extraction is a visible substage; the stage-2 enricher is
-	// a no-op that fills quotes from the ArticleQuotes cache. Stage 5 wires
-	// the real extractor.
+	// PERELMAN quote extraction is a visible, failure-isolated substage.
 	update(map[string]any{
 		"stage":          "searching_index",
 		"substage":       "quote_extraction",
@@ -218,7 +216,11 @@ func (w *SearchJobWorker) recordSourceHealth(ctx context.Context, dbJob *domain.
 		return err
 	}
 	if len(health) > 0 {
-		total, failed, live := service.ComputeSourceStats(health, w.SourceNames())
+		names, err := w.SourceNames(ctx)
+		if err != nil {
+			return err
+		}
+		total, failed, live := service.ComputeSourceStats(health, names)
 		dbJob.SourceTotal = total
 		dbJob.SourceDone = total
 		dbJob.SourceLive = live
@@ -239,8 +241,13 @@ func (w *SearchJobWorker) SourceHealth(ctx context.Context) (map[string]string, 
 }
 
 // SourceNames returns a key->display-name map for failed source reporting.
-func (w *SearchJobWorker) SourceNames() map[string]string {
-	return map[string]string{}
+func (w *SearchJobWorker) SourceNames(ctx context.Context) (map[string]string, error) {
+	if stats, ok := w.Ingestor.(interface {
+		SourceNames(ctx context.Context) (map[string]string, error)
+	}); ok {
+		return stats.SourceNames(ctx)
+	}
+	return map[string]string{}, nil
 }
 
 func determineRescan(
@@ -296,8 +303,8 @@ func isTerminal(status string) bool {
 }
 
 func truncateError(s string) string {
-	if len(s) > 4000 {
-		return s[:4000]
+	if runes := []rune(s); len(runes) > 4000 {
+		return string(runes[:4000])
 	}
 	return s
 }
@@ -400,7 +407,7 @@ func progressMessage(event service.ProgressEvent) string {
 		if event.TimingSource != "" {
 			return fmt.Sprintf("%s · сейчас %s", event.SubstageLabel, event.TimingSource)
 		}
-	case "skipped":
+	case "skipped", "source_skipped":
 		if event.TimingSource != "" {
 			return "Источник пропущен: " + event.TimingSource
 		}

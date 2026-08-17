@@ -1,379 +1,397 @@
-# cindex
+# CIndex
 
-[![CI](https://github.com/4q4r/cindex/actions/workflows/ci.yml/badge.svg)](https://github.com/4q4r/cindex/actions/workflows/ci.yml)
-[![Python](https://img.shields.io/badge/Python-3.13-blue.svg)](https://www.python.org/downloads/)
-[![Django](https://img.shields.io/badge/Django-5.2%2B-green.svg)](https://www.djangoproject.com/)
-[![React](https://img.shields.io/badge/React-19-61dafb.svg)](https://react.dev/)
-[![ruff](https://img.shields.io/badge/ruff-pass-green.svg)](https://docs.astral.sh/ruff/)
-[![coverage](https://img.shields.io/badge/coverage-%E2%89%A580%25-green.svg)](#quality-gate)
+[![Go backend](https://github.com/4q4r/cindex/actions/workflows/backend.yml/badge.svg)](https://github.com/4q4r/cindex/actions/workflows/backend.yml)
+[![Go](https://img.shields.io/badge/Go-1.26.6-00ADD8.svg)](https://go.dev/)
+[![React](https://img.shields.io/badge/React-19-61DAFB.svg)](https://react.dev/)
 [![PostgreSQL](https://img.shields.io/badge/PostgreSQL-18.3-336791.svg)](https://www.postgresql.org/)
+[![Docker](https://img.shields.io/badge/runtime-distroless-2496ED.svg)](https://github.com/GoogleContainerTools/distroless)
 
-Cross-regional **scholarly citation search engine** that ingests open-access
-article sources, scores each article against a four-criteria eligibility model,
-and serves ranked results with copy-ready citations — all backed entirely by
-**PostgreSQL** (no external vector store or search index).
+CIndex is a cross-regional scholarly citation search engine. It searches a
+PostgreSQL article corpus, refreshes stale results through 24 source
+connectors, evaluates publication trust evidence, and returns ranked articles
+with copy-ready citations. TLDR summaries and verbatim quotes are included when
+cached or when LLM extraction is configured.
 
-> The frontend is Russian-language; the codebase and API are English.
+The production backend is written in Go. Python remains only in the isolated
+browser/PDF/OCR sidecar. The frontend is Russian-language; source code and API
+contracts are English.
 
----
+## Table of contents
+
+- [Architecture](#architecture)
+- [Stack](#stack)
+- [Project structure](#project-structure)
+- [Search and ingestion](#search-and-ingestion)
+- [Eligibility](#eligibility)
+- [PERELMAN extraction](#perelman-extraction)
+- [API](#api)
+- [Configuration](#configuration)
+- [Docker deployment](#docker-deployment)
+- [Local development](#local-development)
+- [Quality gate](#quality-gate)
+- [Documentation](#documentation)
 
 ## Architecture
 
 ```mermaid
 flowchart LR
-    subgraph Client
-        UI["React + Vite + Tailwind\n(bun-built, served by nginx)"]
-    end
-
-    subgraph Django["Django / DRF (gunicorn ASGI)"]
-        API["Search / Source-stats API\napps.search.views"]
-        SVC["SearchService\nPostgres query + score"]
-        ELIG["Eligibility + Citation\napps.articles.services"]
-    end
-
-    subgraph Celery["Celery"]
-        WORKER["run_search_job\napps.search.tasks"]
-        BEAT["Celery beat\nnightly ingestion"]
-        INGEST["IngestionService\napps.ingestion.services"]
-        CONN["24 source connectors\napi / html connectors"]
-    end
-
-    subgraph Sidecar["Browser sidecar"]
-        BROWSER["cloakbrowser Chromium\nbrowser_service · POST /fetch"]
-    end
-
-    subgraph Stores
-        PG[("PostgreSQL 18.3\narticles · sources · search jobs")]
-        REDIS[("Redis\nCelery broker + backend")]
-    end
-
-    UI -- "POST /api/v1/search/jobs\nGET  /api/v1/search/jobs/&lt;id&gt;" --> API
-    API --> SVC
-    SVC --> PG
-    API --> WORKER
-    WORKER --> INGEST
-    BEAT --> INGEST
-    INGEST --> CONN
-    CONN --> SVC
-    CONN -- "HTML mode\nPOST /fetch" --> BROWSER
-    BROWSER --> CONN
-    WORKER --> REDIS
-    WORKER --> PG
-    SVC --> ELIG
-    ELIG --> PG
+    UI["React 19 + Vite\nBun-built SPA"] --> NGINX["nginx :80"]
+    NGINX -- "/api/*" --> API["Go API\nnet/http :8000"]
+    API --> PG[("PostgreSQL 18.3\ncorpus + River jobs")]
+    API --> REDIS[("Redis 8.6\nrate limits + locks + cache")]
+    API -- "enqueue River job" --> PG
+    PG -- "dequeue" --> WORKER["Go worker"]
+    WORKER --> SEARCH["Search + eligibility + PERELMAN"]
+    SEARCH --> PG
+    WORKER --> CONN["24 Go connectors"]
+    CONN -- "HTTP" --> SOURCES["Scholarly sources"]
+    CONN -- "fetch / pdf-text" --> BROWSER["Python sidecar :8081"]
+    BROWSER --> SOURCES
 ```
 
 Request flow:
 
-1. The browser submits a query to `POST /api/v1/search/jobs`, creating a
-   `SearchJob` and enqueueing `run_search_job` on Celery.
-2. The frontend polls `GET /api/v1/search/jobs/<uuid>` for progress and the
-   paginated result page.
-3. `SearchService` runs the ranked search **entirely in PostgreSQL** — an
-   `icontains` OR-tree over title / abstract / full-text / journal / DOI,
-   annotated with a weighted `Case`/`When` score expression, cross-lingual term
-   expansion, source penalty, and article-level deduplication (DOI, or
-   title + year + journal).
-4. If indexed hits are stale or absent, `IngestionService` re-scans the live
-   sources through 24 connectors, persists eligible articles, and the job
-   completes (status `completed`, `partial`, or `failed`).
-
----
+1. The frontend submits `POST /api/v1/search/jobs`.
+2. The Go API atomically creates the `SearchJob` and River queue row in
+   PostgreSQL.
+3. The frontend polls `GET /api/v1/search/jobs/{id}`. Polling is not rate
+   limited.
+4. The worker checks the local corpus. Missing or stale results trigger the 24
+   source connectors; fresh corpus hits skip the network scan.
+5. PostgreSQL performs matching and ranking. The worker enriches ranked
+   results with cached or newly extracted PERELMAN output and persists a
+   terminal `completed`, `partial`, or `failed` state.
+6. On startup, the worker idempotently re-enqueues unfinished search rows that
+   do not already have an active River job.
 
 ## Stack
 
-| Layer     | Technology                                                                                              |
-| --------- | ------------------------------------------------------------------------------------------------------- |
-| Backend   | Django 5.2+, Django REST Framework, drf-spectacular, pydantic-settings, django-structlog                |
-| Async     | Celery 5 with Redis broker/result backend; Celery beat for nightly ingestion                            |
-| Database  | PostgreSQL 18.3 (`psycopg`) — the only persistence and search store                                     |
-| Search    | `SearchService` — Postgres `icontains` + weighted `Case/When` scoring (no FTS dependency at this layer) |
-| Ingestion | `cloakbrowser` Chromium sidecar (HTML) + `aiohttp` (API) connectors with circuit-breaker and retry      |
-| Frontend  | React 19, Vite 7, TypeScript 5.9, Tailwind 4 (built with **bun**)                                       |
-| Runtime   | `gcr.io/distroless/python3-debian13` (non-root, no shell), gunicorn ASGI                                |
-| Edge      | nginx serving the built frontend and proxying `/api` to the Django app                                  |
-| Tooling   | `uv` for Python, `ruff` for lint/format, `pytest` + `coverage` for tests                                |
+| Layer | Technology |
+| --- | --- |
+| API | Go 1.26.6, `net/http`, generated OpenAPI handlers |
+| Async jobs | River with PostgreSQL-backed queue state |
+| Database/search | PostgreSQL 18.3 with deterministic SQL scoring |
+| Cache/control | Redis 8.6.2 for rate limits, cache, and locks |
+| Ingestion | 24 Go connectors using direct HTTP or the browser sidecar |
+| Browser sidecar | Python 3.13, FastAPI, cloakbrowser, PDF/OCR |
+| Frontend | React 19, Vite 7, TypeScript 5.9, Tailwind 4, Bun |
+| Runtime | Multi-stage Go build to `distroless/static-debian13:nonroot` |
+| Edge | nginx serves `frontend/dist` and proxies `/api/` to `app:8000` |
 
----
+PostgreSQL is the only durable application store. No external vector database
+or search service is required. Redis is not the job broker; River queue state
+is stored in PostgreSQL.
 
 ## Project structure
 
+```text
+backend/
+  api/openapi.yaml           API contract
+  cmd/server/                public HTTP API
+  cmd/worker/                River worker and interrupted-job recovery
+  cmd/cli/                   schema and River migrations
+  cmd/healthcheck/           distroless-compatible health probe
+  internal/config/           environment configuration
+  internal/connector/        24 source connectors and transports
+  internal/domain/           entities and eligibility rules
+  internal/httpapi/          generated contract bindings and handlers
+  internal/jobs/             asynchronous search workflow
+  internal/repository/       PostgreSQL persistence and search queries
+  internal/service/          search, ingestion, enrichment, local store, PERELMAN
+  migrations/                embedded SQL migrations
+  Dockerfile                 active Go production image
+browser_service/             Python browser, PDF text, and OCR sidecar
+frontend/                    React/Vite SPA, managed with Bun
+nginx/                       static serving and reverse proxy
+scripts/compose_up.sh        reproducible full-stack rebuild
+docker-compose.yml           production-like local topology
+docs/archive/                historical implementation notes
 ```
-apps/
-  articles/      Article, Source, Author models; eligibility + citation services
-  core/          Settings-backed app config, healthcheck, text/translate helpers
-  ingestion/     Connectors (api/html), IngestionService, live query matrix, fulltext resolver
-  search/        SearchService, SearchJob model, Celery tasks, DRF views
-  users/         User model
-config/          Django settings, ASGI/WSGI, Celery app, gunicorn config
-frontend/        React + Vite + Tailwind client (bun-managed)
-nginx/           Reverse-proxy config
-browser_service/ Browser sidecar (cloakbrowser Chromium, FastAPI) for HTML connectors
-Dockerfile       Multi-stage build → distroless runtime
-docker-compose.yml   app + celery worker/beat + browser sidecar + postgres + redis + nginx
-.github/workflows/ci.yml   lint, unit tests, scheduled live smoke/quality
-docs/archive/    Historical (abandoned-stack) documents — see its README
-```
 
----
+The root `apps/`, `config/`, `manage.py`, Python Dockerfile, and legacy Python
+CI describe the pre-Go implementation. They remain for migration provenance
+but are not started by the current Compose stack.
 
-## Search pipeline
+## Search and ingestion
 
-`apps/search/services.py` (`SearchService`) is the search entry point:
+The search entry point is `backend/internal/service/search.go`; SQL matching is
+implemented in `backend/internal/repository/articles.go`.
 
-- **Query normalization** — `normalize_scholarly_text` + cross-lingual term
-  expansion via `expand_search_terms`.
-- **Filter expression** — an OR-tree of `Q(field__icontains=term)` across
-  `title`, `abstract`, `full_text`, `journal__name`, `doi`.
-- **Scoring** — `Case`/`When` weighted contributions
-  (DOI 10 · title 6 · abstract 4 · full-text 2 · journal 1), with a 0.5× weight
-  for cross-lingual tokens and a multiplicative source penalty
-  (e.g. `zenodo` 0.3). Ordering is `(-search_score, -publication_year,
--updated_at, id)` for deterministic ranking.
-- **Truncation** — server-side top-K of `settings.APP.search_final_top_k`
-  (default `30`).
-- **Deduplication** — by normalized DOI, or by canonical
-  `title + year + journal` key.
-- **Serialization** — `_payload` builds the API shape with eligibility evidence
-  and confidence scores.
+- PostgreSQL matches title, abstract, and full text with
+  `to_tsvector('simple', ...) @@ websearch_to_tsquery('simple', ...)`.
+- Weighted scoring prioritizes DOI, title, abstract, full text, and journal
+  matches. Zenodo receives a `0.3` source penalty.
+- Sort modes are `relevance`, `newest`, and `metadata`.
+- The server-side result cap defaults to 30.
+- Results are deduplicated by normalized DOI, then by canonical
+  title/year/journal.
+- Public search results require a normalized DOI beginning with `10.`.
+- Article, author, identifier, and eligibility writes are grouped in a
+  transaction. Job creation and its River row are also atomic.
 
----
+The canonical connector registry contains:
 
-## Ingestion connectors
+`Europe PMC`, `OpenAlex`, `Crossref`, `PubMed`, `arXiv`, `DOAJ`, `PMC`, `CORE`,
+`DBLP`, `HAL`, `Zenodo`, `IACR ePrint`, `Exa`, `CiNii`, `SciEngine`,
+`CyberLeninka`, `MathNet.Ru`, `SciELO`, `Persée`, `OpenEdition`, `Medknow`,
+`DergiPark`, `Hrčak`, and `AJOL`.
 
-24 open-access sources registered in `apps/ingestion/connectors/registry.py`:
+Each source has retry and circuit-breaker state. Connector failures are
+isolated: a job can complete as `partial` while preserving successful results.
+The lawful full-text resolver uses Unpaywall when `UNPAYWALL_EMAIL` is set and
+then Europe PMC. PDFs are sent to the sidecar for native extraction with
+bounded OCR fallback.
 
-- **API mode (`aiohttp`):** Europe PMC, OpenAlex, Crossref, PubMed, arXiv, DOAJ,
-  PMC, CORE, DBLP, HAL, Zenodo, IACR, and the optional Exa connector
-  (enabled only when `EXA_API_KEY` is set).
-- **HTML mode (`cloakbrowser` sidecar):** CiNii, SciEngine, CyberLeninka, MathNet,
-  SciELO, Persee, OpenEdition, Medknow, DergiPark, Hrcak, AJOL.
+The sidecar exposes these internal endpoints:
 
-HTML-mode connectors do not import a browser stack. They call a small FastAPI
-sidecar (`browser_service/`, `POST /fetch`) that owns a single persistent
-source-patched Chromium context (cloakbrowser, `humanize=True`,
-`human_preset="careful"`) and returns the raw server body for HTML/XML/JSON/RSS.
-This passes JS challenges (BunnyCDN Shield, Cloudflare Turnstile, FingerprintJS)
-that Cloudflare-only scrapers cannot. The worker reaches it at
-`CINDEX_BROWSER_URL` (default `http://browser:8081`) over the internal docker
-network. See `browser_service/README.md` for the sidecar contract.
+| Method | Path | Purpose |
+| --- | --- | --- |
+| `POST` | `/fetch` | Fetch data in a persistent stealth context |
+| `POST` | `/screenshot` | Available sidecar page capture endpoint |
+| `POST` | `/pdf-text` | Extract PDF text with bounded OCR fallback |
+| `GET` | `/healthz` | Sidecar readiness |
 
-Each connector implements a `BaseConnector` contract with source-specific
-selectors and evidence mapping. `IngestionService` wraps the fan-out with a
-circuit-breaker (per-source failure threshold + cooldown) and records source
-health telemetry. The `live_quality` and `live_smoke` CI markers exercise the
-connectors against real endpoints on a schedule.
+The sidecar is reachable at `http://browser:8081` inside Compose and is not
+published to the host.
 
----
+## Eligibility
 
-## Eligibility and citations
+Every article carries four evidence-backed criteria:
 
-Every article is scored against four criteria
-(`apps/articles/services.py` and the `Article` model):
+- `peer_reviewed`
+- `indexed`
+- `doi_and_journal_card`
+- `not_preprint`
 
-- `peer_reviewed` — peer-reviewed / refereed venue
-- `indexed` — indexed in a reputable bibliographic database
-- `doi_and_journal_card` — has a DOI and a recognizable journal card
-- `not_preprint` — not a preprint (or is an author-manuscript version)
+Each criterion has a persisted confidence score. Peer-review confidence also
+drives the trust tier (`A`, `B`, `source-default`, `keyword`, or `none`), while
+`eligibility_confidence.overall` summarizes the four signals. Retraction state
+is irreversible once observed. The frontend renders the evidence, confidence,
+tier, citation count, and twelve client-side citation formats.
 
-Each criterion carries a confidence value; `eligibility_confidence.overall`
-drives ranking. The frontend renders copy-ready citations in twelve styles —
-ГОСТ Р 7.0.108-2022 (default, the newest Russian GOST for online articles),
-ГОСТ Р 7.0.5-2008, ГОСТ Р 7.0.100-2018, APA 7, IEEE, MLA 9, Chicago 17,
-Vancouver, GB/T 7714-2015, Harvard, BibTeX, and RIS — selected in the filter
-panel (citation style is a client-side display preference).
+## PERELMAN extraction
 
----
+The Go PERELMAN implementation is text-first. It receives normalized title,
+abstract, and available full text and requests strict JSON containing:
 
-## Quote extraction (PERELMAN)
+- a Russian TLDR;
+- verbatim quotes with location, relevance, and rationale;
+- formulas represented as LaTeX when they are present in the source text;
+- table and figure descriptions already recoverable from text.
 
-Each search result carries verbatim quotes extracted by an OpenAI-compatible
-LLM agent that implements the PERELMAN method for meta-analysis of scientific
-literature. The extractor is **multimodal and agentic**: it receives the
-article as text **plus images** — rendered PDF pages, a full-page HTML
-screenshot, and figure images — and may call `zoom` / `crop` / `rotate` tools
-(over PyMuPDF) to inspect small regions before transcribing. It transcribes
-all mathematical formulas as LaTeX and converts all graphs, plots, and
-figures to markdown, so a processed article is fully represented as text.
+It does not send screenshots or image payloads and does not expose a
+zoom/crop/rotate tool loop.
 
-Extraction is **query-agnostic** and runs as an automatic background batch
-inside `run_search_job` (substage «Извлекаем цитаты (PERELMAN)»). The search
-query is used only for frontend highlight; quotes capture the article's own
-salient passages, so they cache cleanly per article.
+Extraction runs only in asynchronous River jobs. Immediate
+`POST /api/v1/search` requests read the cache and never invoke the LLM. Published
+articles use a single-winner claim, cache the result, and freeze normalized
+content under `CINDEX_ARTICLES_DIR`; local Markdown is preferred on later
+refreshes. Preprints are not frozen.
 
-**Configuration** (in `.env`, all required for extraction to run):
+The LLM client supports OpenAI-compatible `chat/completions`, bounded input and
+output, provider-specific extra request fields, request pacing, context
+cancellation, transient overload retries, and `response_format=json_object`
+with a compatibility retry for providers that reject it.
 
-- `CINDEX_LLM_BASE_URL`, `CINDEX_LLM_API_KEY`, `CINDEX_LLM_MODEL` — the
-  OpenAI-compatible `chat/completions` endpoint. If any is unset, the pipeline
-  logs one warning and every result falls back to the abstract preview (no
-  quotes). There is no hardcoded provider and no fake fallback.
-- `CINDEX_LLM_EXTRA_BODY` — provider-specific extensions merged into the
-  request body (e.g. thinking budgets, provider routing). Override wins on
-  collision.
-- `CINDEX_LLM_TIMEOUT` / `TEMPERATURE` / `MAX_QUOTES` / `CONCURRENCY` /
-  `MAX_INPUT_CHARS` — extraction tuning. Raise `TIMEOUT` for vision (large
-  image payloads).
-- `CINDEX_LLM_MIN_REQUEST_INTERVAL` — minimum gap (seconds) between successive
-  LLM request **starts**, enforced client-side on a monotonic clock on top of
-  `CONCURRENCY`. `0` disables it. Some OpenAI-compatible providers throttle by
-  request frequency (~1 QPS) in addition to concurrency — e.g. Z.AI's free tier
-  is effectively 1 concurrent request + ~1 QPS, so set `CONCURRENCY=1` and
-  `MIN_REQUEST_INTERVAL=1.0` there to avoid 429s.
-- `CINDEX_LLM_PDF_DPI` / `MAX_PDF_PAGES` / `MAX_IMAGES` / `MAX_IMAGE_DIM` /
-  `IMAGE_QUALITY` / `MAX_TOOL_TURNS` / `IMAGE_DETAIL` — multimodal / vision
-  caps and the agent-loop guard.
-- `CINDEX_ARTICLES_DIR` — local markdown store (default `var/articles`).
+If `CINDEX_LLM_BASE_URL`, `CINDEX_LLM_API_KEY`, and `CINDEX_LLM_MODEL` are not
+all configured, the worker uses existing cache entries only. It does not
+fabricate quotes or summaries.
 
-**Provider example — Z.AI (Zhipu AI) free tier:**
-
-Z.AI exposes an OpenAI-compatible endpoint at `https://api.z.ai/api/paas/v4`.
-Its free tier is **concurrency-based** (effectively one in-flight request)
-with ~1 QPS on top, so the client-side frequency gate matters. The free
-**vision** model is `glm-4.6v-flash` (native multimodal function-calling —
-ideal for PERELMAN's `zoom` / `crop` / `rotate` tool loop); the text-only
-`glm-4.7-flash` would reject `image_url` parts, so do not use it for
-extraction. A minimal `.env`:
+Example Z.AI configuration:
 
 ```env
 CINDEX_LLM_BASE_URL=https://api.z.ai/api/paas/v4
-CINDEX_LLM_API_KEY=<your-key>
+CINDEX_LLM_API_KEY=YOUR_API_KEY
 CINDEX_LLM_MODEL=glm-4.6v-flash
 CINDEX_LLM_CONCURRENCY=1
-CINDEX_LLM_MIN_REQUEST_INTERVAL=1.0
-CINDEX_LLM_TIMEOUT=120
+CINDEX_LLM_MIN_REQUEST_INTERVAL=1
+CINDEX_LLM_TIMEOUT=120s
 ```
 
-**Persistence and freezing:**
+## API
 
-- Quotes are cached per article in the database (`ArticleQuotes`,
-  `apps/extraction`), so each article is processed **once**; subsequent
-  searches read the cached quotes.
-- **Published** articles are also saved as `.md` in `CINDEX_ARTICLES_DIR`
-  (abstract + full text + `## Формулы` + `## Графики и рисунки` + `##
-Извлечённые цитаты`) and **frozen**: on the next refresh the ingestion
-  pipeline reads the local markdown first and skips re-fetching the article
-  from the network.
-- **Preprints** are never cached and never written to `.md` (they may still
-  change); their quotes are extracted fresh on each search and they stay
-  fully refreshable.
+| Method | Path | Purpose |
+| --- | --- | --- |
+| `GET` | `/healthz` | Internal PostgreSQL and Redis readiness check |
+| `GET` | `/api/health/` | Health route exposed through nginx |
+| `POST` | `/api/v1/search` | Immediate corpus search |
+| `POST` | `/api/v1/search/jobs` | Create or attach to a River job |
+| `GET` | `/api/v1/search/jobs/{job_id}` | Poll progress and results |
+| `GET` | `/api/v1/source-stats` | Cached source health |
+| `POST` | `/api/v1/admin/reindex` | Protected ingestion trigger |
 
-Bind-mount `CINDEX_ARTICLES_DIR` in `docker-compose.yml` (the `app` and
-`celery-worker` services mount `./var/articles:/app/var/articles`) so the
-`.md` files survive container rebuilds. To force re-extraction of a single
-published article after an erratum, delete its `ArticleQuotes` row and the
-corresponding `.md` file (then clear `Article.local_md_path`); this is a
-manual operation, not automated.
+The two search POST routes default to 10 requests per 60 seconds per client IP.
+Job polling and source statistics are not throttled. Pagination defaults to
+page 1 with 5 results per page and permits at most 50 results per page.
+`force_refresh=true` on immediate search performs live ingestion synchronously
+before querying the corpus.
 
----
+The admin reindex request also blocks until ingestion completes. Its response
+retains the legacy `status: "queued"` shape, but the returned task ID is not a
+pollable background job.
 
-## Async search jobs
+`backend/api/openapi.yaml` is the source for generated search handlers and
+types. The compatibility health routes are wired separately in the Go router.
 
-The public API is job-based so long-running live scans stay off the request
-thread:
+## Configuration
 
-| Method | Path                         | Purpose                                              |
-| ------ | ---------------------------- | ---------------------------------------------------- |
-| POST   | `/api/v1/search/jobs`        | Create a `SearchJob` and enqueue `run_search_job`    |
-| GET    | `/api/v1/search/jobs/<uuid>` | Poll status, progress, and the paginated result page |
-| GET    | `/api/v1/source-stats`       | Source health summary for the UI                     |
+Copy `.env.example` to `.env`. `DATABASE_URL` and `REDIS_URL` are required.
+The Go loader reads these variable groups:
 
-`run_search_job` (`apps/search/tasks.py`) decides whether a live rescan is
-needed (stale query scan, empty index hits, or `force_refresh`), fans out to
-the connectors, streams progress events to the job record, and falls back to
-supplemental enrichment for stale/failed sources. Terminal status is
-`completed`, `partial` (some sources failed), or `failed`.
+- Runtime: `CINDEX_ENV`, `CINDEX_HTTP_ADDR`, `CINDEX_SHUTDOWN_TIMEOUT`, and
+  `CINDEX_ARTICLES_DIR`.
+- Storage: `DATABASE_URL` and `REDIS_URL`.
+- Search: `CINDEX_SEARCH_DEFAULT_FRESHNESS_DAYS`,
+  `CINDEX_SEARCH_FINAL_TOP_K`, `CINDEX_SEARCH_RATE_LIMIT_PER_IP`, and
+  `CINDEX_SEARCH_RATE_LIMIT_WINDOW`.
+- LLM connection: `CINDEX_LLM_BASE_URL`, `CINDEX_LLM_API_KEY`,
+  `CINDEX_LLM_MODEL`, and `CINDEX_LLM_EXTRA_BODY`.
+- LLM tuning: `CINDEX_LLM_TIMEOUT`, `CINDEX_LLM_TEMPERATURE`,
+  `CINDEX_LLM_MAX_QUOTES`, `CINDEX_LLM_CONCURRENCY`,
+  `CINDEX_LLM_MIN_REQUEST_INTERVAL`, and `CINDEX_LLM_MAX_INPUT_CHARS`.
+- Sources: `CORE_API_KEY`, `EXA_API_KEY`, `CROSSREF_MAILTO`,
+  `OPENALEX_API_KEY`, `UNPAYWALL_EMAIL`, and `CINDEX_BROWSER_URL`.
+- Administration: `CINDEX_ADMIN_API_KEY`.
 
----
+Never commit real credentials. Example values use `YOUR_API_KEY` placeholders.
 
-## Frontend
+## Docker deployment
 
-The client under `frontend/` is a React 19 + Vite 7 + Tailwind 4 single-page
-app managed with **bun** (do not use npm). It submits a search job, polls for
-progress, and renders ranked result cards with citation/snippet copy actions.
-nginx serves the built bundle (`frontend/dist`) and proxies `/api` to the
-Django app.
+Prepare `.env` and a database password file. The password in `DATABASE_URL`
+must match `secrets/postgres_password.txt`.
+Set `CINDEX_HOST_UID` and `CINDEX_HOST_GID` to the host account that should own
+the bind-mounted frontend build output; both default to `1000`.
 
 ```bash
-cd frontend
-bun install
-bun run build      # production bundle to frontend/dist
-bun run dev        # local dev server
+cp .env.example .env
+mkdir -p secrets
+printf '%s' 'YOUR_DB_PASSWORD' > secrets/postgres_password.txt
+./scripts/compose_up.sh
 ```
 
----
+`compose_up.sh` pulls runtime images, rebuilds the Go app/migration/worker image
+and browser sidecar, force-recreates the stack, removes legacy orphan
+containers, waits for readiness, and preserves PostgreSQL and browser-profile
+volumes.
 
-## Deployment (Docker)
+The one-shot `migrate` service runs `cindex-cli migrate`, including River
+migrations. Both `app` and `worker` wait for it. The Go containers are
+distroless and run as `nonroot:nonroot`.
 
-`docker-compose.yml` brings up the full stack: Django app, Celery worker, Celery
-beat, the browser sidecar (cloakbrowser Chromium), PostgreSQL 18.3, Redis 8,
-the built frontend, and nginx. Secrets (`postgres_password`, `secret_key`) are
-provided as files via Docker secrets, not environment literals. The app/worker
-runtime image is distroless and runs as a non-root user with no shell; only the
-browser sidecar carries a slim Python + Chromium runtime (it cannot be
-distroless because Chromium needs shared libraries). The worker reaches the
-sidecar at `CINDEX_BROWSER_URL` (default `http://browser:8081`) and depends on
-its health check before starting.
+Only nginx is published to the host:
+
+```text
+http://127.0.0.1:80     frontend and /api proxy
+app:8000                internal Go API
+browser:8081            internal browser/PDF sidecar
+db:5432                 internal PostgreSQL
+redis:6379              internal Redis
+```
+
+Check the running stack:
 
 ```bash
-docker compose up -d --build
-docker compose exec app python manage.py migrate
+docker compose ps -a
+curl --fail http://127.0.0.1/api/health/
+docker compose logs --since=5m app worker browser
 ```
-
-Health: the app container hits `/api/health/`; nginx exposes the frontend on
-port 80.
-
----
 
 ## Local development
 
-Python is managed with `uv`:
+Go does not load `.env` automatically. For host-native development, export
+externally reachable PostgreSQL and Redis URLs first; Compose service names
+such as `db` and `redis` resolve only inside the Compose network.
 
 ```bash
-uv sync --group dev
-uv run python manage.py migrate
-uv run python manage.py runserver
-uv run celery -A config worker -l info
+cd backend
+export DATABASE_URL='postgresql://postgres:YOUR_DB_PASSWORD@127.0.0.1:5432/cindex'
+export REDIS_URL='redis://127.0.0.1:6379/0'
+make migrate-up
 ```
 
-Configuration is via environment variables (loaded through `pydantic-settings`
-`AppSettings`). Copy `.env.example` to `.env` and fill in the required values.
-Use `YOUR_API_KEY` placeholders for any third-party keys in examples — never
-commit real secrets.
-
----
-
-## Testing and quality gate
-
-The CI workflow (`.github/workflows/ci.yml`) runs ruff and the unit suite on
-every push and PR, and schedules live source smoke/quality checks nightly.
+Run the API and worker in separate terminals with the same environment:
 
 ```bash
-# Lint and format
-uv run ruff check .
+# terminal 1
+cd backend
+make run-server
+
+# terminal 2
+cd backend
+make run-worker
+```
+
+The non-Compose API default is `127.0.0.1:8001`.
+
+Frontend commands use Bun only:
+
+```bash
+cd frontend
+bun install --frozen-lockfile
+bun run dev
+bun run build
+bun run lint:check
+```
+
+The browser sidecar uses uv:
+
+```bash
+cd browser_service
+uv sync
+uv run uvicorn cindex_browser_sidecar.main:app --port 8081
+```
+
+## Quality gate
+
+Go backend:
+
+The race suite includes Testcontainers integration tests and requires access
+to Docker for complete coverage.
+
+```bash
+cd backend
+test -z "$(gofmt -l .)"
+go test -race ./...
+go build ./...
+go vet ./...
+golangci-lint run ./...
+```
+
+Frontend:
+
+```bash
+cd frontend
+bun run lint:check
+bun run build
+```
+
+Browser sidecar:
+
+```bash
+cd browser_service
 uv run ruff format --check .
-
-# Unit tests (excludes live network markers) on SQLite
-DATABASE_URL=sqlite:///test.sqlite3 uv run pytest -q -m "not live_smoke and not live_quality"
-
-# Live source checks (real network, scheduled in CI)
-uv run pytest -q -m live_smoke
-uv run pytest -q -m live_quality
+uv run ruff check .
+uv run pytest
 ```
 
-### Quality gate
+Container configuration:
 
-- `ruff check .` — 0 errors, 0 warnings.
-- `pytest` with `--cov=apps --cov-fail-under=80` — coverage gate at 80%.
-- `python manage.py check` and `python manage.py makemigrations --check` — no
-  pending schema changes.
+`hadolint` and `shellcheck` are optional local prerequisites for the final two
+commands.
 
----
+```bash
+docker compose config --quiet
+hadolint --failure-threshold style backend/Dockerfile
+shellcheck -x -S style scripts/compose_up.sh nginx/entrypoint.sh
+```
+
+`.github/workflows/backend.yml` runs Go lint, unit tests, migration tests, and
+repository Testcontainers tests. The root Python workflow remains active for
+legacy connector regression history; it is not the production backend gate.
 
 ## Documentation
 
-- `README.md` (this file) — current architecture and operations.
-- `LIVE_QUERY_POLICY.md` — policy for the `SOURCE_QUERY_MATRIX` live stability
-  gate.
-- `docs/archive/` — historical documents describing the abandoned
-  Chroma/Elasticsearch/Qdrant/Next.js stack, kept for provenance only. Read the
-  source under `apps/` and `frontend/` for the running system.
+- `README.md` describes the current Go runtime.
+- `backend/api/openapi.yaml` defines the HTTP contract.
+- `browser_service/README.md` defines the sidecar payloads and limits.
+- `docs/archive/` contains historical implementation and planning records.

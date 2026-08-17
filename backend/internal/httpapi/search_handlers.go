@@ -12,11 +12,11 @@ import (
 	"log/slog"
 	"math"
 	"net/http"
-	"strconv"
 	"strings"
 	"time"
 
 	"github.com/4q4r/cindex/backend/internal/config"
+	"github.com/4q4r/cindex/backend/internal/connector"
 	"github.com/4q4r/cindex/backend/internal/domain"
 	"github.com/4q4r/cindex/backend/internal/jobs"
 	"github.com/4q4r/cindex/backend/internal/repository"
@@ -73,13 +73,64 @@ func NewAPI(
 		sources:   repository.NewSources(db),
 		jobs:      repository.NewSearchJobs(db),
 		translate: service.NewTranslate(),
-		ingest:    &service.NoopIngestor{Logger: logger},
 		river:     riverClient,
 	}
 	a.search = service.NewSearch(a.articles, a.quotes, a.translate)
 	a.search.SetTopK(a.cfg.Search.FinalTopK)
 	a.stats = &service.SourceStatsService{Sources: a.sources}
 	a.enricher = &service.CacheQuoteExtractor{Quotes: a.quotes}
+	configuredLLMFields := 0
+	for _, value := range []string{cfg.LLM.BaseURL, cfg.LLM.APIKey, cfg.LLM.Model} {
+		if value != "" {
+			configuredLLMFields++
+		}
+	}
+	if configuredLLMFields > 0 && configuredLLMFields < 3 {
+		logger.Warn("PERELMAN configuration incomplete; using cache only")
+	}
+	if cfg.LLM.BaseURL != "" && cfg.LLM.APIKey != "" && cfg.LLM.Model != "" {
+		client, err := service.NewLLMClient(service.LLMConfig{
+			BaseURL: cfg.LLM.BaseURL, APIKey: cfg.LLM.APIKey, Model: cfg.LLM.Model,
+			Timeout: cfg.LLM.Timeout, Temperature: cfg.LLM.Temperature,
+			ExtraBody: cfg.LLM.ExtraBody, RequestInterval: cfg.LLM.RequestInterval,
+		})
+		if err != nil {
+			logger.Error("PERELMAN configuration rejected; using cache only", "error", err)
+		} else {
+			a.enricher = &service.PerelmanQuoteExtractor{
+				Articles: a.articles, Quotes: a.quotes, Sources: a.sources,
+				Perelman: service.NewPerelman(client, service.PerelmanConfig{
+					MaxQuotes: cfg.LLM.MaxQuotes, MaxInputChars: cfg.LLM.MaxInputChars,
+				}),
+				LocalStore: service.NewLocalStore(cfg.ArticlesDir), Model: cfg.LLM.Model,
+				Concurrency: cfg.LLM.Concurrency, Logger: logger,
+			}
+		}
+	}
+	registry := connector.NewRegistry(connector.Options{
+		BrowserURL:           cfg.BrowserURL,
+		CoreAPIKey:           cfg.CoreAPIKey,
+		ExaAPIKey:            cfg.ExaAPIKey,
+		UnpaywallEmail:       cfg.UnpaywallEmail,
+		EnableLawfulFullText: true,
+		Translate: func(ctx context.Context, query, lang string) string {
+			return a.translate.TranslateQuery(ctx, query, lang)
+		},
+	})
+	a.ingest = &service.LiveIngestor{
+		Registry:   registry,
+		Sources:    a.sources,
+		Articles:   a.articles,
+		Translate:  a.translate,
+		LocalStore: service.NewLocalStore(cfg.ArticlesDir),
+		Enricher: &service.DoiEnrichmentService{
+			Articles:    a.articles,
+			Mailto:      cfg.CrossrefMailto,
+			OpenAlexKey: cfg.OpenAlexAPIKey,
+			Logger:      logger,
+		},
+		Logger: logger,
+	}
 	return a
 }
 
@@ -591,11 +642,10 @@ func (a *API) toResults(hits []domain.SearchHit) []SearchResult {
 		}
 		quotes := make([]Quote, 0, len(hit.Quotes))
 		for _, q := range hit.Quotes {
-			relevance, _ := strconv.ParseFloat(q.Relevance, 64)
 			quotes = append(quotes, Quote{
 				Text:      strptr(q.Text),
 				Location:  strptr(q.Location),
-				Relevance: &relevance,
+				Relevance: &q.Relevance,
 				Rationale: strptr(q.Rationale),
 			})
 		}

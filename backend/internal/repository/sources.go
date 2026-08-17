@@ -97,12 +97,32 @@ func (r *Sources) GetByKey(ctx context.Context, key string) (*domain.Source, err
 	return &s, nil
 }
 
+// GetByID loads one source by its primary key.
+func (r *Sources) GetByID(ctx context.Context, id int64) (*domain.Source, error) {
+	var s domain.Source
+	err := r.pool.QueryRow(ctx, `
+		SELECT id, key, name, base_url, active, total_runs, total_successes,
+		       total_failures, consecutive_failures, last_checked_at,
+		       last_success_at, circuit_open_until, last_error
+		FROM articles_source WHERE id = $1`, id).Scan(
+		&s.ID, &s.Key, &s.Name, &s.BaseURL, &s.Active, &s.TotalRuns,
+		&s.TotalSuccesses, &s.TotalFailures, &s.ConsecutiveFailures,
+		&s.LastCheckedAt, &s.LastSuccessAt, &s.CircuitOpenUntil, &s.LastError,
+	)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil, ErrNotFound
+	}
+	if err != nil {
+		return nil, fmt.Errorf("get source by id: %w", err)
+	}
+	return &s, nil
+}
+
 // SourceRunOutcome records the result of one connector run and maintains the
 // circuit-breaker counters (parity with the Django connector bookkeeping).
 type SourceRunOutcome struct {
-	Success          bool
-	Error            string
-	CircuitOpenUntil *time.Time
+	Success bool
+	Error   string
 }
 
 // RecordRun updates counters after a connector run.
@@ -115,14 +135,17 @@ func (r *Sources) RecordRun(ctx context.Context, id int64, o SourceRunOutcome) e
 			consecutive_failures = CASE WHEN $2 = 1 THEN 0 ELSE consecutive_failures + 1 END,
 			last_checked_at = $4,
 			last_success_at = CASE WHEN $2 = 1 THEN $4 ELSE last_success_at END,
-			circuit_open_until = $5,
-			last_error = $6
+			circuit_open_until = CASE
+				WHEN $2 = 1 THEN NULL
+				WHEN consecutive_failures + 1 >= 3 THEN $4 + INTERVAL '15 minutes'
+				ELSE circuit_open_until
+			END,
+			last_error = $5
 		WHERE id = $1`,
 		id,
 		boolToInt(o.Success),
 		boolToInt(!o.Success),
 		time.Now(),
-		nullableTime(o.CircuitOpenUntil),
 		o.Error,
 	)
 	if err != nil {

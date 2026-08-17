@@ -9,6 +9,7 @@ dependencies = [
   "fastapi>=0.115",
   "uvicorn[standard]>=0.30",
   "pydantic>=2",
+  "pymupdf>=1.26",
   "structlog>=24",
 ]
 
@@ -34,11 +35,10 @@ exclude = [".venv", "node_modules"]
 
 [tool.ruff.lint]
 # Maximally strict — identical to the main cindex project. Only the
-# formatter-conflict rules are ignored (COM812/ISC001), per ruff recommendation
-# when running `ruff format`. The mutually-exclusive docstring pairs
-# (D203/D211, D212/D213) are left for ruff to auto-resolve under --select ALL.
+# Formatter-conflict rules and one rule from each mutually exclusive docstring
+# pair are ignored, matching the repository's strict Ruff policy.
 select = ["ALL"]
-ignore = ["COM812", "ISC001"]
+ignore = ["COM812", "ISC001", "D203", "D213"]
 
 [tool.ruff.lint.per-file-ignores]
 # Tests: conventional relaxations for `select = ["ALL"]`.

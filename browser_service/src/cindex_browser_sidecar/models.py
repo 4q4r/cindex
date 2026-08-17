@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, HttpUrl
 
@@ -44,6 +44,36 @@ class ScreenshotRequest(BaseModel):
 
     url: HttpUrl
     timeout: float = Field(default=25.0, gt=0, le=120)
+
+
+OCRLanguage = Literal[
+    "ara",
+    "deu",
+    "eng",
+    "spa",
+    "fra",
+    "ita",
+    "jpn",
+    "kor",
+    "por",
+    "rus",
+    "chi_sim+chi_tra",
+]
+
+MAX_PDF_BASE64_CHARS = 45_000_000
+
+
+class PDFTextRequest(BaseModel):
+    """Base64 PDF bytes plus a validated Tesseract language hint."""
+
+    body: str = Field(min_length=1, max_length=MAX_PDF_BASE64_CHARS)
+    ocr_language: OCRLanguage = "eng"
+
+
+class PDFTextResponse(BaseModel):
+    """Normalized native/OCR text extracted from a PDF."""
+
+    text: str
 
 
 class FetchResponse(BaseModel):

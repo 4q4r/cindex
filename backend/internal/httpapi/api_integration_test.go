@@ -18,6 +18,7 @@ import (
 	"github.com/4q4r/cindex/backend/internal/platform/db"
 	"github.com/4q4r/cindex/backend/internal/platform/redis"
 	"github.com/4q4r/cindex/backend/internal/repository"
+	"github.com/4q4r/cindex/backend/internal/service"
 	"github.com/4q4r/cindex/backend/migrations"
 	"github.com/jackc/pgx/v5/pgxpool"
 	goredis "github.com/redis/go-redis/v9"
@@ -111,6 +112,7 @@ func setupAPI(t *testing.T, rateLimit int) *apiTest {
 	srv := httptest.NewServer(httpapi.NewRouter(httpapi.Dependencies{
 		Logger: slog.New(slog.NewTextHandler(io.Discard, nil)),
 		DB:     pool, Redis: rds, River: riverClient, Config: cfg,
+		Ingestor: &service.NoopIngestor{},
 	}))
 	t.Cleanup(srv.Close)
 
@@ -149,8 +151,8 @@ func seed(t *testing.T, pool *pgxpool.Pool) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	got.PeerReviewEvidence = "tierA: openalex venue=journal"
-	got.IndexingEvidence = "tierA: medline"
+	got.PeerReviewEvidence = "tierB: pubmed"
+	got.IndexingEvidence = "tierB: medline"
 	u := domain.ApplyEligibility(got, "openalex", "Journal of Quantum Research")
 	if err := articles.UpdateEligibility(ctx, articleID, u); err != nil {
 		t.Fatal(err)
@@ -226,12 +228,25 @@ func TestImmediateSearch(t *testing.T) {
 	if !ok || len(authors) != 1 || authors[0] != "Иванов И.И." {
 		t.Errorf("authors = %v", first["authors"])
 	}
-	if first["tier"] == "" || first["tier"] == nil {
-		t.Errorf("tier missing: %v", first)
+	if first["tier"] != "B" {
+		t.Errorf("tier = %v, want B", first["tier"])
 	}
 	evidence := first["eligibility_evidence"].(map[string]any)
 	if evidence["peer_reviewed"] != true || evidence["indexed"] != true {
 		t.Errorf("eligibility evidence = %v", evidence)
+	}
+	confidence := first["eligibility_confidence"].(map[string]any)
+	wantConfidence := map[string]float64{
+		"peer_reviewed":        0.7,
+		"indexed":              0.7,
+		"doi_and_journal_card": 1,
+		"not_preprint":         1,
+		"overall":              0.85,
+	}
+	for key, want := range wantConfidence {
+		if confidence[key] != want {
+			t.Errorf("eligibility_confidence[%s] = %v, want %v", key, confidence[key], want)
+		}
 	}
 	stats := body["source_stats"].(map[string]any)
 	if stats["total"] != float64(1) || stats["live"] != float64(1) {
