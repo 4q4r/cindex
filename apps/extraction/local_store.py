@@ -38,6 +38,7 @@ logger = structlog.get_logger(__name__)
 # Sections written by :meth:`LocalArticleStore.save` (and read back by
 # ``to_raw`` / ``read_quotes`). Order matters for human readability, not for
 # parsing — the parser splits on whichever header is present.
+_SECTION_TLDR = "## TLDR"
 _SECTION_ABSTRACT = "## Аннотация"
 _SECTION_FULL_TEXT = "## Полный текст"
 _SECTION_FORMULAS = "## Формулы"
@@ -184,20 +185,23 @@ class LocalArticleStore:
         quotes: list[dict],
         formulas: list[dict] = (),
         figures: list[dict] = (),
+        *,
+        tldr: str = "",
     ) -> str:
         """
         Write the article's frozen md and return its relative path.
 
         The md has a YAML-style front-matter (title / authors / year / journal
         / doi / url / source_key / ``is_preprint: false``) and a body with
-        ``## Аннотация``, ``## Полный текст``, ``## Формулы``, ``## Графики и
-        рисунки``, ``## Извлечённые цитаты``. The articles dir is created if
-        missing. The returned path is relative to ``CINDEX_ARTICLES_DIR``.
+        ``## TLDR`` (when present), ``## Аннотация``, ``## Полный текст``,
+        ``## Формулы``, ``## Графики и рисунки``, ``## Извлечённые цитаты``.
+        The articles dir is created if missing. The returned path is relative
+        to ``CINDEX_ARTICLES_DIR``.
         """
         cfg = load_config()
         path = cls._path(article.doi)
         path.parent.mkdir(parents=True, exist_ok=True)
-        content = _render_md(article, quotes, list(formulas), list(figures))
+        content = _render_md(article, quotes, list(formulas), list(figures), tldr=tldr)
         path.write_text(content, encoding="utf-8")
         return (
             path.relative_to(Path(cfg.articles_dir).resolve()).as_posix()
@@ -224,9 +228,17 @@ class ArticleMarkdownService:
         quotes: list[dict],
         formulas: list[dict] = (),
         figures: list[dict] = (),
+        *,
+        tldr: str = "",
     ) -> Article:
         """Freeze ``article`` to local md and stamp ``local_md_path``."""
-        relpath = LocalArticleStore.save(article, quotes, formulas, figures)
+        relpath = LocalArticleStore.save(
+            article,
+            quotes,
+            formulas,
+            figures,
+            tldr=tldr,
+        )
         article.local_md_path = relpath
         article.save(update_fields=["local_md_path"])
         return article
@@ -242,17 +254,36 @@ def _render_md(
     quotes: list[dict],
     formulas: list[dict],
     figures: list[dict],
+    *,
+    tldr: str = "",
 ) -> str:
     """Render the full markdown document for ``article``."""
     front = _render_front_matter(article)
     sections = [
+        _render_tldr_section(tldr),
         f"{_SECTION_ABSTRACT}\n\n{(article.abstract or '').strip()}",
         f"{_SECTION_FULL_TEXT}\n\n{(article.full_text or '').strip()}",
         _render_formulas_section(formulas),
         _render_figures_section(figures),
         _render_quotes_section(quotes),
     ]
-    return front + "\n\n".join(s.rstrip() for s in sections).rstrip() + "\n"
+    return (
+        front + "\n\n".join(s.rstrip() for s in sections if s.rstrip()).rstrip() + "\n"
+    )
+
+
+def _render_tldr_section(tldr: str) -> str:
+    """
+    Render the ``## TLDR`` section (empty string when there is no tldr).
+
+    Whitespace (including newlines) is collapsed so the free-text summary
+    stays on one line and can never smuggle a ``## `` section header into
+    the md, which would confuse the ``_section_body`` parsers.
+    """
+    collapsed = re.sub(r"\s+", " ", tldr or "").strip()
+    if not collapsed:
+        return ""
+    return f"{_SECTION_TLDR}\n\n{collapsed}"
 
 
 def _render_formulas_section(formulas: list[dict]) -> str:
@@ -435,13 +466,17 @@ def _section_body(body: str, header: str) -> str | None:
     """
     Return the text under ``header`` up to the next ``## `` section.
 
-    Returns ``None`` when the header is absent. Leading/trailing blank lines
-    are stripped.
+    Returns ``None`` when the header is absent. Headers are matched at a line
+    start (every ``## `` section is written on its own line) so a free-text
+    section body can never hijack another section via a literal substring.
+    Leading/trailing blank lines are stripped.
     """
-    idx = body.find(header)
+    idx = body.find("\n" + header)
     if idx == -1:
-        return None
-    start = idx + len(header)
+        if not body.startswith(header):
+            return None
+        idx = 0
+    start = idx + len(header) + 1 if idx else len(header)
     # Next top-level "## " header after this section.
     next_idx = body.find("\n## ", start)
     section = body[start:next_idx] if next_idx != -1 else body[start:]

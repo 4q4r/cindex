@@ -104,6 +104,7 @@ export function mapApiResult(
       relevance: q.relevance,
       rationale: q.rationale,
     })),
+    tldr: item.tldr ?? "",
   };
 }
 

@@ -123,6 +123,7 @@ class SearchResultSerializer(serializers.Serializer):
     url = serializers.CharField()
     rerank_score = serializers.FloatField(required=False)
     quotes = QuoteSerializer(many=True, required=False, default=list)
+    tldr = serializers.CharField(required=False, default="", allow_blank=True)
 
     def to_representation(
         self,
@@ -138,6 +139,10 @@ class SearchResultSerializer(serializers.Serializer):
         data["journal"] = normalize_scholarly_text(
             data.get("journal", ""),
             max_length=300,
+        )
+        data["tldr"] = normalize_scholarly_text(
+            data.get("tldr", ""),
+            max_length=500,
         )
         quotes = data.get("quotes") or []
         data["quotes"] = quotes if isinstance(quotes, list) else []

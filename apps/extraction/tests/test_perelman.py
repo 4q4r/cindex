@@ -123,6 +123,7 @@ def _tool_call(call_id: str, name: str, args: dict) -> dict:
 
 _FINAL_JSON = json.dumps(
     {
+        "tldr": "Краткое резюме: статья демонстрирует цитируемый результат.",
         "quotes": [
             {
                 "text": "We demonstrate a verbatim result worth quoting.",
@@ -239,6 +240,9 @@ class TestAgentLoop:
         assert result.formulas[0].latex == "$$E=mc^2$$"
         assert len(result.figures) == 1
         assert result.figures[0].kind == "graph"
+        assert (
+            result.tldr == "Краткое резюме: статья демонстрирует цитируемый результат."
+        )
         # Two chat calls: tool turn + final turn.
         assert len(client.chat_calls) == 2
         # tools / tool_choice forwarded on every call.
@@ -409,6 +413,57 @@ class TestAgentLoop:
         result = asyncio.run(extractor.extract(_StubArticle()))
 
         assert result.is_empty
+
+    def test_missing_tldr_key_defaults_to_empty_string(self) -> None:
+        content = json.dumps(
+            {
+                "quotes": [{"text": "A passage.", "location": "s1"}],
+                "formulas": [],
+                "figures": [],
+            },
+        )
+        client = _FakeClient([_assistant(content=content)])
+        fetcher = _FakeFetcher(_parts())
+        extractor = _extractor(client, fetcher)
+
+        result = asyncio.run(extractor.extract(_StubArticle()))
+
+        assert result.tldr == ""
+        assert not result.is_empty
+
+    def test_only_tldr_is_not_an_empty_result(self) -> None:
+        content = json.dumps(
+            {"tldr": "Резюме.", "quotes": [], "formulas": [], "figures": []}
+        )
+        client = _FakeClient([_assistant(content=content)])
+        fetcher = _FakeFetcher(_parts())
+        extractor = _extractor(client, fetcher)
+
+        result = asyncio.run(extractor.extract(_StubArticle()))
+
+        assert result.tldr == "Резюме."
+        assert not result.is_empty
+
+    def test_tldr_non_string_and_overlong_are_sanitized(self) -> None:
+        content = json.dumps({"tldr": 123, "quotes": [], "formulas": [], "figures": []})
+        client = _FakeClient([_assistant(content=content)])
+        fetcher = _FakeFetcher(_parts())
+        extractor = _extractor(client, fetcher)
+
+        result = asyncio.run(extractor.extract(_StubArticle()))
+
+        assert result.tldr == ""
+        assert result.is_empty
+
+        overlong = json.dumps(
+            {"tldr": "x" * 5000, "quotes": [], "formulas": [], "figures": []}
+        )
+        client = _FakeClient([_assistant(content=overlong)])
+        extractor = _extractor(client, fetcher)
+
+        result = asyncio.run(extractor.extract(_StubArticle()))
+
+        assert len(result.tldr) == 2000
 
     def test_json_object_doubled_latex_is_parsed_verbatim(self) -> None:
         # ``response_format=json_object`` on the finalize turn makes the provider
@@ -919,7 +974,7 @@ def _db_article(*, doi: str, published: bool) -> Article:
     )
 
 
-def _result_with_one_quote() -> ExtractionResult:
+def _result_with_one_quote(*, tldr: str = "") -> ExtractionResult:
     """A non-empty ExtractionResult (one quote + one formula) for happy paths."""
     return ExtractionResult(
         quotes=[
@@ -932,6 +987,7 @@ def _result_with_one_quote() -> ExtractionResult:
         ],
         formulas=[Formula(latex="$$E=mc^2$$", location="section 1")],
         figures=[],
+        tldr=tldr,
     )
 
 
@@ -1002,6 +1058,7 @@ class TestQuoteExtractionServiceEnrich:
             article=article,
             status=STATUS_DONE,
             quotes=cached,
+            tldr="Кэшированное резюме.",
             model="m",
         )
 
@@ -1010,6 +1067,7 @@ class TestQuoteExtractionServiceEnrich:
 
         assert run.calls == []
         assert results[0]["quotes"] == cached
+        assert results[0]["tldr"] == "Кэшированное резюме."
 
     def test_published_uncached_extracts_freezes_and_caches(
         self,
@@ -1018,7 +1076,7 @@ class TestQuoteExtractionServiceEnrich:
         monkeypatch,
     ) -> None:
         _patch_configured(monkeypatch)
-        run = _ScriptedRun([_result_with_one_quote()])
+        run = _ScriptedRun([_result_with_one_quote(tldr="Краткое резюме.")])
         monkeypatch.setattr(QuoteExtractionService, "_run_extraction", run)
         article = _db_article(doi="10.1/c", published=True)
 
@@ -1031,15 +1089,20 @@ class TestQuoteExtractionServiceEnrich:
         # Quotes written back to the in-memory result.
         assert len(results[0]["quotes"]) == 1
         assert results[0]["quotes"][0]["text"] == "verbatim quote 0"
-        # ArticleQuotes row is done and caches the quotes + model.
+        assert results[0]["tldr"] == "Краткое резюме."
+        # ArticleQuotes row is done and caches the quotes + model + tldr.
         aq = ArticleQuotes.objects.get(article=article)
         assert aq.status == STATUS_DONE
         assert len(aq.quotes) == 1
+        assert aq.tldr == "Краткое резюме."
         assert aq.model == "vision-model"
-        # Frozen: local_md_path stamped, .md file on disk.
+        # Frozen: local_md_path stamped, .md file on disk with the TLDR section.
         article.refresh_from_db()
         assert article.local_md_path != ""
         assert (articles_dir / article.local_md_path).is_file()
+        md_text = (articles_dir / article.local_md_path).read_text(encoding="utf-8")
+        assert "## TLDR" in md_text
+        assert "Краткое резюме." in md_text
 
     def test_preprint_uncached_extracts_fresh_no_persist(
         self,
@@ -1048,7 +1111,7 @@ class TestQuoteExtractionServiceEnrich:
         monkeypatch,
     ) -> None:
         _patch_configured(monkeypatch)
-        run = _ScriptedRun([_result_with_one_quote()])
+        run = _ScriptedRun([_result_with_one_quote(tldr="Резюме препринта.")])
         monkeypatch.setattr(QuoteExtractionService, "_run_extraction", run)
         article = _db_article(doi="10.1/d", published=False)
 
@@ -1057,6 +1120,7 @@ class TestQuoteExtractionServiceEnrich:
 
         # Quotes written in-memory only.
         assert len(results[0]["quotes"]) == 1
+        assert results[0]["tldr"] == "Резюме препринта."
         # No cache row, no freeze, no md file.
         assert not ArticleQuotes.objects.filter(article=article).exists()
         article.refresh_from_db()

@@ -1,5 +1,60 @@
 from rest_framework.test import APIClient
 
+from apps.search.serializers import SearchResultSerializer
+
+
+def _minimal_result(**overrides: object) -> dict:
+    """A result dict with every required ``SearchResultSerializer`` field."""
+    result = {
+        "id": 1,
+        "title": "A Study",
+        "preview": "Abstract.",
+        "year": 2024,
+        "publication_date": None,
+        "source": "test",
+        "journal": "Journal",
+        "authors": ["A. Author"],
+        "volume": "",
+        "issue": "",
+        "pages": "",
+        "doi": "10.1/1",
+        "eligibility_evidence": {"not_retracted": True},
+        "eligibility_confidence": {"not_retracted": 0.9},
+        "is_retracted": False,
+        "retraction_note": "",
+        "cited_by_count": 3,
+        "tier": "A",
+        "url": "https://example.org/1",
+    }
+    result.update(overrides)
+    return result
+
+
+class TestSearchResultSerializerTldrContract:
+    """The frontend depends on a stable, always-present ``tldr`` field."""
+
+    def test_tldr_defaults_to_empty_string_when_missing(self) -> None:
+        serializer = SearchResultSerializer(data=_minimal_result())
+        assert serializer.is_valid(), serializer.errors
+
+        assert serializer.data["tldr"] == ""
+
+    def test_tldr_passthrough_when_present(self) -> None:
+        serializer = SearchResultSerializer(
+            data=_minimal_result(tldr="Краткое резюме статьи."),
+        )
+        assert serializer.is_valid(), serializer.errors
+
+        assert serializer.data["tldr"] == "Краткое резюме статьи."
+
+    def test_tldr_whitespace_collapsed_and_truncated_to_500(self) -> None:
+        serializer = SearchResultSerializer(
+            data=_minimal_result(tldr="  a\n\nb  " + "x" * 600),
+        )
+        assert serializer.is_valid(), serializer.errors
+
+        assert serializer.data["tldr"] == "a b " + "x" * 496
+
 
 def test_search_endpoint_returns_payload(db) -> None:
     """Test search endpoint returns payload helper."""
