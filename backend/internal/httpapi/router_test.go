@@ -9,6 +9,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/4q4r/cindex/backend/internal/config"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/redis/go-redis/v9"
 )
@@ -28,7 +29,12 @@ func newTestDeps(t *testing.T) Dependencies {
 	rds := redis.NewClient(&redis.Options{Addr: "127.0.0.1:1", DialTimeout: 100_000_000})
 
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
-	return Dependencies{Logger: logger, DB: pool, Redis: rds}
+	cfg := &config.Config{}
+	cfg.Search.DefaultFreshnessDays = 14
+	cfg.Search.FinalTopK = 30
+	cfg.Search.RateLimitPerIP = 10
+	cfg.Search.RateLimitWindow = 60 * 1_000_000_000
+	return Dependencies{Logger: logger, DB: pool, Redis: rds, Config: cfg}
 }
 
 func TestHealthzReportsUnhealthyWhenDepsDown(t *testing.T) {
@@ -47,12 +53,7 @@ func TestHealthzReportsUnhealthyWhenDepsDown(t *testing.T) {
 }
 
 func TestRequestIDHeaderAndLogging(t *testing.T) {
-	var logged []string
-	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
-	_ = logger
-	_ = logged
-
-	r := NewRouter(Dependencies{Logger: slog.New(slog.NewTextHandler(io.Discard, nil))})
+	r := NewRouter(newTestDeps(t))
 
 	req := httptest.NewRequest(http.MethodGet, "/healthz", nil)
 	req.Header.Set("X-Request-ID", "trace-123")
@@ -65,7 +66,7 @@ func TestRequestIDHeaderAndLogging(t *testing.T) {
 }
 
 func TestRequestIDGeneratedWhenAbsent(t *testing.T) {
-	r := NewRouter(Dependencies{Logger: slog.New(slog.NewTextHandler(io.Discard, nil))})
+	r := NewRouter(newTestDeps(t))
 
 	req := httptest.NewRequest(http.MethodGet, "/healthz", nil)
 	rec := httptest.NewRecorder()

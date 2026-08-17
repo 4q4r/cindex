@@ -9,7 +9,11 @@ import (
 	"syscall"
 
 	"github.com/4q4r/cindex/backend/internal/config"
+	"github.com/4q4r/cindex/backend/internal/httpapi"
 	"github.com/4q4r/cindex/backend/internal/platform/db"
+	"github.com/riverqueue/river"
+	"github.com/riverqueue/river/riverdriver/riverpgxv5"
+	"github.com/riverqueue/river/rivermigrate"
 )
 
 func main() {
@@ -36,8 +40,38 @@ func run(logger *slog.Logger) error {
 	}
 	defer pool.Close()
 
-	logger.Info("worker ready (jobs wiring lands with the ingestion stage)")
+	migrator, err := rivermigrate.New(riverpgxv5.New(pool), nil)
+	if err != nil {
+		return err
+	}
+	if _, err := migrator.Migrate(ctx, rivermigrate.DirectionUp, &rivermigrate.MigrateOpts{}); err != nil {
+		return err
+	}
+	logger.Info("river migrations applied")
+
+	api := httpapi.NewAPI(cfg, logger, pool, nil, nil)
+	workers := river.NewWorkers()
+	river.AddWorker(workers, api.SearchJobWorker())
+
+	client, err := river.NewClient(riverpgxv5.New(pool), &river.Config{
+		Queues: map[string]river.QueueConfig{
+			river.QueueDefault: {MaxWorkers: 8},
+		},
+		Workers: workers,
+	})
+	if err != nil {
+		return err
+	}
+	if err := client.Start(ctx); err != nil {
+		return err
+	}
+	logger.Info("worker started")
+
 	<-ctx.Done()
+	logger.Info("shutdown signal received")
+	if err := client.Stop(context.Background()); err != nil {
+		return err
+	}
 	logger.Info("worker stopped cleanly")
 	return nil
 }

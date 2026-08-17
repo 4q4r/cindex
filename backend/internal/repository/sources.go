@@ -48,6 +48,34 @@ func (r *Sources) ListActive(ctx context.Context) ([]domain.Source, error) {
 	return out, rows.Err()
 }
 
+// ListAll returns every source (enabled or not) ordered by key, used for
+// aggregated source-health statistics.
+func (r *Sources) ListAll(ctx context.Context) ([]domain.Source, error) {
+	rows, err := r.pool.Query(ctx, `
+		SELECT id, key, name, base_url, active, total_runs, total_successes,
+		       total_failures, consecutive_failures, last_checked_at,
+		       last_success_at, circuit_open_until, last_error
+		FROM articles_source ORDER BY key`)
+	if err != nil {
+		return nil, fmt.Errorf("query all sources: %w", err)
+	}
+	defer rows.Close()
+
+	var out []domain.Source
+	for rows.Next() {
+		var s domain.Source
+		if err := rows.Scan(
+			&s.ID, &s.Key, &s.Name, &s.BaseURL, &s.Active, &s.TotalRuns,
+			&s.TotalSuccesses, &s.TotalFailures, &s.ConsecutiveFailures,
+			&s.LastCheckedAt, &s.LastSuccessAt, &s.CircuitOpenUntil, &s.LastError,
+		); err != nil {
+			return nil, fmt.Errorf("scan source: %w", err)
+		}
+		out = append(out, s)
+	}
+	return out, rows.Err()
+}
+
 // GetByKey loads one source by its connector key.
 func (r *Sources) GetByKey(ctx context.Context, key string) (*domain.Source, error) {
 	var s domain.Source

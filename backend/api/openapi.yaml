@@ -1,0 +1,522 @@
+openapi: 3.0.3
+info:
+  title: CIndex Search API
+  version: "1.0"
+  description: >
+    Article search, asynchronous search jobs, source health stats and the
+    privileged reindex endpoint. Parity with the Django DRF API under
+    /api/v1.
+paths:
+  /api/v1/search:
+    post:
+      operationId: searchArticles
+      summary: Run an immediate search against the current article corpus.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/SearchRequest"
+      responses:
+        "200":
+          description: Ranked, paginated results.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SearchResponse"
+        "400":
+          description: Validation error envelope.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorEnvelope"
+        "429":
+          description: Rate limited (anon 60/min per IP).
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorEnvelope"
+  /api/v1/search/jobs:
+    post:
+      operationId: createSearchJob
+      summary: Create a search job, or attach to an active one for the same query/filters.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/SearchJobCreateRequest"
+      responses:
+        "202":
+          description: New job created.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SearchJobPayload"
+        "200":
+          description: Attached to an existing active job.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SearchJobPayload"
+        "400":
+          description: Validation error envelope.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorEnvelope"
+        "429":
+          description: Rate limited.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorEnvelope"
+  /api/v1/search/jobs/{job_id}:
+    get:
+      operationId: getSearchJob
+      summary: Poll the current state of a search job (paginated, not throttled).
+      parameters:
+        - name: job_id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+        - name: page
+          in: query
+          schema:
+            type: integer
+            minimum: 1
+            default: 1
+        - name: per_page
+          in: query
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 50
+            default: 5
+      responses:
+        "200":
+          description: Current job state.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SearchJobPayload"
+        "404":
+          description: Job not found.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorEnvelope"
+  /api/v1/source-stats:
+    get:
+      operationId: getSourceStats
+      summary: Aggregated source health and coverage statistics (15s cache).
+      responses:
+        "200":
+          description: Source stats.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SourceStats"
+        "429":
+          description: Rate limited.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorEnvelope"
+  /api/v1/admin/reindex:
+    post:
+      operationId: reindexArticles
+      summary: Trigger a privileged full reindex for administrators.
+      security:
+        - AdminApiKey: []
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ReindexRequest"
+      responses:
+        "200":
+          description: Reindex queued.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ReindexResponse"
+        "401":
+          description: Missing or invalid admin key.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorEnvelope"
+        "429":
+          description: Rate limited.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorEnvelope"
+components:
+  securitySchemes:
+    AdminApiKey:
+      type: apiKey
+      in: header
+      name: X-API-Key
+  schemas:
+    SearchFilters:
+      type: object
+      properties:
+        peer_reviewed_only:
+          type: boolean
+          default: false
+        indexed_only:
+          type: boolean
+          default: false
+        exclude_preprints:
+          type: boolean
+          default: false
+        exclude_retracted:
+          type: boolean
+          default: false
+        year_from:
+          type: integer
+          minimum: 0
+          maximum: 9999
+          nullable: true
+        year_to:
+          type: integer
+          minimum: 0
+          maximum: 9999
+          nullable: true
+        sort_by:
+          type: string
+          enum: [relevance, newest, metadata]
+          default: relevance
+    SearchRequest:
+      allOf:
+        - $ref: "#/components/schemas/SearchFilters"
+        - type: object
+          required: [query]
+          properties:
+            query:
+              type: string
+              maxLength: 512
+            expression:
+              type: string
+              maxLength: 1024
+              default: ""
+            force_refresh:
+              type: boolean
+              default: false
+            page:
+              type: integer
+              minimum: 1
+              default: 1
+            per_page:
+              type: integer
+              minimum: 1
+              maximum: 50
+              default: 5
+    SearchJobCreateRequest:
+      allOf:
+        - $ref: "#/components/schemas/SearchFilters"
+        - type: object
+          required: [query]
+          properties:
+            query:
+              type: string
+              maxLength: 512
+            expression:
+              type: string
+              maxLength: 1024
+              default: ""
+            force_refresh:
+              type: boolean
+              default: false
+    EligibilityEvidence:
+      type: object
+      properties:
+        peer_reviewed:
+          type: boolean
+        indexed:
+          type: boolean
+        doi_and_journal_card:
+          type: boolean
+        not_preprint:
+          type: boolean
+    EligibilityConfidence:
+      type: object
+      properties:
+        peer_reviewed:
+          type: number
+          format: double
+        indexed:
+          type: number
+          format: double
+        doi_and_journal_card:
+          type: number
+          format: double
+        not_preprint:
+          type: number
+          format: double
+        overall:
+          type: number
+          format: double
+    Quote:
+      type: object
+      properties:
+        text:
+          type: string
+        location:
+          type: string
+          default: ""
+        relevance:
+          type: number
+          format: double
+          minimum: 0
+          maximum: 1
+        rationale:
+          type: string
+          default: ""
+    SearchResult:
+      type: object
+      properties:
+        id:
+          type: integer
+          format: int64
+        title:
+          type: string
+        preview:
+          type: string
+        year:
+          type: integer
+          nullable: true
+        publication_date:
+          type: string
+          format: date
+          nullable: true
+        source:
+          type: string
+        journal:
+          type: string
+        authors:
+          type: array
+          items:
+            type: string
+        volume:
+          type: string
+        issue:
+          type: string
+        pages:
+          type: string
+        doi:
+          type: string
+        identifiers:
+          type: object
+          additionalProperties:
+            type: string
+        eligibility_evidence:
+          $ref: "#/components/schemas/EligibilityEvidence"
+        eligibility_confidence:
+          $ref: "#/components/schemas/EligibilityConfidence"
+        is_retracted:
+          type: boolean
+        retraction_note:
+          type: string
+        cited_by_count:
+          type: integer
+        tier:
+          type: string
+        url:
+          type: string
+        rerank_score:
+          type: number
+          format: double
+        quotes:
+          type: array
+          items:
+            $ref: "#/components/schemas/Quote"
+        tldr:
+          type: string
+    SourceStats:
+      type: object
+      properties:
+        total:
+          type: integer
+        live:
+          type: integer
+        failed:
+          type: array
+          items:
+            type: string
+    SourceTiming:
+      type: object
+      properties:
+        status:
+          type: string
+        fetch_seconds:
+          type: number
+          format: double
+        enrich_seconds:
+          type: number
+          format: double
+        save_seconds:
+          type: number
+          format: double
+        total_seconds:
+          type: number
+          format: double
+        articles_count:
+          type: integer
+    SearchJobPayload:
+      type: object
+      properties:
+        id:
+          type: string
+          format: uuid
+        query:
+          type: string
+        expression:
+          type: string
+        status:
+          type: string
+        stage:
+          type: string
+        substage:
+          type: string
+        substage_label:
+          type: string
+        message:
+          type: string
+        progress_percent:
+          type: integer
+        source_total:
+          type: integer
+        source_done:
+          type: integer
+        source_live:
+          type: integer
+        source_failed:
+          type: array
+          items:
+            type: string
+        source_timings:
+          type: object
+          additionalProperties:
+            $ref: "#/components/schemas/SourceTiming"
+        average_wait_without_enrichment_seconds:
+          type: integer
+          nullable: true
+        average_wait_with_enrichment_seconds:
+          type: integer
+          nullable: true
+        index_hits_before:
+          type: integer
+        index_hits_after:
+          type: integer
+        rescan_triggered:
+          type: boolean
+        rescan_reason:
+          type: string
+        freshness_days_used:
+          type: integer
+        peer_reviewed_only:
+          type: boolean
+        indexed_only:
+          type: boolean
+        exclude_preprints:
+          type: boolean
+        exclude_retracted:
+          type: boolean
+        year_from:
+          type: integer
+          nullable: true
+        year_to:
+          type: integer
+          nullable: true
+        sort_by:
+          type: string
+        page:
+          type: integer
+          nullable: true
+        per_page:
+          type: integer
+          nullable: true
+        total_pages:
+          type: integer
+          nullable: true
+        total_results:
+          type: integer
+          nullable: true
+        created_at:
+          type: string
+          format: date-time
+        updated_at:
+          type: string
+          format: date-time
+        finished_at:
+          type: string
+          format: date-time
+          nullable: true
+        error:
+          type: string
+        results:
+          type: array
+          items:
+            $ref: "#/components/schemas/SearchResult"
+        attached_to_existing:
+          type: boolean
+        source_stats:
+          $ref: "#/components/schemas/SourceStats"
+        count:
+          type: integer
+    SearchResponse:
+      type: object
+      properties:
+        query:
+          type: string
+        count:
+          type: integer
+        page:
+          type: integer
+        per_page:
+          type: integer
+        total_pages:
+          type: integer
+        source_stats:
+          $ref: "#/components/schemas/SourceStats"
+        results:
+          type: array
+          items:
+            $ref: "#/components/schemas/SearchResult"
+    ReindexRequest:
+      type: object
+      properties:
+        query:
+          type: string
+          default: scientific research
+    ReindexResponse:
+      type: object
+      properties:
+        task_id:
+          type: string
+        status:
+          type: string
+    ErrorItem:
+      type: object
+      properties:
+        code:
+          type: string
+        detail:
+          type: string
+        attr:
+          type: string
+    ErrorEnvelope:
+      type: object
+      properties:
+        type:
+          type: string
+        errors:
+          type: array
+          items:
+            $ref: "#/components/schemas/ErrorItem"

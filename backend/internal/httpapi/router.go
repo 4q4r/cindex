@@ -8,9 +8,12 @@ import (
 	"runtime/debug"
 	"time"
 
+	"github.com/4q4r/cindex/backend/internal/config"
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/redis/go-redis/v9"
+	"github.com/riverqueue/river"
 )
 
 // Dependencies the HTTP server needs.
@@ -18,12 +21,18 @@ type Dependencies struct {
 	Logger *slog.Logger
 	DB     *pgxpool.Pool
 	Redis  *redis.Client
+	River  *river.Client[pgx.Tx]
+	Config *config.Config
 }
 
 // NewRouter builds the HTTP handler tree.
 func NewRouter(deps Dependencies) http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /healthz", healthz(deps))
+
+	api := NewAPI(deps.Config, deps.Logger, deps.DB, deps.Redis, deps.River)
+	api.Register(mux, newRateLimiter(deps.Redis, "search:rl",
+		deps.Config.Search.RateLimitPerIP, deps.Config.Search.RateLimitWindow))
 
 	return chain(mux,
 		recoverer(deps.Logger),
