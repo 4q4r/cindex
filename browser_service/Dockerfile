@@ -25,6 +25,7 @@ ENV UV_LINK_MODE=copy \
 WORKDIR /app
 
 # Chromium runtime libraries required by the source-patched binary.
+# hadolint ignore=DL3008
 RUN apt-get update \
     && apt-get install -y --no-install-recommends \
         libnss3 libnspr4 libatk1.0-0 libatk-bridge2.0-0 libcups2 \
@@ -62,13 +63,18 @@ ENV PYTHONUNBUFFERED=1 \
 WORKDIR /app
 
 # Chromium runtime libraries (same set as builder) + tini for signal handling.
+# hadolint ignore=DL3008
 RUN apt-get update \
     && apt-get install -y --no-install-recommends \
         libnss3 libnspr4 libatk1.0-0 libatk-bridge2.0-0 libcups2 \
         libdrm2 libxkbcommon0 libxcomposite1 libxdamage1 libxfixes3 \
         libxrandr2 libxext6 libxshmfence1 libgbm1 \
         libpango-1.0-0 libcairo2 libasound2 \
-        fonts-liberation ca-certificates tini \
+        fonts-liberation ca-certificates tini tesseract-ocr \
+        tesseract-ocr-ara tesseract-ocr-deu tesseract-ocr-eng \
+        tesseract-ocr-spa tesseract-ocr-fra tesseract-ocr-ita \
+        tesseract-ocr-jpn tesseract-ocr-kor tesseract-ocr-por \
+        tesseract-ocr-rus tesseract-ocr-chi-sim tesseract-ocr-chi-tra \
     && rm -rf /var/lib/apt/lists/*
 
 COPY --from=builder /app/.venv /app/.venv

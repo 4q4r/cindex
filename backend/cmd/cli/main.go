@@ -8,6 +8,8 @@ import (
 	"github.com/4q4r/cindex/backend/internal/config"
 	"github.com/4q4r/cindex/backend/internal/platform/db"
 	"github.com/4q4r/cindex/backend/migrations"
+	"github.com/riverqueue/river/riverdriver/riverpgxv5"
+	"github.com/riverqueue/river/rivermigrate"
 	"github.com/spf13/cobra"
 )
 
@@ -40,6 +42,13 @@ func migrateCmd(logger *slog.Logger) *cobra.Command {
 			}
 			defer pool.Close()
 			if err := db.Migrate(cmd.Context(), pool, migrations.FS); err != nil {
+				return err
+			}
+			riverMigrator, err := rivermigrate.New(riverpgxv5.New(pool), nil)
+			if err != nil {
+				return err
+			}
+			if _, err := riverMigrator.Migrate(cmd.Context(), rivermigrate.DirectionUp, nil); err != nil {
 				return err
 			}
 			logger.Info("migrations applied")

@@ -99,10 +99,10 @@ type Identifier struct {
 
 // Quote is one verbatim quote extracted by PERELMAN.
 type Quote struct {
-	Text      string `json:"text"`
-	Location  string `json:"location"`
-	Relevance string `json:"relevance"`
-	Rationale string `json:"rationale"`
+	Text      string  `json:"text"`
+	Location  string  `json:"location"`
+	Relevance float64 `json:"relevance"`
+	Rationale string  `json:"rationale"`
 }
 
 // ArticleQuotes is the per-article PERELMAN cache/claim row.

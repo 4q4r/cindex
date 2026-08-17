@@ -31,8 +31,11 @@ func TestLoadDefaults(t *testing.T) {
 	if c.Search.DefaultFreshnessDays != 14 {
 		t.Errorf("DefaultFreshnessDays = %d", c.Search.DefaultFreshnessDays)
 	}
-	if c.LLM.Model != "glm-4.5-air" {
-		t.Errorf("LLM.Model = %q", c.LLM.Model)
+	if c.LLM.BaseURL != "" || c.LLM.Model != "" || c.LLM.Timeout.Seconds() != 120 {
+		t.Errorf("LLM defaults = %+v", c.LLM)
+	}
+	if c.LLM.Temperature != 0.2 || c.LLM.MaxQuotes != 3 || c.LLM.Concurrency != 4 || c.LLM.MaxInputChars != 12000 {
+		t.Errorf("LLM tuning defaults = %+v", c.LLM)
 	}
 }
 
@@ -43,12 +46,18 @@ func TestLoadOverrides(t *testing.T) {
 	t.Setenv("CINDEX_HTTP_ADDR", "0.0.0.0:9000")
 	t.Setenv("CINDEX_SEARCH_DEFAULT_FRESHNESS_DAYS", "30")
 	t.Setenv("CINDEX_LLM_MODEL", "test-model")
+	t.Setenv("CINDEX_LLM_TEMPERATURE", "0.35")
+	t.Setenv("CINDEX_LLM_MIN_REQUEST_INTERVAL", "1.5")
+	t.Setenv("CINDEX_LLM_EXTRA_BODY", `{"thinking":{"type":"disabled"}}`)
 	c, err := Load()
 	if err != nil {
 		t.Fatal(err)
 	}
 	if c.Env != "test" || c.HTTPAddr != "0.0.0.0:9000" || c.Search.DefaultFreshnessDays != 30 || c.LLM.Model != "test-model" {
 		t.Fatalf("overrides not applied: %+v", c)
+	}
+	if c.LLM.Temperature != 0.35 || c.LLM.RequestInterval.Milliseconds() != 1500 || c.LLM.ExtraBody["thinking"] == nil {
+		t.Fatalf("LLM overrides not applied: %+v", c.LLM)
 	}
 }
 

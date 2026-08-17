@@ -3,6 +3,7 @@ package main
 
 import (
 	"context"
+	"fmt"
 	"log/slog"
 	"os"
 	"os/signal"
@@ -10,7 +11,10 @@ import (
 
 	"github.com/4q4r/cindex/backend/internal/config"
 	"github.com/4q4r/cindex/backend/internal/httpapi"
+	"github.com/4q4r/cindex/backend/internal/jobs"
 	"github.com/4q4r/cindex/backend/internal/platform/db"
+	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/riverqueue/river"
 	"github.com/riverqueue/river/riverdriver/riverpgxv5"
 	"github.com/riverqueue/river/rivermigrate"
@@ -62,6 +66,9 @@ func run(logger *slog.Logger) error {
 	if err != nil {
 		return err
 	}
+	if err := resumeSearchJobs(ctx, pool, client, logger); err != nil {
+		return err
+	}
 	if err := client.Start(ctx); err != nil {
 		return err
 	}
@@ -73,5 +80,48 @@ func run(logger *slog.Logger) error {
 		return err
 	}
 	logger.Info("worker stopped cleanly")
+	return nil
+}
+
+func resumeSearchJobs(
+	ctx context.Context,
+	pool *pgxpool.Pool,
+	client *river.Client[pgx.Tx],
+	logger *slog.Logger,
+) error {
+	rows, err := pool.Query(ctx, `
+		SELECT search_job.id::text
+		FROM search_searchjob AS search_job
+		WHERE search_job.status IN ('queued', 'running')
+			AND search_job.finished_at IS NULL
+			AND NOT EXISTS (
+				SELECT 1
+				FROM river_job
+				WHERE kind = 'search_job'
+					AND args->>'job_id' = search_job.id::text
+					AND finalized_at IS NULL
+			)`)
+	if err != nil {
+		return fmt.Errorf("query unfinished search jobs: %w", err)
+	}
+	defer rows.Close()
+
+	resumed := 0
+	for rows.Next() {
+		var jobID string
+		if err := rows.Scan(&jobID); err != nil {
+			return fmt.Errorf("scan unfinished search job: %w", err)
+		}
+		if _, err := client.Insert(ctx, &jobs.SearchJobTask{JobID: jobID}, nil); err != nil {
+			return fmt.Errorf("resume search job %s: %w", jobID, err)
+		}
+		resumed++
+	}
+	if err := rows.Err(); err != nil {
+		return fmt.Errorf("iterate unfinished search jobs: %w", err)
+	}
+	if resumed > 0 {
+		logger.Info("unfinished search jobs resumed", "count", resumed)
+	}
 	return nil
 }

@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/4q4r/cindex/backend/internal/config"
+	"github.com/4q4r/cindex/backend/internal/service"
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -18,19 +19,24 @@ import (
 
 // Dependencies the HTTP server needs.
 type Dependencies struct {
-	Logger *slog.Logger
-	DB     *pgxpool.Pool
-	Redis  *redis.Client
-	River  *river.Client[pgx.Tx]
-	Config *config.Config
+	Logger   *slog.Logger
+	DB       *pgxpool.Pool
+	Redis    *redis.Client
+	River    *river.Client[pgx.Tx]
+	Config   *config.Config
+	Ingestor service.Ingestor
 }
 
 // NewRouter builds the HTTP handler tree.
 func NewRouter(deps Dependencies) http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /healthz", healthz(deps))
+	mux.HandleFunc("GET /api/health/", healthz(deps))
 
 	api := NewAPI(deps.Config, deps.Logger, deps.DB, deps.Redis, deps.River)
+	if deps.Ingestor != nil {
+		api.ingest = deps.Ingestor
+	}
 	api.Register(mux, newRateLimiter(deps.Redis, "search:rl",
 		deps.Config.Search.RateLimitPerIP, deps.Config.Search.RateLimitWindow))
 

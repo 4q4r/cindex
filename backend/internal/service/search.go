@@ -156,8 +156,8 @@ func (s *Search) Run(ctx context.Context, query, expression string, filters doma
 	return hits, hitCount, nil
 }
 
-// RunWithQuotes is Run plus the cached PERELMAN quotes/tldr enrichment for
-// results that already carry them (no LLM calls — stage 5 adds the extractor).
+// RunWithQuotes is Run plus cached PERELMAN quotes/TLDR; direct requests never
+// trigger LLM extraction.
 func (s *Search) RunWithQuotes(ctx context.Context, query, expression string, filters domain.SearchFilters) ([]domain.SearchHit, int, error) {
 	hits, hitCount, err := s.Run(ctx, query, expression, filters)
 	if err != nil {
@@ -223,10 +223,15 @@ func (s *Search) payload(row *repository.SearchRow, identifiers []domain.Identif
 		Indexed:         row.Indexed,
 		DOIAndCard:      row.DOIAndCard,
 		NotPreprint:     row.NotPreprint,
+		PeerReviewConf:  row.PeerReviewConf,
+		IndexingConf:    row.IndexingConf,
+		DOIAndCardConf:  row.DOIAndCardConf,
+		NotPreprintConf: row.NotPreprintConf,
+		OverallConf:     row.OverallConf,
 		IsRetracted:     row.IsRetracted,
 		RetractionNote:  row.RetractionNote,
 		CitedByCount:    row.CitedByCount,
-		Tier:            domain.TierLabel(row.IsPeerReviewed, 0),
+		Tier:            domain.TierLabel(row.IsPeerReviewed, row.PeerReviewConf),
 		URL:             row.URL,
 		RerankScore:     row.Score,
 	}

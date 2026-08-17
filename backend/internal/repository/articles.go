@@ -10,6 +10,7 @@ import (
 
 	"github.com/4q4r/cindex/backend/internal/domain"
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
@@ -19,6 +20,11 @@ var ErrNotFound = errors.New("not found")
 // Articles stores Article, Author, ArticleAuthor and Identifier rows.
 type Articles struct {
 	pool *pgxpool.Pool
+}
+
+type articleDB interface {
+	Exec(context.Context, string, ...any) (pgconn.CommandTag, error)
+	QueryRow(context.Context, string, ...any) pgx.Row
 }
 
 // NewArticles builds the article repository over the given pool.
@@ -79,12 +85,25 @@ func (r *Articles) GetByURL(ctx context.Context, url string) (*domain.Article, e
 		`SELECT `+articleCols+` FROM articles_article a WHERE a.url = $1 ORDER BY a.id DESC LIMIT 1`, url))
 }
 
+// UpdateLocalMDPath stamps the relative path of an article's frozen Markdown.
+func (r *Articles) UpdateLocalMDPath(ctx context.Context, id int64, path string) error {
+	if _, err := r.pool.Exec(ctx,
+		`UPDATE articles_article SET local_md_path = $2 WHERE id = $1`, id, path); err != nil {
+		return fmt.Errorf("update local md path: %w", err)
+	}
+	return nil
+}
+
 // Upsert inserts an article keyed on its unique DOI, or updates the existing
 // row in place; returns the row id. Parity with the Django get_or_create
 // doi-keyed ingestion path.
 func (r *Articles) Upsert(ctx context.Context, a *domain.Article) (int64, error) {
+	return upsertArticle(ctx, r.pool, a)
+}
+
+func upsertArticle(ctx context.Context, database articleDB, a *domain.Article) (int64, error) {
 	var id int64
-	err := r.pool.QueryRow(ctx, `
+	err := database.QueryRow(ctx, `
 		INSERT INTO articles_article (
 			source_id, journal_id, external_id, title, abstract, full_text,
 			language, publication_year, publication_date, url, doi, local_md_path,
@@ -115,9 +134,13 @@ func (r *Articles) Upsert(ctx context.Context, a *domain.Article) (int64, error)
 			issue = EXCLUDED.issue,
 			pages = EXCLUDED.pages,
 			is_open_access = EXCLUDED.is_open_access,
-			is_retracted = EXCLUDED.is_retracted,
-			retraction_note = EXCLUDED.retraction_note,
+			is_retracted = articles_article.is_retracted OR EXCLUDED.is_retracted,
+			retraction_note = CASE WHEN EXCLUDED.retraction_note <> ''
+				THEN EXCLUDED.retraction_note ELSE articles_article.retraction_note END,
 			cited_by_count = EXCLUDED.cited_by_count,
+			peer_review_evidence = EXCLUDED.peer_review_evidence,
+			indexing_evidence = EXCLUDED.indexing_evidence,
+			preprint_evidence = EXCLUDED.preprint_evidence,
 			updated_at = EXCLUDED.updated_at
 		RETURNING id`,
 		a.SourceID, nullableInt64(a.JournalID), a.ExternalID, a.Title, a.Abstract,
@@ -139,7 +162,11 @@ func (r *Articles) Upsert(ctx context.Context, a *domain.Article) (int64, error)
 // UpdateEligibility persists an EligibilityUpdate computed by the domain
 // service. Parity with ArticleEligibilityService.apply.
 func (r *Articles) UpdateEligibility(ctx context.Context, id int64, u domain.EligibilityUpdate) error {
-	_, err := r.pool.Exec(ctx, `
+	return updateEligibility(ctx, r.pool, id, u)
+}
+
+func updateEligibility(ctx context.Context, database articleDB, id int64, u domain.EligibilityUpdate) error {
+	_, err := database.Exec(ctx, `
 		UPDATE articles_article SET
 			is_peer_reviewed_or_refereed = $2,
 			is_indexed_in_reputable_db = $3,
@@ -165,6 +192,69 @@ func (r *Articles) UpdateEligibility(ctx context.Context, id int64, u domain.Eli
 	)
 	if err != nil {
 		return fmt.Errorf("update eligibility: %w", err)
+	}
+	return nil
+}
+
+// SaveIngested atomically persists an article, its DOI identifier, optional
+// replacement authors, and its eligibility decision.
+func (r *Articles) SaveIngested(ctx context.Context, a *domain.Article, authors []string, u domain.EligibilityUpdate) (int64, error) {
+	tx, err := r.pool.Begin(ctx)
+	if err != nil {
+		return 0, fmt.Errorf("begin ingested article tx: %w", err)
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	id, err := upsertArticle(ctx, tx, a)
+	if err != nil {
+		return 0, err
+	}
+	if a.DOI != "" {
+		if err := upsertIdentifier(ctx, tx, id, "doi", a.DOI); err != nil {
+			return 0, err
+		}
+	}
+	if authors != nil {
+		if err := replaceAuthors(ctx, tx, id, authors); err != nil {
+			return 0, err
+		}
+	}
+	if err := updateEligibility(ctx, tx, id, u); err != nil {
+		return 0, err
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return 0, fmt.Errorf("commit ingested article tx: %w", err)
+	}
+	return id, nil
+}
+
+// UpdateEnriched persists DOI-enrichment fields and replacement authors in
+// one transaction (parity with _save_enriched in doi_enrichment.py).
+func (r *Articles) UpdateEnriched(ctx context.Context, id int64, year *int, abstract, volume, issue, pages string, authors []string) error {
+	tx, err := r.pool.Begin(ctx)
+	if err != nil {
+		return fmt.Errorf("begin enrichment tx: %w", err)
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	if _, err = tx.Exec(ctx, `
+		UPDATE articles_article SET
+			publication_year = COALESCE($2, publication_year),
+			abstract = CASE WHEN $3 <> '' THEN $3 ELSE abstract END,
+			volume = CASE WHEN $4 <> '' THEN $4 ELSE volume END,
+			issue = CASE WHEN $5 <> '' THEN $5 ELSE issue END,
+			pages = CASE WHEN $6 <> '' THEN $6 ELSE pages END,
+			updated_at = $7
+		WHERE id = $1`,
+		id, nullableInt(year), abstract, volume, issue, pages, time.Now(),
+	); err != nil {
+		return fmt.Errorf("update enriched fields: %w", err)
+	}
+	if len(authors) > 0 {
+		if err := replaceAuthors(ctx, tx, id, authors); err != nil {
+			return err
+		}
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return fmt.Errorf("commit enrichment tx: %w", err)
 	}
 	return nil
 }
@@ -199,6 +289,16 @@ func (r *Articles) ReplaceAuthors(ctx context.Context, articleID int64, names []
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
 
+	if err := replaceAuthors(ctx, tx, articleID, names); err != nil {
+		return err
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return fmt.Errorf("commit authors tx: %w", err)
+	}
+	return nil
+}
+
+func replaceAuthors(ctx context.Context, tx pgx.Tx, articleID int64, names []string) error {
 	if _, err := tx.Exec(ctx,
 		`DELETE FROM articles_articleauthor WHERE article_id = $1`, articleID); err != nil {
 		return fmt.Errorf("delete article authors: %w", err)
@@ -226,19 +326,20 @@ func (r *Articles) ReplaceAuthors(ctx context.Context, articleID int64, names []
 			return fmt.Errorf("link author: %w", err)
 		}
 	}
-	if err := tx.Commit(ctx); err != nil {
-		return fmt.Errorf("commit authors tx: %w", err)
-	}
 	return nil
 }
 
 // UpsertIdentifier adds an identifier unless it already exists (get_or_create
 // parity with IdentifierService.upsert).
 func (r *Articles) UpsertIdentifier(ctx context.Context, articleID int64, kind, value string) error {
+	return upsertIdentifier(ctx, r.pool, articleID, kind, value)
+}
+
+func upsertIdentifier(ctx context.Context, database articleDB, articleID int64, kind, value string) error {
 	if value == "" {
 		return nil
 	}
-	_, err := r.pool.Exec(ctx, `
+	_, err := database.Exec(ctx, `
 		INSERT INTO articles_identifier (article_id, kind, value)
 		VALUES ($1, $2, $3)
 		ON CONFLICT (article_id, kind, value) DO NOTHING`,
@@ -270,27 +371,32 @@ type SearchQuery struct {
 
 // SearchRow is one scored search hit (scored in SQL, payload assembled in Go).
 type SearchRow struct {
-	ID             int64
-	Title          string
-	Abstract       string
-	FullText       string
-	DOI            string
-	Source         string
-	Journal        string
-	Volume         string
-	Issue          string
-	Pages          string
-	URL            string
-	RetractionNote string
-	Year           *int
-	PubDate        *time.Time
-	IsPeerReviewed bool
-	Indexed        bool
-	DOIAndCard     bool
-	NotPreprint    bool
-	IsRetracted    bool
-	CitedByCount   int
-	Score          float64
+	ID              int64
+	Title           string
+	Abstract        string
+	FullText        string
+	DOI             string
+	Source          string
+	Journal         string
+	Volume          string
+	Issue           string
+	Pages           string
+	URL             string
+	RetractionNote  string
+	Year            *int
+	PubDate         *time.Time
+	IsPeerReviewed  bool
+	Indexed         bool
+	DOIAndCard      bool
+	NotPreprint     bool
+	PeerReviewConf  float64
+	IndexingConf    float64
+	DOIAndCardConf  float64
+	NotPreprintConf float64
+	OverallConf     float64
+	IsRetracted     bool
+	CitedByCount    int
+	Score           float64
 }
 
 // Search runs the parity scoring query: FTS cross-lingual match, exact/term/
@@ -415,6 +521,9 @@ func (r *Articles) Search(ctx context.Context, q SearchQuery) ([]SearchRow, int,
 			a.publication_year, a.publication_date,
 			a.is_peer_reviewed_or_refereed, a.is_indexed_in_reputable_db,
 			a.has_doi_and_journal_card, a.is_not_preprint_or_author_manuscript,
+			a.peer_review_confidence, a.indexing_confidence,
+			a.doi_and_card_confidence, a.not_preprint_confidence,
+			a.eligibility_confidence,
 			a.is_retracted, a.cited_by_count, (%s) AS search_score
 		FROM articles_article a
 		JOIN articles_source s ON s.id = a.source_id
@@ -436,7 +545,8 @@ func (r *Articles) Search(ctx context.Context, q SearchQuery) ([]SearchRow, int,
 			&h.ID, &h.Title, &h.Abstract, &h.FullText, &h.DOI, &h.Source,
 			&h.Journal, &h.Volume, &h.Issue, &h.Pages, &h.URL, &h.RetractionNote,
 			&h.Year, &h.PubDate, &h.IsPeerReviewed, &h.Indexed, &h.DOIAndCard,
-			&h.NotPreprint, &h.IsRetracted, &h.CitedByCount, &h.Score,
+			&h.NotPreprint, &h.PeerReviewConf, &h.IndexingConf, &h.DOIAndCardConf,
+			&h.NotPreprintConf, &h.OverallConf, &h.IsRetracted, &h.CitedByCount, &h.Score,
 		); err != nil {
 			return nil, 0, fmt.Errorf("scan search row: %w", err)
 		}

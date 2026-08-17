@@ -10,21 +10,25 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import binascii
 import os
 from contextlib import asynccontextmanager
 from typing import TYPE_CHECKING
 
 import structlog
 import uvicorn
-from fastapi import FastAPI
+from fastapi import FastAPI, HTTPException
 from fastapi.responses import JSONResponse
 
 from cindex_browser_sidecar.browser_pool import BrowserPool, BrowserPoolError
 from cindex_browser_sidecar.models import (
     FetchRequest,
     FetchResponse,
+    PDFTextRequest,
+    PDFTextResponse,
     ScreenshotRequest,
 )
+from cindex_browser_sidecar.pdf_text import extract_pdf_text
 
 if TYPE_CHECKING:
     from collections.abc import AsyncIterator
@@ -44,8 +48,11 @@ logger = structlog.get_logger(__name__)
 
 DEFAULT_PORT = 8081
 DEFAULT_CONCURRENCY = 4
+MAX_PDF_BYTES = 32 * 1024 * 1024
+PDF_TEXT_TIMEOUT_SECONDS = 120
 
 _pool: BrowserPool | None = None
+_pdf_text_semaphore = asyncio.Semaphore(2)
 
 
 def create_pool() -> BrowserPool:
@@ -178,6 +185,42 @@ async def screenshot(payload: ScreenshotRequest) -> FetchResponse:
         content_type="image/png",
         encoding="base64",
     )
+
+
+@app.post(
+    "/pdf-text",
+    response_model=PDFTextResponse,
+    summary="Extract native/OCR text from PDF bytes",
+)
+async def pdf_text(payload: PDFTextRequest) -> PDFTextResponse:
+    """Decode PDF bytes and extract text without writing shared files."""
+    try:
+        pdf_bytes = base64.b64decode(payload.body, validate=True)
+    except (binascii.Error, ValueError) as exc:
+        raise HTTPException(status_code=422, detail="body is not valid base64") from exc
+    if len(pdf_bytes) > MAX_PDF_BYTES:
+        raise HTTPException(status_code=413, detail="PDF exceeds size limit")
+    try:
+        async with _pdf_text_semaphore:
+            text = await asyncio.wait_for(
+                asyncio.to_thread(
+                    extract_pdf_text,
+                    pdf_bytes,
+                    ocr_language=payload.ocr_language,
+                ),
+                timeout=PDF_TEXT_TIMEOUT_SECONDS,
+            )
+    except TimeoutError as exc:
+        raise HTTPException(
+            status_code=504, detail="PDF text extraction timed out"
+        ) from exc
+    logger.info(
+        "pdf_text_ok",
+        pdf_bytes=len(pdf_bytes),
+        text_chars=len(text),
+        ocr_language=payload.ocr_language,
+    )
+    return PDFTextResponse(text=text)
 
 
 def main() -> None:
