@@ -1,4 +1,5 @@
-"""Base connector primitives for source ingestion.
+"""
+Base connector primitives for source ingestion.
 
 Provides BaseConnector (HTML transport via the cloakbrowser sidecar) and
 AsyncApiConnector (aiohttp transport), shared by all source connectors.
@@ -91,7 +92,8 @@ MIN_ARTICLE_TITLE_LENGTH = 18
 
 
 def current_max_publication_year() -> int:
-    """Plausible upper bound for a publication year: current year + 1.
+    """
+    Plausible upper bound for a publication year: current year + 1.
 
     Articles cannot be published far in the future, so a 4-digit year that
     exceeds next year (e.g. ``2048`` pulled from an article identifier) is
@@ -114,7 +116,8 @@ HTTP_OK_STATUS = 200
 
 @dataclass(frozen=True)
 class FetchResult:
-    """Decoded browser sidecar response.
+    """
+    Decoded browser sidecar response.
 
     Attributes:
         status: Upstream server's HTTP status (not the sidecar's).
@@ -134,7 +137,8 @@ class FetchResult:
 
 
 class BrowserTransport:
-    """Sync HTTP client forwarding fetches to the cloakbrowser sidecar.
+    """
+    Sync HTTP client forwarding fetches to the cloakbrowser sidecar.
 
     The distroless cindex worker cannot run a real browser, so HTML-mode
     connectors proxy every HTTP request through a sidecar service that owns
@@ -158,7 +162,8 @@ class BrowserTransport:
         max_attempts: int = 3,
         timeout_seconds: float = DEFAULT_BROWSER_TIMEOUT_SECONDS,
     ) -> None:
-        """Configure the transport with a sidecar URL and retry policy.
+        """
+        Configure the transport with a sidecar URL and retry policy.
 
         Args:
             base_url: Sidecar base URL. Defaults to the ``CINDEX_BROWSER_URL``
@@ -260,7 +265,8 @@ class BrowserTransport:
         return body
 
     def screenshot(self, url: str, *, timeout: float | None = None) -> bytes:
-        """Capture a full-page PNG screenshot of ``url`` through the sidecar.
+        """
+        Capture a full-page PNG screenshot of ``url`` through the sidecar.
 
         Used by the PERELMAN content fetcher for HTML articles without a PDF:
         the sidecar renders the page in its stealth Chromium context (solving
@@ -288,7 +294,8 @@ class BrowserTransport:
         endpoint: str,
         payload: dict[str, object],
     ) -> FetchResult:
-        """POST ``payload`` to a sidecar endpoint with retry/backoff.
+        """
+        POST ``payload`` to a sidecar endpoint with retry/backoff.
 
         Shared by ``/fetch`` (decoded into a :class:`FetchResult`) and
         ``/screenshot`` (PNG bytes). Retries transient sidecar failures
@@ -426,10 +433,14 @@ class RawArticle:
     peer_review_evidence: str = ""
     indexing_evidence: str = ""
     preprint_evidence: str = ""
+    is_retracted: bool = False
+    retraction_note: str = ""
+    cited_by_count: int = 0
 
 
 class BaseConnector:
-    """Base source connector for HTML-mode sources (browser sidecar transport).
+    """
+    Base source connector for HTML-mode sources (browser sidecar transport).
 
     HTML-mode connectors never make raw HTTP requests themselves: every fetch
     is proxied through a cloakbrowser sidecar service (see
@@ -466,7 +477,8 @@ class BaseConnector:
         return self._fetch_html(query, limit)
 
     def enrich_raw(self, raw: RawArticle) -> RawArticle | None:
-        """Enrich the raw source payload with parsed metadata.
+        """
+        Enrich the raw source payload with parsed metadata.
 
         Returns ``None`` to signal that the landing page is not a real article
         (e.g. an issue / table-of-contents page mixed into an upstream feed)
@@ -615,7 +627,8 @@ class BaseConnector:
         )
 
     def _raise_if_challenge_page(self, combined_page_text: str) -> None:
-        """Raise ``ConnectorFetchError`` when the landing page is a challenge.
+        """
+        Raise ``ConnectorFetchError`` when the landing page is a challenge.
 
         Factored out of :meth:`enrich_raw` so the branch stays out of that
         method's cyclomatic-complexity budget.
@@ -628,7 +641,8 @@ class BaseConnector:
             raise ConnectorFetchError(msg)
 
     def _is_non_article_landing_page(self, soup: BeautifulSoup, url: str) -> bool:
-        """Return ``True`` when the landing page is not a real article.
+        """
+        Return ``True`` when the landing page is not a real article.
 
         Sources whose upstream feed mixes issue / table-of-contents pages with
         articles set :attr:`_NON_ARTICLE_LANDING_META` to the Highwire/Dublin-
@@ -649,7 +663,8 @@ class BaseConnector:
 
     @classmethod
     def _looks_like_challenge_page(cls, text: str) -> bool:
-        """Detect a residual Cloudflare or Anubis challenge/block page.
+        """
+        Detect a residual Cloudflare or Anubis challenge/block page.
 
         The browser sidecar solves JS challenges in a real Chromium, so a
         well-behaved source returns its article body. This detector is the
@@ -767,7 +782,8 @@ class BaseConnector:
         *,
         ocr_language: str = "eng",
     ) -> str:
-        """Fetch a text resource (HTML/XML/RSS/JSON) via the browser sidecar.
+        """
+        Fetch a text resource (HTML/XML/RSS/JSON) via the browser sidecar.
 
         PDF responses are detected by URL/content-type/magic bytes and routed
         through the PDF text extractor. A residual challenge page — the sidecar
@@ -820,7 +836,8 @@ class BaseConnector:
         return self._extract_from_html(query, soup, limit)
 
     def _request_json(self, url: str) -> dict:
-        """Fetch a JSON resource via the browser sidecar and parse it.
+        """
+        Fetch a JSON resource via the browser sidecar and parse it.
 
         Transient transport failures (sidecar 502/504, network) are retried by
         ``BrowserTransport``; a payload that is not a JSON object once decoded
@@ -878,7 +895,8 @@ class BaseConnector:
         return records
 
     def _build_raw_from_json_ld_record(self, record: dict) -> RawArticle | None:
-        """Build a RawArticle from a single JSON-LD record dict.
+        """
+        Build a RawArticle from a single JSON-LD record dict.
 
         Returns None if the record is not article-like or lacks required fields.
         """
@@ -1047,8 +1065,12 @@ class BaseConnector:
         peer_review_evidence: str = "",
         indexing_evidence: str = "",
         preprint_evidence: str = "",
+        is_retracted: bool = False,
+        retraction_note: str = "",
+        cited_by_count: int = 0,
     ) -> RawArticle:
-        """Build a RawArticle instance.
+        """
+        Build a RawArticle instance.
 
         ``language`` overrides the profile default when non-empty, so a
         connector that can infer the per-record language (e.g. CiNii, whose
@@ -1076,6 +1098,9 @@ class BaseConnector:
             peer_review_evidence=peer_review_evidence,
             indexing_evidence=indexing_evidence,
             preprint_evidence=preprint_evidence,
+            is_retracted=is_retracted,
+            retraction_note=retraction_note,
+            cited_by_count=cited_by_count,
         )
 
     @staticmethod
@@ -1086,7 +1111,8 @@ class BaseConnector:
 
     @staticmethod
     def _extract_year(text: str) -> int | None:
-        """Extract the most plausible publication year from text.
+        """
+        Extract the most plausible publication year from text.
 
         Scans every ``(19|20)xx`` match and returns the most recent one within
         ``[MIN_PUBLICATION_YEAR, current_max_publication_year()]``. Returning
@@ -1147,7 +1173,8 @@ class BaseConnector:
 
     @classmethod
     def _matches_query(cls, text: str, query: str) -> bool:
-        """Return True when every query token appears in ``text``.
+        """
+        Return True when every query token appears in ``text``.
 
         Used to filter OAI-PMH harvests (which cannot keyword-search) down to
         records plausibly relevant to the query, so that sources without a
@@ -1163,7 +1190,8 @@ class BaseConnector:
 
     @staticmethod
     def _extract_meta_content(soup: BeautifulSoup, keys: list[str]) -> str:
-        """Extract the first non-empty meta content, respecting key priority.
+        """
+        Extract the first non-empty meta content, respecting key priority.
 
         The ``keys`` list is ordered by preference (e.g. ``citation_journal_title``
         before ``og:site_name``). Iterating keys in list order — not the DOM order
@@ -1234,7 +1262,8 @@ class BaseConnector:
         rec: dict,
         default_journal: str,
     ) -> RawArticle | None:
-        """Build a RawArticle from a single OpenAlex API record.
+        """
+        Build a RawArticle from a single OpenAlex API record.
 
         Returns None if the record lacks required fields.
         """
@@ -1281,7 +1310,8 @@ class BaseConnector:
 
     @staticmethod
     def _openalex_authors(authorships: object) -> tuple[str, ...]:
-        """Extract ordered author display names from an OpenAlex record.
+        """
+        Extract ordered author display names from an OpenAlex record.
 
         ``authorships`` is a list of ``{"author": {"display_name": ...}}``;
         names are deduplicated in order so a repeated author (e.g. listed twice
@@ -1316,7 +1346,8 @@ class BaseConnector:
 
 
 class AsyncApiConnector(BaseConnector):
-    """Base connector for API-mode sources using aiohttp.
+    """
+    Base connector for API-mode sources using aiohttp.
 
     API-mode sources expose explicit JSON endpoints that do not sit behind a
     JS challenge, so they bypass the browser sidecar and talk to the upstream
@@ -1332,7 +1363,8 @@ class AsyncApiConnector(BaseConnector):
         return asyncio.run(self._fetch_async(query, limit))
 
     async def _fetch_async(self, query: str, limit: int) -> list[RawArticle]:
-        """Async fetch using aiohttp with transient-failure retry.
+        """
+        Async fetch using aiohttp with transient-failure retry.
 
         Transient network/timeout failures are retried with backoff before
         degrading the whole source. aiohttp's ``ClientTimeout`` timer raises

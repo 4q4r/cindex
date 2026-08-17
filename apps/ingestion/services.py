@@ -50,7 +50,8 @@ class IngestionService:
 
     @classmethod
     def get_source_health_map(cls) -> dict[str, str]:
-        """Return a map of source_key -> health status for all known sources.
+        """
+        Return a map of source_key -> health status for all known sources.
 
         Status values: ``healthy``, ``circuit_open``, ``never_succeeded``,
         ``never_queried``.
@@ -144,6 +145,17 @@ class IngestionService:
         """Persist a RawArticle as an Article with authors and eligibility."""
         source = cls._upsert_source(raw.source_key)
         journal, _ = Journal.objects.get_or_create(name=raw.journal or raw.source_key)
+        # A retraction is irreversible: a connector that is unaware of a
+        # retraction must never clear a flag another source already set, so
+        # the persisted flag (and notice) is the OR of the new record and the
+        # stored one.
+        existing = (
+            Article.objects.filter(doi=raw.doi)
+            .values_list("is_retracted", "retraction_note")
+            .first()
+        )
+        existing_retracted = bool(existing[0]) if existing else False
+        existing_note = (existing[1] or "") if existing else ""
         article, _ = Article.objects.update_or_create(
             doi=raw.doi,
             defaults={
@@ -161,6 +173,9 @@ class IngestionService:
                 "peer_review_evidence": raw.peer_review_evidence,
                 "indexing_evidence": raw.indexing_evidence,
                 "preprint_evidence": raw.preprint_evidence,
+                "is_retracted": raw.is_retracted or existing_retracted,
+                "retraction_note": raw.retraction_note or existing_note,
+                "cited_by_count": raw.cited_by_count,
             },
         )
         if raw.doi:
@@ -219,7 +234,8 @@ class IngestionService:
         initial_failed: Iterable[str] | None = None,
         resume_completed_source_keys: Iterable[str] | None = None,
     ) -> list[Article]:
-        """Ingest articles for *query* from selected sources.
+        """
+        Ingest articles for *query* from selected sources.
 
         Translates the query to each source's primary language before fetching.
         """

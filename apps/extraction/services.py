@@ -1,4 +1,5 @@
-"""Sync façade driving PERELMAN quote extraction for a batch of search results.
+"""
+Sync façade driving PERELMAN quote extraction for a batch of search results.
 
 :class:`QuoteExtractionService.enrich` is the single entry point the celery
 ``run_search_job`` task calls between the index search and the result update.
@@ -57,7 +58,8 @@ class QuoteExtractionService:
 
     @classmethod
     def enrich(cls, results: list[dict]) -> None:
-        """Fill ``results[i]["quotes"]`` for every result (never raises).
+        """
+        Fill ``results[i]["quotes"]`` for every result (never raises).
 
         Cache hits are served from ``ArticleQuotes``; uncached articles are
         extracted via the PERELMAN agent loop (published → frozen + cached,
@@ -131,7 +133,8 @@ class QuoteExtractionService:
         articles: dict[int, Article],
         cache: dict[int, list],
     ) -> list[_PendingItem]:
-        """Serve cache hits; claim published rows; collect items to extract.
+        """
+        Serve cache hits; claim published rows; collect items to extract.
 
         Published uncached rows are claimed via ``get_or_create`` (anti-dup
         across concurrent jobs). A row already ``pending`` is another job's
@@ -158,7 +161,8 @@ class QuoteExtractionService:
 
     @staticmethod
     def _claim_published(article: Article) -> ArticleQuotes | None:
-        """Claim a published article's row; return ``None`` if already pending.
+        """
+        Claim a published article's row; return ``None`` if already pending.
 
         ``get_or_create`` with ``status="pending"`` defaults claims a fresh
         row atomically. An existing ``pending`` row is another job's claim
@@ -197,7 +201,8 @@ class QuoteExtractionService:
         results: list[dict],
         cfg: LLMConfig,
     ) -> None:
-        """Write extracted quotes back to results and persist published rows.
+        """
+        Write extracted quotes back to results and persist published rows.
 
         Published: non-empty → freeze to ``.md`` + mark ``done``; empty →
         ``no_text`` (retryable next search); a persistence exception →
@@ -246,7 +251,8 @@ class QuoteExtractionService:
 
 
 class _PendingItem:
-    """One article awaiting extraction + post-extraction persistence.
+    """
+    One article awaiting extraction + post-extraction persistence.
 
     ``row`` is the claimed ``ArticleQuotes`` row for published articles
     (``None`` for preprints, which are never persisted). ``result_index`` is

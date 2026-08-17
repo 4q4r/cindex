@@ -1,4 +1,5 @@
-"""Thin OpenAI-compatible chat-completions client on aiohttp (no httpx).
+"""
+Thin OpenAI-compatible chat-completions client on aiohttp (no httpx).
 
 The PERELMAN extractor drives vision-capable LLMs through this single
 transport. It mirrors the canonical Exa connector pattern
@@ -89,7 +90,8 @@ _JITTER_FRACTION = 0.25
 
 
 class LLMRateLimitedError(ConnectorFetchError):
-    """HTTP 429 from the upstream — retryable with backoff unless terminal.
+    """
+    HTTP 429 from the upstream — retryable with backoff unless terminal.
 
     Rate limits (Z.AI code 1302 concurrency / 1303 frequency / 1305 server
     overload) are transient: the request is rejected not because it is
@@ -118,7 +120,8 @@ class LLMRateLimitedError(ConnectorFetchError):
 
 
 def _parse_retry_after(header: str | None) -> float | None:
-    """Parse an HTTP ``Retry-After`` header as seconds, or ``None``.
+    """
+    Parse an HTTP ``Retry-After`` header as seconds, or ``None``.
 
     Only the delta-seconds form is handled; the HTTP-date form is intentionally
     not parsed (parsing it robustly needs an HTTP-date parser we do not have
@@ -134,7 +137,8 @@ def _parse_retry_after(header: str | None) -> float | None:
 
 
 def _parse_zai_error_code(text: str) -> str | None:
-    """Best-effort parse of the Z.AI ``error.code`` from a 429 body, or ``None``.
+    """
+    Best-effort parse of the Z.AI ``error.code`` from a 429 body, or ``None``.
 
     Z.AI returns ``{"error":{"code":"1305","message":"..."}}``. The code drives
     the retry decision (transient vs terminal + backoff base), so it is parsed
@@ -156,7 +160,8 @@ def _parse_zai_error_code(text: str) -> str | None:
 
 
 def _apply_jitter(delay: float) -> float:
-    """Add ±``_JITTER_FRACTION`` jitter to a computed backoff delay.
+    """
+    Add ±``_JITTER_FRACTION`` jitter to a computed backoff delay.
 
     Returns 0.0 for a non-positive input. ``Retry-After`` is honoured exactly
     and is NOT jittered (the server's hint is the fastest recovery path per
@@ -171,7 +176,8 @@ def _apply_jitter(delay: float) -> float:
 
 
 class OpenAICompatibleClient:
-    """Minimal async client for an OpenAI-compatible ``/chat/completions`` API.
+    """
+    Minimal async client for an OpenAI-compatible ``/chat/completions`` API.
 
     Constructed with a resolved :class:`~apps.extraction.config.LLMConfig`.
     A missing API key fails loudly in ``__init__`` (matching the Exa
@@ -180,7 +186,8 @@ class OpenAICompatibleClient:
     """
 
     def __init__(self, cfg: LLMConfig) -> None:
-        """Store the resolved config, failing loudly on a missing API key.
+        """
+        Store the resolved config, failing loudly on a missing API key.
 
         A client-side request-frequency gate is initialized from
         ``cfg.min_request_interval``: successive ``chat`` calls are spaced at
@@ -208,7 +215,8 @@ class OpenAICompatibleClient:
         tool_choice: str | dict | None = None,
         extra_body_override: dict | None = None,
     ) -> dict:
-        """Send one chat-completions request and return the assistant message.
+        """
+        Send one chat-completions request and return the assistant message.
 
         Parameters mirror the OpenAI chat-completions body. ``messages`` are
         forwarded verbatim (multimodal content parts included).
@@ -256,7 +264,8 @@ class OpenAICompatibleClient:
         body: dict,
         timeout: float,  # noqa: ASYNC109  # upstream request timeout
     ) -> dict:
-        """POST with bounded retry on transient (429 / network) failures.
+        """
+        POST with bounded retry on transient (429 / network) failures.
 
         The retry budget is per error code, so a longer-running transient
         condition does not collapse into the short 1302/1303 budget:
@@ -321,7 +330,8 @@ class OpenAICompatibleClient:
                 await asyncio.sleep(0.6 * attempt)
 
     async def _enforce_rate_limit(self) -> None:
-        """Space successive request starts by at least ``_min_interval`` seconds.
+        """
+        Space successive request starts by at least ``_min_interval`` seconds.
 
         Holds the rate lock only long enough to measure the gap, sleep the
         remaining time, and stamp the new request start — the lock is released
@@ -345,7 +355,8 @@ class OpenAICompatibleClient:
         body: dict,
         timeout: float,  # noqa: ASYNC109  # upstream request timeout
     ) -> dict:
-        """POST ``body`` and return ``choices[0].message``.
+        """
+        POST ``body`` and return ``choices[0].message``.
 
         ``ClientSession(trust_env=True)`` makes aiohttp honour ``https_proxy``
         / ``HTTPS_PROXY`` (ignored by default) so the request routes through

@@ -1,4 +1,5 @@
-"""Collect multimodal ContentParts (text + images) for a PERELMAN extraction.
+"""
+Collect multimodal ContentParts (text + images) for a PERELMAN extraction.
 
 The PERELMAN agent does not work from dry text alone: per the user's multimodal
 requirement it receives rendered **PDF pages** (when the source is a document)
@@ -69,7 +70,8 @@ _EXT_TO_MIME: dict[str, str] = {
 
 @dataclass(frozen=True, slots=True)
 class ImageInput:
-    """An image gathered for the LLM, with its source pixel dimensions.
+    """
+    An image gathered for the LLM, with its source pixel dimensions.
 
     ``width`` / ``height`` are the true source pixel dims (decoded via
     ``pymupdf.Pixmap``) — the extractor tells the LLM these so crop/zoom
@@ -99,7 +101,8 @@ class ContentParts:
 
 
 def _extract_pdf_url_from_soup(soup: BeautifulSoup, base_url: str) -> str:
-    """Standalone PDF-URL extraction from a landing page's parsed HTML.
+    """
+    Standalone PDF-URL extraction from a landing page's parsed HTML.
 
     Mirrors :meth:`BaseConnector._extract_pdf_url` but without a connector
     instance — the meta-key and anchor scans resolve relative hrefs against
@@ -122,7 +125,8 @@ def _extract_pdf_url_from_soup(soup: BeautifulSoup, base_url: str) -> str:
 
 
 def _figure_urls(soup: BeautifulSoup, base_url: str) -> list[str]:
-    """Collect absolute figure image URLs from a landing page.
+    """
+    Collect absolute figure image URLs from a landing page.
 
     Selects ``figure img`` and bare ``img[src]`` elements, resolves relative
     ``src``/``data-src`` against ``base_url``, and keeps only png/jpeg/gif
@@ -148,7 +152,8 @@ def _figure_urls(soup: BeautifulSoup, base_url: str) -> list[str]:
 
 
 def _figure_mime(content_type: str, url: str) -> str | None:
-    """Return the image mime for a fetched figure, or ``None`` to skip it.
+    """
+    Return the image mime for a fetched figure, or ``None`` to skip it.
 
     A figure is accepted when its URL extension **or** response ``Content-Type``
     maps to png/jpeg/gif. WebP and unknown types return ``None`` (skipped).
@@ -162,7 +167,8 @@ def _figure_mime(content_type: str, url: str) -> str | None:
 
 
 def _decode_dims(data: bytes) -> tuple[int, int] | None:
-    """Decode raster ``data`` with pymupdf and return ``(width, height)``.
+    """
+    Decode raster ``data`` with pymupdf and return ``(width, height)``.
 
     Returns ``None`` when pymupdf cannot decode the bytes (e.g. a WebP payload
     that slipped through, or a truncated response) so the caller can skip the
@@ -176,7 +182,8 @@ def _decode_dims(data: bytes) -> tuple[int, int] | None:
 
 
 class ArticleContentFetcher:
-    """Gather :class:`ContentParts` (text + images) for one article.
+    """
+    Gather :class:`ContentParts` (text + images) for one article.
 
     Constructed with the shared :class:`BrowserTransport` and a resolved
     :class:`LLMConfig`. ``fetch`` is sync and never raises: a missing PDF,
@@ -218,7 +225,8 @@ class ArticleContentFetcher:
         self,
         article: Article,
     ) -> tuple[str, list[ImageInput]]:
-        """Gather images (and any PDF-extracted text) from the article URL.
+        """
+        Gather images (and any PDF-extracted text) from the article URL.
 
         Returns ``(extra_text, images)``. PDF path: rasterize up to
         ``max_pdf_pages`` pages and extract their text. HTML path: a full-page
@@ -379,7 +387,8 @@ class ArticleContentFetcher:
             return None
 
     def _safe_screenshot(self, url: str) -> bytes | None:
-        """Screenshot ``url`` via the sidecar, returning ``None`` on failure.
+        """
+        Screenshot ``url`` via the sidecar, returning ``None`` on failure.
 
         A missing ``/screenshot`` route (older sidecar) surfaces as a 404
         :class:`ConnectorFetchError` and degrades to "figures only" — the

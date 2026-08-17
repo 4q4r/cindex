@@ -1,4 +1,5 @@
-"""pymupdf-backed image manipulation tools for the PERELMAN agent loop.
+"""
+pymupdf-backed image manipulation tools for the PERELMAN agent loop.
 
 The vision LLM inspects rendered PDF pages / screenshots / figure images and
 may call ``zoom`` / ``crop`` / ``rotate`` to examine a small region (a formula,
@@ -30,7 +31,8 @@ if TYPE_CHECKING:
 
 
 class ToolError(Exception):
-    """Raised when a tool call cannot be satisfied (bad region, unknown id).
+    """
+    Raised when a tool call cannot be satisfied (bad region, unknown id).
 
     The agent loop catches this and returns it to the LLM as a tool error
     message so the loop can continue (the model retries or gives up on that
@@ -53,7 +55,8 @@ _MIME_TO_FILETYPE: dict[str, str] = {
 
 @dataclass(frozen=True, slots=True)
 class ImageEntry:
-    """A stored image available to the agent loop.
+    """
+    A stored image available to the agent loop.
 
     ``width`` / ``height`` are the **source pixel dimensions** the LLM was told
     when the image was registered — crop regions and zoom factors are expressed
@@ -100,7 +103,8 @@ class ImageRegistry:
         return self._entries.get(image_id)
 
     def data_uri(self, image_id: str) -> str:
-        """Return a ``data:{mime};base64,...`` URI for ``image_id``.
+        """
+        Return a ``data:{mime};base64,...`` URI for ``image_id``.
 
         Raises :class:`ToolError` if the id is unknown.
         """
@@ -131,7 +135,8 @@ def _open_document(entry: ImageEntry) -> pymupdf.Document:
 
 
 def _point_scale(entry: ImageEntry, page: pymupdf.Page) -> float:
-    """Source-pixel → pymupdf-point scale for ``entry`` on ``page``.
+    """
+    Source-pixel → pymupdf-point scale for ``entry`` on ``page``.
 
     pymupdf opens a raster image as a 1-page document whose page rect is the
     source pixels scaled by 72/96 (0.75x), so a region expressed in source
@@ -151,7 +156,8 @@ def _rasterize(
     clip: pymupdf.Rect | None,
     max_long: int,
 ) -> pymupdf.Pixmap:
-    """Rasterize ``page`` so the output long side does not exceed ``max_long``.
+    """
+    Rasterize ``page`` so the output long side does not exceed ``max_long``.
 
     If the base ``matrix`` would produce a larger pixmap, it is scaled down
     proportionally (downscaling happens at rasterization time — pymupdf
@@ -173,7 +179,8 @@ def zoom(
     image_id: str,
     factor: float,
 ) -> tuple[bytes, str]:
-    """Zoom into ``image_id`` by ``factor`` (1.0 = original, 2.0 = 2x).
+    """
+    Zoom into ``image_id`` by ``factor`` (1.0 = original, 2.0 = 2x).
 
     Returns ``(jpeg_bytes, "image/jpeg")``. Raises :class:`ToolError` on an
     unknown id, unsupported mime, or non-positive factor.
@@ -207,7 +214,8 @@ def crop(
     image_id: str,
     region: dict,
 ) -> tuple[bytes, str]:
-    """Crop ``image_id`` to ``region`` (``{x, y, w, h}`` in source pixels).
+    """
+    Crop ``image_id`` to ``region`` (``{x, y, w, h}`` in source pixels).
 
     The crop is supersampled 2x for text legibility, then downscaled to
     ``max_image_dim`` if needed. Returns ``(png_bytes, "image/png")`` (PNG to
@@ -263,7 +271,8 @@ def rotate(
     image_id: str,
     degrees: int,
 ) -> tuple[bytes, str]:
-    """Rotate ``image_id`` by ``degrees`` (multiple of 90).
+    """
+    Rotate ``image_id`` by ``degrees`` (multiple of 90).
 
     The image is embedded into a 1-page PDF so pymupdf's PDF-page rotation
     applies (image-document pages do not support ``set_rotation``), then

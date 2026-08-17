@@ -1,4 +1,5 @@
-"""Cross-lingual query translation for scholarly search.
+"""
+Cross-lingual query translation for scholarly search.
 
 Uses deep-translator (GoogleTranslator, no API key) with MyMemory fallback.
 Translates short search queries (2-10 words) to target languages so each
@@ -59,7 +60,8 @@ _CACHE_MAXSIZE = 512
 
 
 def _detect_language(text: str) -> str:
-    """Return the heuristic language code for a short query string.
+    """
+    Return the heuristic language code for a short query string.
 
     Args:
         text: A short query string to classify.
@@ -84,7 +86,8 @@ def _detect_language(text: str) -> str:
 
 @lru_cache(maxsize=_CACHE_MAXSIZE)
 def translate_query(query: str, target_lang: str) -> str:
-    """Translate a short scholarly query to *target_lang*.
+    """
+    Translate a short scholarly query to *target_lang*.
 
     Uses GoogleTranslator (free, no key) with MyMemory fallback.
     Results are LRU-cached to avoid redundant API calls across search jobs.
@@ -139,7 +142,8 @@ def translate_query(query: str, target_lang: str) -> str:
 
 
 def get_source_query_language(source_key: str) -> str:
-    """Return the primary query language for a given source key.
+    """
+    Return the primary query language for a given source key.
 
     Args:
         source_key: The connector source key (e.g. ``"cinii"``, ``"hal"``).
@@ -152,7 +156,8 @@ def get_source_query_language(source_key: str) -> str:
 
 
 def translate_query_for_source(query: str, source_key: str) -> str:
-    """Translate *query* to the primary language of *source_key*.
+    """
+    Translate *query* to the primary language of *source_key*.
 
     Args:
         query: The original user query.
@@ -169,7 +174,8 @@ def translate_query_for_source(query: str, source_key: str) -> str:
 
 
 def expand_query_for_exa(query: str) -> dict[str, str]:
-    """Translate the query into all Exa target languages.
+    """
+    Translate the query into all Exa target languages.
 
     Args:
         query: The original user query.
@@ -188,7 +194,8 @@ def expand_query_for_exa(query: str) -> dict[str, str]:
 
 
 def expand_search_terms(query: str) -> list[str]:
-    """Return deduplicated cross-lingual translations of *query*.
+    """
+    Return deduplicated cross-lingual translations of *query*.
 
     Used by SearchService to expand DB search beyond the original language.
 

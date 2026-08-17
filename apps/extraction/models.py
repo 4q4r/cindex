@@ -1,4 +1,5 @@
-"""Persistence models for PERELMAN quote extraction (per-article quote cache).
+"""
+Persistence models for PERELMAN quote extraction (per-article quote cache).
 
 ``ArticleQuotes`` is a OneToOne cache off :class:`apps.articles.models.Article`.
 A published article is processed exactly once (``status="done"``) and read from
@@ -25,7 +26,8 @@ STATUS_CHOICES = (
 
 
 class ArticleQuotes(models.Model):
-    """Per-article cache of PERELMAN-extracted verbatim quotes.
+    """
+    Per-article cache of PERELMAN-extracted verbatim quotes.
 
     The ``quotes`` JSONField holds a list of
     ``{"text", "location", "relevance", "rationale"}`` dicts. A row with

@@ -12,7 +12,8 @@ NON_WORD_RE = re.compile(r"[^\w]+", re.UNICODE)
 
 
 def normalize_scholarly_text(value: str, max_length: int | None = None) -> str:
-    """Normalize scholarly text for indexing and display.
+    """
+    Normalize scholarly text for indexing and display.
 
     Removes HTML tags and control characters, normalizes whitespace.
     Does NOT truncate or filter binary/PDF content — the reader handles that.

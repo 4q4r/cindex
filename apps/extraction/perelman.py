@@ -1,4 +1,5 @@
-"""PERELMAN-method multimodal quote extraction (query-agnostic, never raises).
+"""
+PERELMAN-method multimodal quote extraction (query-agnostic, never raises).
 
 Implements the agentic extraction at the core of the «система Перелмана»: a
 vision-capable LLM receives an article as **text plus images** (rendered PDF
@@ -81,7 +82,8 @@ _CONTROL_MAX = 0x1F
 
 
 def _lenient_json_loads(content: str) -> object | None:
-    r"""Tolerant JSON loader that escapes raw control chars inside string values.
+    r"""
+    Tolerant JSON loader that escapes raw control chars inside string values.
 
     Even with ``response_format={"type": "json_object"}`` the GLM vision model
     still emits a literal raw control character (typically 0x0A newline) inside
@@ -275,7 +277,8 @@ _RESUME_INSTRUCTION = (
 
 
 class PerelmanExtractor:
-    """Drive the PERELMAN agent loop for one article (never raises).
+    """
+    Drive the PERELMAN agent loop for one article (never raises).
 
     Constructed with a resolved LLM client, config, and a content fetcher.
     ``extract`` gathers multimodal content, runs the bounded tool-calling
@@ -321,7 +324,8 @@ class PerelmanExtractor:
         article: Article,
         reg: ImageRegistry,
     ) -> list[dict]:
-        """Assemble the system + multimodal user messages (no query).
+        """
+        Assemble the system + multimodal user messages (no query).
 
         Each gathered image is sent as an ``image_url`` part whose data URI is
         pulled from ``reg`` (the same registry the tool loop dispatches
@@ -377,7 +381,8 @@ class PerelmanExtractor:
         parts: ContentParts,
         article: Article,
     ) -> str:
-        """Run the bounded tool-calling loop, returning the final content string.
+        """
+        Run the bounded tool-calling loop, returning the final content string.
 
         ``reg`` must already contain every image referenced in the initial user
         message; tool-produced images are registered here under fresh ids. The
@@ -491,7 +496,8 @@ class PerelmanExtractor:
         reg: ImageRegistry,
         prior_turns: int,
     ) -> str:
-        """Resume in a fresh chat with memory; fall back to zoomed-history finalize.
+        """
+        Resume in a fresh chat with memory; fall back to zoomed-history finalize.
 
         The fresh-chat resume is primary (matches the OpenAI Agents SDK
         «compaction + fresh turn budget» pattern: a small, clean payload — the
@@ -516,7 +522,8 @@ class PerelmanExtractor:
         reg: ImageRegistry,
         prior_turns: int,
     ) -> str:
-        r"""Start a FRESH tool-free chat that resumes the exhausted extraction.
+        r"""
+        Start a FRESH tool-free chat that resumes the exhausted extraction.
 
         Builds a brand-new 2-message list (system + user) — NOT appended to the
         bloated tool-call history — so the model gets a clean turn budget and a
@@ -587,7 +594,8 @@ class PerelmanExtractor:
         return content if isinstance(content, str) else ""
 
     async def _force_finalize(self, messages: list[dict]) -> str:
-        r"""Force a tool-free final answer when the tool loop is exhausted.
+        r"""
+        Force a tool-free final answer when the tool loop is exhausted.
 
         Over-eager vision models (e.g. Z.AI's ``glm-4.6v-flash``) keep calling
         ``zoom`` / ``crop`` / ``rotate`` on every turn and never emit a final
@@ -658,7 +666,8 @@ class PerelmanExtractor:
         reg: ImageRegistry,
         messages: list[dict],
     ) -> None:
-        """Dispatch each tool call and append its result message.
+        """
+        Dispatch each tool call and append its result message.
 
         A successful image-producing tool (zoom/crop/rotate) registers the
         result under ``f"{image_id}-{tool}{n}"`` and returns it as an
@@ -738,7 +747,8 @@ class PerelmanExtractor:
         return f"{base}-{tool}{n}"
 
     def _parse(self, content: str) -> ExtractionResult:
-        r"""Parse the LLM's final JSON content into an :class:`ExtractionResult`.
+        r"""
+        Parse the LLM's final JSON content into an :class:`ExtractionResult`.
 
         Tolerates ```json fences and bare JSON. Two malformations reach here:
         (1) unescaped LaTeX backslashes (``\alpha``) — handled on the finalize
@@ -798,7 +808,8 @@ class PerelmanExtractor:
         self,
         articles: list[Article],
     ) -> list[ExtractionResult]:
-        """Extract for many articles concurrently with per-result isolation.
+        """
+        Extract for many articles concurrently with per-result isolation.
 
         Bounded by ``cfg.concurrency`` via a semaphore; one article's failure
         yields an empty :class:`ExtractionResult` for that slot (never raises).
