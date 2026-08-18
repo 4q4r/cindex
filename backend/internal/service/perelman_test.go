@@ -148,6 +148,45 @@ func TestPerelmanRetriesWithoutResponseFormatOnProvider400(t *testing.T) {
 	}
 }
 
+func TestPerelmanAgentLoopDispatchesImageTool(t *testing.T) {
+	var calls int
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls++
+		var body map[string]any
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			t.Fatal(err)
+		}
+		if calls == 1 {
+			if _, ok := body["tools"]; !ok {
+				t.Error("first request did not include tools")
+			}
+			_, _ = io.WriteString(w, `{"choices":[{"message":{"role":"assistant","content":null,"tool_calls":[{"id":"call-1","type":"function","function":{"name":"zoom","arguments":"{\"image_id\":\"page-0\",\"factor\":2}"}}]}}]}`)
+			return
+		}
+		_, _ = io.WriteString(w, `{"choices":[{"message":{"role":"assistant","content":"{\"tldr\":\"vision ok\",\"quotes\":[],\"formulas\":[],\"figures\":[]}"}}]}`)
+	}))
+	defer server.Close()
+	client, err := NewLLMClient(LLMConfig{BaseURL: server.URL, APIKey: "secret", Model: "model"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	extractor := NewPerelman(client, PerelmanConfig{MaxToolTurns: 1})
+	registry := newImageRegistry()
+	registry.add(perelmanImage{ID: "page-0", Data: testPNG(t, 2, 1), MIME: "image/png", Width: 2, Height: 1})
+	messages := []ChatMessage{{Role: "user", Content: "inspect"}}
+	message, err := extractor.agentLoop(context.Background(), messages, registry, true)
+	if err != nil || calls != 2 {
+		t.Fatalf("message=%#v calls=%d err=%v", message, calls, err)
+	}
+	if message["content"] != "{\"tldr\":\"vision ok\",\"quotes\":[],\"formulas\":[],\"figures\":[]}" {
+		t.Fatalf("final content = %#v", message["content"])
+	}
+	zoomed, err := registry.get("page-0-tool-1")
+	if err != nil || zoomed.Width != 4 {
+		t.Fatalf("zoomed image = %#v, err=%v", zoomed, err)
+	}
+}
+
 func TestPerelmanExtractMalformedContentAndProviderError(t *testing.T) {
 	t.Parallel()
 

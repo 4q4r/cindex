@@ -5,9 +5,10 @@ A small FastAPI service that wraps [cloakbrowser](https://pypi.org/project/cloak
 HTML/XML/JSON/RSS from sources protected by JS challenges (BunnyCDN Shield,
 Cloudflare Turnstile, FingerprintJS) without importing a browser stack.
 
-The worker calls `POST /fetch` and `POST /pdf-text` over the internal docker
-network. This service owns a single persistent Chromium context whose profile
-keeps challenge cookies warm across requests.
+The worker calls `POST /fetch`, `POST /screenshot`, `POST /pdf-text`, and
+`POST /pdf-pages` over the internal docker network. This service owns a single
+persistent Chromium context whose profile keeps challenge cookies warm across
+requests.
 
 ## Architecture
 
@@ -106,6 +107,25 @@ Response:
 Malformed base64 and unsupported OCR language values return `422`. Invalid or
 unreadable PDF documents return an empty `text` value, matching connector
 degradation behavior.
+
+### `POST /pdf-pages`
+
+Render a bounded number of PDF pages as inline PNG payloads for the PERELMAN
+vision loop. Rendering uses the sidecar's existing pymupdf runtime and never
+writes to a shared filesystem.
+
+```json
+{
+  "body": "JVBERi0xLjQK...",
+  "ocr_language": "eng",
+  "max_pages": 8,
+  "dpi": 144
+}
+```
+
+The response contains `pages[]` entries with `id`, base64 `body`, pixel
+dimensions, and page text, plus a combined `text` field. `max_pages` is capped
+at 32, `dpi` at 300, and PDF bytes at the same 32 MiB limit as `/pdf-text`.
 
 ### `GET /healthz`
 

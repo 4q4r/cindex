@@ -32,6 +32,12 @@ type Config struct {
 		Concurrency     int
 		RequestInterval time.Duration
 		MaxInputChars   int
+		MaxToolTurns    int
+		MaxPDFPages     int
+		PDFDPI          int
+		MaxImages       int
+		ImageDetail     string
+		MaxImageDim     int
 		ExtraBody       map[string]any
 	}
 
@@ -79,6 +85,12 @@ func Load() (*Config, error) {
 	c.LLM.Concurrency = intOrDefault("CINDEX_LLM_CONCURRENCY", 4)
 	c.LLM.RequestInterval = secondsOrDefault("CINDEX_LLM_MIN_REQUEST_INTERVAL", 0)
 	c.LLM.MaxInputChars = intOrDefault("CINDEX_LLM_MAX_INPUT_CHARS", 12000)
+	c.LLM.MaxToolTurns = intOrDefault("CINDEX_LLM_MAX_TOOL_TURNS", 6)
+	c.LLM.MaxPDFPages = intOrDefault("CINDEX_LLM_MAX_PDF_PAGES", 8)
+	c.LLM.PDFDPI = intOrDefault("CINDEX_LLM_PDF_DPI", 144)
+	c.LLM.MaxImages = intOrDefault("CINDEX_LLM_MAX_IMAGES", 8)
+	c.LLM.ImageDetail = envOrDefault("CINDEX_LLM_IMAGE_DETAIL", "high")
+	c.LLM.MaxImageDim = intOrDefault("CINDEX_LLM_MAX_IMAGE_DIM", 4096)
 	c.LLM.ExtraBody = jsonObjectOrDefault("CINDEX_LLM_EXTRA_BODY")
 
 	c.Search.DefaultFreshnessDays = intOrDefault("CINDEX_SEARCH_DEFAULT_FRESHNESS_DAYS", 14)

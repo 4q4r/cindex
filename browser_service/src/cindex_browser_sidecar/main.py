@@ -1,6 +1,6 @@
 """FastAPI application — the browser sidecar HTTP surface.
 
-Exposes ``POST /fetch`` (forwarded to the persistent cloakbrowser context) and
+Exposes browser fetch/screenshot routes plus PDF text/page rendering and
 ``GET /healthz``. The browser pool is created once in the lifespan and injected
 into the endpoint via FastAPI's dependency system so tests can override it
 without touching the real browser.
@@ -24,10 +24,13 @@ from cindex_browser_sidecar.browser_pool import BrowserPool, BrowserPoolError
 from cindex_browser_sidecar.models import (
     FetchRequest,
     FetchResponse,
+    PDFPagesRequest,
+    PDFPagesResponse,
     PDFTextRequest,
     PDFTextResponse,
     ScreenshotRequest,
 )
+from cindex_browser_sidecar.pdf_pages import render_pdf_pages
 from cindex_browser_sidecar.pdf_text import extract_pdf_text
 
 if TYPE_CHECKING:
@@ -53,6 +56,7 @@ PDF_TEXT_TIMEOUT_SECONDS = 120
 
 _pool: BrowserPool | None = None
 _pdf_text_semaphore = asyncio.Semaphore(2)
+_pdf_pages_semaphore = asyncio.Semaphore(2)
 
 
 def create_pool() -> BrowserPool:
@@ -221,6 +225,30 @@ async def pdf_text(payload: PDFTextRequest) -> PDFTextResponse:
         ocr_language=payload.ocr_language,
     )
     return PDFTextResponse(text=text)
+
+
+@app.post(
+    "/pdf-pages",
+    response_model=PDFPagesResponse,
+    summary="Rasterize bounded PDF pages for vision extraction",
+)
+async def pdf_pages(payload: PDFPagesRequest) -> PDFPagesResponse:
+    """Render PDF pages as inline PNGs and include their native text."""
+    try:
+        pdf_bytes = base64.b64decode(payload.body, validate=True)
+    except (binascii.Error, ValueError) as exc:
+        raise HTTPException(status_code=422, detail="body is not valid base64") from exc
+    if len(pdf_bytes) > MAX_PDF_BYTES:
+        raise HTTPException(status_code=413, detail="PDF exceeds size limit")
+    async with _pdf_pages_semaphore:
+        pages, text = await asyncio.to_thread(
+            render_pdf_pages,
+            pdf_bytes,
+            max_pages=payload.max_pages,
+            dpi=payload.dpi,
+        )
+    logger.info("pdf_pages_ok", pdf_bytes=len(pdf_bytes), pages=len(pages))
+    return PDFPagesResponse(pages=pages, text=text)
 
 
 def main() -> None:

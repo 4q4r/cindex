@@ -8,6 +8,7 @@ import pymupdf
 from fastapi.testclient import TestClient
 
 from cindex_browser_sidecar import main
+from cindex_browser_sidecar.pdf_pages import render_pdf_pages
 from cindex_browser_sidecar.pdf_text import extract_pdf_text
 
 
@@ -49,6 +50,40 @@ def test_pdf_text_endpoint(monkeypatch) -> None:
     assert response.status_code == 200
     assert response.json() == {"text": "extracted text"}
     assert seen == {"body": b"%PDF-test", "language": "rus"}
+
+
+def test_render_pdf_pages() -> None:
+    pages, text = render_pdf_pages(_text_pdf("Vision page"), max_pages=2, dpi=72)
+    assert text == "Vision page"
+    assert len(pages) == 1
+    assert pages[0]["id"] == "page-0"
+    assert pages[0]["body"]
+    assert pages[0]["width"] > 0
+    assert pages[0]["height"] > 0
+
+
+def test_pdf_pages_endpoint(monkeypatch) -> None:
+    monkeypatch.setattr(
+        main,
+        "render_pdf_pages",
+        lambda body, *, max_pages, dpi: (
+            [{"id": "page-0", "body": "png", "width": 1, "height": 1}],
+            "text",
+        ),
+    )
+    client = TestClient(main.app)
+    response = client.post(
+        "/pdf-pages",
+        json={
+            "body": base64.b64encode(b"%PDF-test").decode("ascii"),
+            "max_pages": 2,
+            "dpi": 72,
+        },
+    )
+    client.close()
+    assert response.status_code == 200
+    assert response.json()["text"] == "text"
+    assert response.json()["pages"][0]["id"] == "page-0"
 
 
 def test_pdf_text_rejects_invalid_base64() -> None:
