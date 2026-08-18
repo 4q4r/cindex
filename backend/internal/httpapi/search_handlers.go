@@ -89,6 +89,7 @@ func NewAPI(
 		logger.Warn("PERELMAN configuration incomplete; using cache only")
 	}
 	if cfg.LLM.BaseURL != "" && cfg.LLM.APIKey != "" && cfg.LLM.Model != "" {
+		browser := connector.NewBrowserTransport(cfg.BrowserURL)
 		client, err := service.NewLLMClient(service.LLMConfig{
 			BaseURL: cfg.LLM.BaseURL, APIKey: cfg.LLM.APIKey, Model: cfg.LLM.Model,
 			Timeout: cfg.LLM.Timeout, Temperature: cfg.LLM.Temperature,
@@ -101,7 +102,10 @@ func NewAPI(
 				Articles: a.articles, Quotes: a.quotes, Sources: a.sources,
 				Perelman: service.NewPerelman(client, service.PerelmanConfig{
 					MaxQuotes: cfg.LLM.MaxQuotes, MaxInputChars: cfg.LLM.MaxInputChars,
-				}),
+					MaxToolTurns: cfg.LLM.MaxToolTurns, MaxPDFPages: cfg.LLM.MaxPDFPages,
+					PDFDPI: cfg.LLM.PDFDPI, MaxImages: cfg.LLM.MaxImages,
+					ImageDetail: cfg.LLM.ImageDetail, MaxImageDim: cfg.LLM.MaxImageDim,
+				}, browser),
 				LocalStore: service.NewLocalStore(cfg.ArticlesDir), Model: cfg.LLM.Model,
 				Concurrency: cfg.LLM.Concurrency, Logger: logger,
 			}

@@ -76,6 +76,32 @@ class PDFTextResponse(BaseModel):
     text: str
 
 
+class PDFPagesRequest(PDFTextRequest):
+    """Base64 PDF bytes plus bounded page-rendering options."""
+
+    max_pages: int = Field(default=8, ge=1, le=32)
+    dpi: int = Field(default=144, ge=72, le=300)
+
+
+class PDFPage(BaseModel):
+    """One rasterized PDF page for a multimodal extraction."""
+
+    id: str
+    body: str
+    content_type: str = "image/png"
+    encoding: str = "base64"
+    width: int
+    height: int
+    text: str = ""
+
+
+class PDFPagesResponse(BaseModel):
+    """Bounded rasterized PDF pages and their native text."""
+
+    pages: list[PDFPage]
+    text: str
+
+
 class FetchResponse(BaseModel):
     """The upstream response returned to the worker.
 

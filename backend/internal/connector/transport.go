@@ -268,6 +268,7 @@ func (t *Transport) getTextOnce(ctx context.Context, sourceKey, u, accept string
 type Page struct {
 	Body        string
 	ContentType string
+	Encoding    string
 }
 
 // BrowserTransport talks to the browser sidecar for HTML-mode connectors
@@ -311,6 +312,33 @@ type pdfTextRequest struct {
 
 type pdfTextResponse struct {
 	Text string `json:"text"`
+}
+
+type screenshotRequest struct {
+	URL     string  `json:"url"`
+	Timeout float64 `json:"timeout,omitempty"`
+}
+
+type pdfPagesRequest struct {
+	Body        string `json:"body"`
+	OCRLanguage string `json:"ocr_language"`
+	MaxPages    int    `json:"max_pages"`
+	DPI         int    `json:"dpi"`
+}
+
+type PDFPage struct {
+	ID          string `json:"id"`
+	Body        string `json:"body"`
+	ContentType string `json:"content_type"`
+	Encoding    string `json:"encoding"`
+	Width       int    `json:"width"`
+	Height      int    `json:"height"`
+	Text        string `json:"text"`
+}
+
+type PDFPages struct {
+	Pages []PDFPage `json:"pages"`
+	Text  string    `json:"text"`
 }
 
 // Fetch GETs a URL through the sidecar with retries and backoff (0.6*attempt),
@@ -358,6 +386,130 @@ func (b *BrowserTransport) PDFText(ctx context.Context, sourceKey string, body [
 		}
 	}
 	return "", lastErr
+}
+
+// Screenshot captures a full-page PNG through the browser sidecar.
+func (b *BrowserTransport) Screenshot(ctx context.Context, sourceKey, u string, timeoutSeconds float64) ([]byte, error) {
+	payload, err := json.Marshal(screenshotRequest{URL: u, Timeout: timeoutSeconds})
+	if err != nil {
+		return nil, retryErr(sourceKey, "marshal screenshot request: %v", err)
+	}
+	var lastErr error
+	for attempt := 1; attempt <= b.Attempts; attempt++ {
+		body, retry, err := b.postBinaryOnce(ctx, sourceKey, b.BaseURL+"/screenshot", payload)
+		if err == nil {
+			return body, nil
+		}
+		if !retry {
+			return nil, err
+		}
+		lastErr = err
+		if attempt < b.Attempts {
+			select {
+			case <-time.After(time.Duration(attempt) * 600 * time.Millisecond):
+			case <-ctx.Done():
+				return nil, ctx.Err()
+			}
+		}
+	}
+	return nil, lastErr
+}
+
+// PDFPages renders bounded PDF pages through the sidecar's pymupdf runtime.
+func (b *BrowserTransport) PDFPages(ctx context.Context, sourceKey string, body []byte, ocrLanguage string, maxPages, dpi int) (*PDFPages, error) {
+	payload, err := json.Marshal(pdfPagesRequest{
+		Body: base64.StdEncoding.EncodeToString(body), OCRLanguage: ocrLanguage,
+		MaxPages: maxPages, DPI: dpi,
+	})
+	if err != nil {
+		return nil, retryErr(sourceKey, "marshal PDF pages request: %v", err)
+	}
+	var decoded PDFPages
+	var lastErr error
+	for attempt := 1; attempt <= b.Attempts; attempt++ {
+		err = b.postJSONOnce(ctx, sourceKey, b.BaseURL+"/pdf-pages", payload, &decoded)
+		if err == nil {
+			return &decoded, nil
+		}
+		var fetchErr *FetchError
+		if errors.As(err, &fetchErr) {
+			return nil, err
+		}
+		lastErr = err
+		if attempt < b.Attempts {
+			select {
+			case <-time.After(time.Duration(attempt) * 600 * time.Millisecond):
+			case <-ctx.Done():
+				return nil, ctx.Err()
+			}
+		}
+	}
+	return nil, lastErr
+}
+
+func (b *BrowserTransport) postBinaryOnce(ctx context.Context, sourceKey, endpoint string, payload []byte) ([]byte, bool, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, bytes.NewReader(payload))
+	if err != nil {
+		return nil, true, retryErr(sourceKey, "build binary sidecar request: %v", err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := b.Client.Do(req)
+	if err != nil {
+		return nil, true, retryErr(sourceKey, "binary sidecar request failed: %v", err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+	data, err := io.ReadAll(io.LimitReader(resp.Body, 64<<20))
+	if err != nil {
+		return nil, true, retryErr(sourceKey, "read binary sidecar response: %v", err)
+	}
+	if resp.StatusCode == http.StatusBadGateway || resp.StatusCode == http.StatusGatewayTimeout {
+		return nil, true, retryErr(sourceKey, "sidecar HTTP %d", resp.StatusCode)
+	}
+	if resp.StatusCode >= http.StatusBadRequest {
+		return nil, false, fetchErr(sourceKey, "sidecar HTTP %d", resp.StatusCode)
+	}
+	var decoded fetchResponse
+	if err := json.Unmarshal(data, &decoded); err != nil {
+		return nil, false, fetchErr(sourceKey, "invalid binary sidecar JSON: %v", err)
+	}
+	if decoded.Status >= 400 {
+		return nil, false, fetchErr(sourceKey, "upstream HTTP %d", decoded.Status)
+	}
+	if decoded.Encoding != "base64" {
+		return nil, false, fetchErr(sourceKey, "binary sidecar response is not base64")
+	}
+	result, err := base64.StdEncoding.DecodeString(decoded.Body)
+	if err != nil {
+		return nil, true, retryErr(sourceKey, "decode binary sidecar response: %v", err)
+	}
+	return result, false, nil
+}
+
+func (b *BrowserTransport) postJSONOnce(ctx context.Context, sourceKey, endpoint string, payload []byte, out any) error {
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, bytes.NewReader(payload))
+	if err != nil {
+		return retryErr(sourceKey, "build sidecar request: %v", err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := b.Client.Do(req)
+	if err != nil {
+		return retryErr(sourceKey, "sidecar request failed: %v", err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+	data, err := io.ReadAll(io.LimitReader(resp.Body, 64<<20))
+	if err != nil {
+		return retryErr(sourceKey, "read sidecar response: %v", err)
+	}
+	if resp.StatusCode == http.StatusBadGateway || resp.StatusCode == http.StatusGatewayTimeout {
+		return retryErr(sourceKey, "sidecar HTTP %d", resp.StatusCode)
+	}
+	if resp.StatusCode >= http.StatusBadRequest {
+		return fetchErr(sourceKey, "sidecar HTTP %d", resp.StatusCode)
+	}
+	if err := json.Unmarshal(data, out); err != nil {
+		return retryErr(sourceKey, "invalid sidecar JSON: %v", err)
+	}
+	return nil
 }
 
 func (b *BrowserTransport) pdfTextOnce(ctx context.Context, sourceKey string, payload []byte) (string, bool, error) {
@@ -450,7 +602,7 @@ func (b *BrowserTransport) fetchOnce(ctx context.Context, sourceKey string, req 
 		}
 		return &Page{Body: string(decoded), ContentType: fr.ContentType}, nil
 	}
-	return &Page{Body: fr.Body, ContentType: fr.ContentType}, nil
+	return &Page{Body: fr.Body, ContentType: fr.ContentType, Encoding: fr.Encoding}, nil
 }
 
 // challengeMarkers are Cloudflare/Anubis bot-wall fingerprints (parity with

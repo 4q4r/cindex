@@ -10,16 +10,18 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/4q4r/cindex/backend/internal/connector"
 	"github.com/4q4r/cindex/backend/internal/domain"
 )
 
-const perelmanSystemPrompt = `You are a scientific literature analysis agent using the PERELMAN method. You receive an article as extracted TEXT. Your tasks:
+const perelmanSystemPrompt = `You are a scientific literature analysis agent using the PERELMAN method with vision. You receive an article as TEXT plus IMAGES (PDF pages, a full-page screenshot, and/or figure images). Your tasks:
 
 1. Elicit the article's core domain contribution — its claims, findings, key definitions, and methodology.
 2. Extract up to %d VERBATIM passages that best capture that contribution. Prioritize results, conclusions, and definitions. Quote text MUST be copied word-for-word from the article (you may include transcribed formulas inline). For each quote give its location (e.g. "abstract", "section 3", "page 2", "figure 1 caption") and a short rationale.
-3. Transcribe mathematical formulas present in the extracted text as LaTeX — use $...$ for inline and $$...$$ for display formulas — with their location and an optional caption.
-4. Convert tables and figure descriptions present in the extracted text to markdown where feasible. Mark the figure kind (figure | graph | table).
+3. Transcribe ALL mathematical formulas visible in the text or images as LaTeX — use $...$ for inline and $$...$$ for display formulas — with their location and an optional caption.
+4. Convert ALL tables, graphs, plots, and figures visible in the text or images to markdown where feasible. Mark the figure kind (figure | graph | table).
 5. Write the article's TLDR: a concise 1-2 sentence summary of the core contribution and main result, in Russian (the interface language).
+6. Use zoom, crop, and rotate when a formula, graph, or table is too small or sideways to read. Coordinates for crop are source pixels from the image index.
 
 Return a single JSON object with exactly this shape:
 {
@@ -35,6 +37,12 @@ If a region is unreadable even after zooming, transcribe what you can and note t
 type PerelmanConfig struct {
 	MaxQuotes     int
 	MaxInputChars int
+	MaxToolTurns  int
+	MaxPDFPages   int
+	PDFDPI        int
+	MaxImages     int
+	ImageDetail   string
+	MaxImageDim   int
 }
 
 // Formula is a formula transcribed as LaTeX.
@@ -67,19 +75,30 @@ func (r ExtractionResult) IsEmpty() bool {
 
 // Perelman performs text-first, query-agnostic PERELMAN extraction.
 type Perelman struct {
-	client *LLMClient
-	cfg    PerelmanConfig
+	client  *LLMClient
+	cfg     PerelmanConfig
+	browser *connector.BrowserTransport
 }
 
 // NewPerelman constructs a text-first PERELMAN extractor.
-func NewPerelman(client *LLMClient, cfg PerelmanConfig) *Perelman {
+func NewPerelman(client *LLMClient, cfg PerelmanConfig, browsers ...*connector.BrowserTransport) *Perelman {
 	if cfg.MaxQuotes <= 0 {
 		cfg.MaxQuotes = 3
 	}
 	if cfg.MaxInputChars <= 0 {
 		cfg.MaxInputChars = 12000
 	}
-	return &Perelman{client: client, cfg: cfg}
+	if cfg.MaxToolTurns <= 0 {
+		cfg.MaxToolTurns = 6
+	}
+	if cfg.ImageDetail == "" {
+		cfg.ImageDetail = "high"
+	}
+	var browser *connector.BrowserTransport
+	if len(browsers) > 0 {
+		browser = browsers[0]
+	}
+	return &Perelman{client: client, cfg: cfg, browser: browser}
 }
 
 // Extract sends title, abstract, and full text to the LLM without any search
@@ -89,18 +108,36 @@ func (p *Perelman) Extract(ctx context.Context, article domain.Article) (Extract
 	if p == nil || p.client == nil {
 		return ExtractionResult{}, errors.New("perelman: LLM client is required")
 	}
-	content := capRunes(articleInput(article), p.cfg.MaxInputChars)
+	content := perelmanContent{Text: articleInput(article)}
+	if p.browser != nil {
+		fetched, fetchErr := newPerelmanContentFetcher(p.browser, p.cfg).fetch(ctx, article)
+		if fetchErr == nil {
+			content = fetched
+		}
+	}
+	content.Text = capRunes(content.Text, p.cfg.MaxInputChars)
+	registry := newImageRegistry(p.cfg.MaxImageDim)
+	messageParts := []map[string]any{{"type": "text", "text": p.userPrompt(article, content)}}
+	for _, img := range content.Images {
+		registry.add(img)
+		uri, uriErr := registry.dataURI(img.ID)
+		if uriErr != nil {
+			continue
+		}
+		messageParts = append(messageParts, map[string]any{
+			"type":      "image_url",
+			"image_url": map[string]any{"url": uri, "detail": p.cfg.ImageDetail},
+		})
+	}
+	var userContent any = messageParts
+	if len(content.Images) == 0 {
+		userContent = capRunes(articleInput(article), p.cfg.MaxInputChars)
+	}
 	messages := []ChatMessage{
 		{Role: "system", Content: fmt.Sprintf(perelmanSystemPrompt, p.cfg.MaxQuotes)},
-		{Role: "user", Content: content},
+		{Role: "user", Content: userContent},
 	}
-	message, err := p.client.ChatWithExtra(ctx, messages, map[string]any{
-		"response_format": map[string]string{"type": "json_object"},
-	})
-	var httpErr *LLMHTTPError
-	if errors.As(err, &httpErr) && httpErr.StatusCode == http.StatusBadRequest {
-		message, err = p.client.Chat(ctx, messages)
-	}
+	message, err := p.agentLoop(ctx, messages, registry, len(content.Images) > 0)
 	if err != nil {
 		return ExtractionResult{}, err
 	}
@@ -113,6 +150,77 @@ func (p *Perelman) Extract(ctx context.Context, article domain.Article) (Extract
 		result.Quotes = result.Quotes[:p.cfg.MaxQuotes]
 	}
 	return limitExtractionResult(result), nil
+}
+
+func (p *Perelman) userPrompt(article domain.Article, content perelmanContent) string {
+	lines := []string{"ARTICLE TITLE: " + strings.TrimSpace(article.Title)}
+	if article.URL != "" {
+		lines = append(lines, "ARTICLE URL: "+article.URL)
+	}
+	lines = append(lines, "IMAGES (image_id, source pixels, kind):")
+	if len(content.Images) == 0 {
+		lines = append(lines, "- none")
+	} else {
+		for _, img := range content.Images {
+			lines = append(lines, fmt.Sprintf("- %s: %dx%d (%s)", img.ID, img.Width, img.Height, img.Kind))
+		}
+	}
+	return strings.Join(lines, "\n") + "\n\nARTICLE TEXT:\n" + content.Text
+}
+
+func (p *Perelman) agentLoop(ctx context.Context, messages []ChatMessage, registry *imageRegistry, multimodal bool) (AssistantMessage, error) {
+	for turn := 0; turn <= p.cfg.MaxToolTurns; turn++ {
+		extra := map[string]any{
+			"tools":       perelmanToolSchemas,
+			"tool_choice": "auto",
+		}
+		if !multimodal {
+			extra["response_format"] = map[string]string{"type": "json_object"}
+		}
+		message, err := p.client.ChatWithExtra(ctx, messages, extra)
+		if err != nil {
+			var httpErr *LLMHTTPError
+			if errors.As(err, &httpErr) && httpErr.StatusCode == http.StatusBadRequest {
+				return p.finalize(ctx, messages)
+			}
+			return nil, err
+		}
+		calls, ok := message["tool_calls"].([]any)
+		if !ok || len(calls) == 0 {
+			if content, ok := message["content"].(string); ok && strings.TrimSpace(content) != "" {
+				return message, nil
+			}
+			return p.finalize(ctx, messages)
+		}
+		messages = append(messages, ChatMessage{Role: "assistant", Content: message["content"], ToolCalls: calls})
+		for _, rawCall := range calls {
+			call, ok := rawCall.(map[string]any)
+			if !ok {
+				continue
+			}
+			function, _ := call["function"].(map[string]any)
+			name, _ := function["name"].(string)
+			argumentsText, _ := function["arguments"].(string)
+			var arguments map[string]any
+			if json.Unmarshal([]byte(argumentsText), &arguments) != nil {
+				arguments = map[string]any{}
+			}
+			result, toolErr := dispatchImageTool(registry, name, arguments)
+			if toolErr != nil {
+				result = "tool error: " + toolErr.Error()
+			}
+			toolID, _ := call["id"].(string)
+			messages = append(messages, ChatMessage{Role: "tool", Content: result, ToolCallID: toolID})
+		}
+	}
+	return p.finalize(ctx, messages)
+}
+
+func (p *Perelman) finalize(ctx context.Context, messages []ChatMessage) (AssistantMessage, error) {
+	return p.client.ChatWithExtra(ctx, messages, map[string]any{
+		"response_format": map[string]string{"type": "json_object"},
+		"tool_choice":     "none",
+	})
 }
 
 func articleInput(article domain.Article) string {

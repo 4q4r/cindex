@@ -135,7 +135,7 @@ cindex/
 | `repository` | PostgreSQL persistence, FTS matching, eligibility writes | internal |
 | `connector` | 24 scholarly source connectors with circuit breakers | internal |
 | `service` | Search orchestration, live ingestion, DOI enrichment, PERELMAN | internal |
-| `browser_service` | Stealth browser, PDF text, OCR sidecar | `/fetch`, `/pdf-text`, `/screenshot`, `/healthz` |
+| `browser_service` | Stealth browser, PDF text, OCR, vision sidecar | `/fetch`, `/pdf-text`, `/pdf-pages`, `/screenshot`, `/healthz` |
 | `frontend` | Russian-language research SPA | `/` |
 | `nginx` | Static assets + `/api/` reverse proxy | `/api/*` |
 
@@ -191,16 +191,20 @@ citation formats.
 
 ## 🧠 PERELMAN Extraction
 
-The Go PERELMAN implementation is text-first. It receives normalized title,
-abstract, and available full text and requests strict JSON containing:
+PERELMAN receives normalized title, abstract, available full text, and visual
+article material. PDF sources are rendered into bounded PNG page payloads;
+HTML sources receive a full-page screenshot plus supported figure images. The
+vision model can inspect those images with a bounded `zoom`/`crop`/`rotate`
+tool loop before returning strict JSON containing:
 
 - a Russian TLDR;
 - verbatim quotes with location, relevance, and rationale;
-- formulas represented as LaTeX when present in the source text;
-- table and figure descriptions already recoverable from text.
+- formulas represented as LaTeX from text or images;
+- table and figure descriptions converted to markdown from text or images.
 
-It does not send screenshots or image payloads and does not expose a
-zoom/crop/rotate tool loop.
+The loop is bounded by `CINDEX_LLM_MAX_TOOL_TURNS`. Tool-produced images stay
+in the per-extraction registry and are sent back as `image_url` data URIs.
+Unreadable regions are reported as uncertainty instead of being fabricated.
 
 Extraction runs only in asynchronous River jobs. Immediate
 `POST /api/v1/search` requests read the cache and never invoke the LLM.
@@ -272,7 +276,10 @@ The Go loader reads these variable groups:
   `CINDEX_LLM_MODEL`, `CINDEX_LLM_EXTRA_BODY`.
 - **LLM tuning:** `CINDEX_LLM_TIMEOUT`, `CINDEX_LLM_TEMPERATURE`,
   `CINDEX_LLM_MAX_QUOTES`, `CINDEX_LLM_CONCURRENCY`,
-  `CINDEX_LLM_MIN_REQUEST_INTERVAL`, `CINDEX_LLM_MAX_INPUT_CHARS`.
+  `CINDEX_LLM_MIN_REQUEST_INTERVAL`, `CINDEX_LLM_MAX_INPUT_CHARS`,
+  `CINDEX_LLM_MAX_TOOL_TURNS`, `CINDEX_LLM_MAX_PDF_PAGES`,
+  `CINDEX_LLM_PDF_DPI`, `CINDEX_LLM_MAX_IMAGES`,
+  `CINDEX_LLM_IMAGE_DETAIL`, `CINDEX_LLM_MAX_IMAGE_DIM`.
 - **Sources:** `CORE_API_KEY`, `EXA_API_KEY`, `CROSSREF_MAILTO`,
   `OPENALEX_API_KEY`, `UNPAYWALL_EMAIL`, `CINDEX_BROWSER_URL`.
 - **Administration:** `CINDEX_ADMIN_API_KEY`.
