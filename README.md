@@ -1,52 +1,86 @@
-# CIndex
+# 📚 CIndex
 
-[![Go backend](https://github.com/4q4r/cindex/actions/workflows/backend.yml/badge.svg)](https://github.com/4q4r/cindex/actions/workflows/backend.yml)
-[![Go](https://img.shields.io/badge/Go-1.26.6-00ADD8.svg)](https://go.dev/)
-[![React](https://img.shields.io/badge/React-19-61DAFB.svg)](https://react.dev/)
-[![PostgreSQL](https://img.shields.io/badge/PostgreSQL-18.3-336791.svg)](https://www.postgresql.org/)
-[![Docker](https://img.shields.io/badge/runtime-distroless-2496ED.svg)](https://github.com/GoogleContainerTools/distroless)
+<div align="center">
 
-CIndex is a cross-regional scholarly citation search engine. It searches a
-PostgreSQL article corpus, refreshes stale results through 24 source
-connectors, evaluates publication trust evidence, and returns ranked articles
-with copy-ready citations. TLDR summaries and verbatim quotes are included when
-cached or when LLM extraction is configured.
+**Scholarly citation search engine**
 
-The production backend is written in Go. Python remains only in the isolated
-browser/PDF/OCR sidecar. The frontend is Russian-language; source code and API
-contracts are English.
+Cross-regional literature search over a PostgreSQL corpus with 24 live source connectors, trust-tiered eligibility evidence, and copy-ready citations.
 
-## Table of contents
+[![Go](https://img.shields.io/badge/Go-1.26-00ADD8?style=for-the-badge&logo=go&logoColor=white)](https://go.dev/)
+[![PostgreSQL](https://img.shields.io/badge/PostgreSQL-18-336791?style=for-the-badge&logo=postgresql&logoColor=white)](https://www.postgresql.org/)
+[![Redis](https://img.shields.io/badge/Redis-8.6-DC382D?style=for-the-badge&logo=redis&logoColor=white)](https://redis.io/)
+[![React](https://img.shields.io/badge/React-19-61DAFB?style=for-the-badge&logo=react&logoColor=black)](https://react.dev/)
+[![Vite](https://img.shields.io/badge/Vite-7-646CFF?style=for-the-badge&logo=vite&logoColor=white)](https://vite.dev/)
+[![Bun](https://img.shields.io/badge/Bun-1.3-FBF0DF?style=for-the-badge&logo=bun&logoColor=black)](https://bun.sh/)
+[![Docker](https://img.shields.io/badge/Docker-Compose-2496ED?style=for-the-badge&logo=docker&logoColor=white)](https://www.docker.com/)
 
-- [Architecture](#architecture)
-- [Stack](#stack)
-- [Project structure](#project-structure)
-- [Search and ingestion](#search-and-ingestion)
-- [Eligibility](#eligibility)
-- [PERELMAN extraction](#perelman-extraction)
-- [API](#api)
-- [Configuration](#configuration)
-- [Docker deployment](#docker-deployment)
-- [Local development](#local-development)
-- [Quality gate](#quality-gate)
-- [Documentation](#documentation)
+[![CI](https://img.shields.io/github/actions/workflow/status/4q4r/cindex/backend.yml?branch=main&style=flat-square&logo=githubactions&logoColor=white)](https://github.com/4q4r/cindex/actions/workflows/backend.yml)
+[![Last commit](https://img.shields.io/github/last-commit/4q4r/cindex?style=flat-square&logo=github&logoColor=white)](https://github.com/4q4r/cindex/commits/main)
+[![Repo size](https://img.shields.io/github/repo-size/4q4r/cindex?style=flat-square&logo=github&logoColor=white)](https://github.com/4q4r/cindex)
+[![TypeScript](https://img.shields.io/badge/TypeScript-5.9-3178C6?style=flat-square&logo=typescript&logoColor=white)](https://www.typescriptlang.org/)
+[![Tailwind](https://img.shields.io/badge/Tailwind-4-38BDF8?style=flat-square&logo=tailwindcss&logoColor=black)](https://tailwindcss.com/)
+[![River](https://img.shields.io/badge/River-0.43-2A9D8F?style=flat-square)](https://riverqueue.com/)
+[![FastAPI](https://img.shields.io/badge/FastAPI-Sidecar-009688?style=flat-square&logo=fastapi&logoColor=white)](https://fastapi.tiangolo.com/)
+[![Python](https://img.shields.io/badge/Python-3.13-3776AB?style=flat-square&logo=python&logoColor=white)](https://www.python.org/)
+[![OpenAPI](https://img.shields.io/badge/OpenAPI-3-85EA2D?style=flat-square&logo=swagger&logoColor=black)](https://swagger.io/specification/)
+[![Runtime](https://img.shields.io/badge/Runtime-Distroless-2496ED?style=flat-square&logo=docker&logoColor=white)](https://github.com/GoogleContainerTools/distroless)
+[![nginx](https://img.shields.io/badge/nginx-latest-009639?style=flat-square&logo=nginx&logoColor=white)](https://nginx.org/)
 
-## Architecture
+[Architecture](#-system-architecture) · [Quick Start](#-quick-start) · [API](#-api-surface) · [Security](#-security) · [Testing](#-testing)
+
+</div>
+
+---
+
+## 📑 Table of Contents
+
+- [System Architecture](#-system-architecture)
+- [Project Structure](#-project-structure)
+- [Core Modules](#-core-modules)
+- [Search & Ingestion](#-search--ingestion)
+- [Eligibility & Trust](#-eligibility--trust)
+- [PERELMAN Extraction](#-perelman-extraction)
+- [API Surface](#-api-surface)
+- [Configuration](#-configuration)
+- [Security](#-security)
+- [Quick Start](#-quick-start)
+- [Local Development](#-local-development)
+- [Testing](#-testing)
+- [Access Points](#-access-points)
+
+---
+
+## 🗺️ System Architecture
 
 ```mermaid
-flowchart LR
-    UI["React 19 + Vite\nBun-built SPA"] --> NGINX["nginx :80"]
-    NGINX -- "/api/*" --> API["Go API\nnet/http :8000"]
-    API --> PG[("PostgreSQL 18.3\ncorpus + River jobs")]
-    API --> REDIS[("Redis 8.6\nrate limits + locks + cache")]
-    API -- "enqueue River job" --> PG
-    PG -- "dequeue" --> WORKER["Go worker"]
-    WORKER --> SEARCH["Search + eligibility + PERELMAN"]
-    SEARCH --> PG
-    WORKER --> CONN["24 Go connectors"]
-    CONN -- "HTTP" --> SOURCES["Scholarly sources"]
-    CONN -- "fetch / pdf-text" --> BROWSER["Python sidecar :8081"]
-    BROWSER --> SOURCES
+flowchart TB
+    UI[React SPA\nBun-built] -->|"HTTP :80"| Nginx[Nginx\nstatic + /api proxy]
+
+    subgraph App Runtime
+      API[Go API\nnet/http :8000]
+      Worker[Go Worker\nRiver jobs]
+    end
+
+    subgraph Data
+      PG[(PostgreSQL 18.3\ncorpus + River queue)]
+      Redis[(Redis 8.6\nlimits + cache + locks)]
+    end
+
+    subgraph Ingestion
+      Conn[24 Go connectors]
+      Browser[Python sidecar :8081\nfetch / pdf-text / OCR]
+    end
+
+    Nginx -->|"/api/*"| API
+    API --> PG
+    API --> Redis
+    API -->|"enqueue"| PG
+    PG -->|"dequeue"| Worker
+    Worker --> PG
+    Worker --> Conn
+    Conn -->|"HTTP"| Sources[Scholarly sources]
+    Conn --> Browser
+    Browser --> Sources
 ```
 
 Request flow:
@@ -64,51 +98,50 @@ Request flow:
 6. On startup, the worker idempotently re-enqueues unfinished search rows that
    do not already have an active River job.
 
-## Stack
+---
 
-| Layer | Technology |
-| --- | --- |
-| API | Go 1.26.6, `net/http`, generated OpenAPI handlers |
-| Async jobs | River with PostgreSQL-backed queue state |
-| Database/search | PostgreSQL 18.3 with deterministic SQL scoring |
-| Cache/control | Redis 8.6.2 for rate limits, cache, and locks |
-| Ingestion | 24 Go connectors using direct HTTP or the browser sidecar |
-| Browser sidecar | Python 3.13, FastAPI, cloakbrowser, PDF/OCR |
-| Frontend | React 19, Vite 7, TypeScript 5.9, Tailwind 4, Bun |
-| Runtime | Multi-stage Go build to `distroless/static-debian13:nonroot` |
-| Edge | nginx serves `frontend/dist` and proxies `/api/` to `app:8000` |
-
-PostgreSQL is the only durable application store. No external vector database
-or search service is required. Redis is not the job broker; River queue state
-is stored in PostgreSQL.
-
-## Project structure
+## 📂 Project Structure
 
 ```text
-backend/
-  api/openapi.yaml           API contract
-  cmd/server/                public HTTP API
-  cmd/worker/                River worker and interrupted-job recovery
-  cmd/cli/                   schema and River migrations
-  cmd/healthcheck/           distroless-compatible health probe
-  internal/config/           environment configuration
-  internal/connector/        24 source connectors and transports
-  internal/domain/           entities and eligibility rules
-  internal/httpapi/          generated contract bindings and handlers
-  internal/jobs/             asynchronous search workflow
-  internal/repository/       PostgreSQL persistence and search queries
-  internal/service/          search, ingestion, enrichment, local store, PERELMAN
-  migrations/                embedded SQL migrations
-  Dockerfile                 active Go production image
-browser_service/             Python browser, PDF text, and OCR sidecar
-frontend/                    React/Vite SPA, managed with Bun
-nginx/                       static serving and reverse proxy
-scripts/compose_up.sh        reproducible full-stack rebuild
-docker-compose.yml           production-like local topology
-docs/archive/                historical implementation notes
+cindex/
+├── backend/
+│   ├── api/openapi.yaml           API contract
+│   ├── cmd/                       server, worker, cli, healthcheck
+│   ├── internal/
+│   │   ├── connector/             24 source connectors + transports
+│   │   ├── domain/                entities and eligibility rules
+│   │   ├── httpapi/               generated contract bindings
+│   │   ├── jobs/                  River search workflow
+│   │   ├── repository/            PostgreSQL persistence + search
+│   │   └── service/               search, ingestion, PERELMAN, local store
+│   ├── migrations/                embedded SQL migrations
+│   └── Dockerfile                 distroless Go image
+├── browser_service/               Python browser/PDF/OCR sidecar
+├── frontend/                      React/Vite SPA (Bun)
+├── nginx/                         static serving + reverse proxy
+├── scripts/compose_up.sh          reproducible full-stack rebuild
+├── docker-compose.yml             production-like local topology
+└── docs/archive/                  historical implementation notes
 ```
 
-## Search and ingestion
+---
+
+## 🧩 Core Modules
+
+| Module | Purpose | Key Endpoints |
+| :-- | :-- | :-- |
+| `httpapi` | Public HTTP API, rate limits, generated handlers | `/api/v1/search`, `/api/v1/search/jobs` |
+| `jobs` | River-based async search workflow | internal `search_job` |
+| `repository` | PostgreSQL persistence, FTS matching, eligibility writes | internal |
+| `connector` | 24 scholarly source connectors with circuit breakers | internal |
+| `service` | Search orchestration, live ingestion, DOI enrichment, PERELMAN | internal |
+| `browser_service` | Stealth browser, PDF text, OCR sidecar | `/fetch`, `/pdf-text`, `/screenshot`, `/healthz` |
+| `frontend` | Russian-language research SPA | `/` |
+| `nginx` | Static assets + `/api/` reverse proxy | `/api/*` |
+
+---
+
+## 🔎 Search & Ingestion
 
 The search entry point is `backend/internal/service/search.go`; SQL matching is
 implemented in `backend/internal/repository/articles.go`.
@@ -117,75 +150,66 @@ implemented in `backend/internal/repository/articles.go`.
   `to_tsvector('simple', ...) @@ websearch_to_tsquery('simple', ...)`.
 - Weighted scoring prioritizes DOI, title, abstract, full text, and journal
   matches. Zenodo receives a `0.3` source penalty.
-- Sort modes are `relevance`, `newest`, and `metadata`.
-- The server-side result cap defaults to 30.
+- Sort modes are `relevance`, `newest`, and `metadata`; result cap defaults to 30.
 - Results are deduplicated by normalized DOI, then by canonical
-  title/year/journal.
-- Public search results require a normalized DOI beginning with `10.`.
+  title/year/journal. Public results require a DOI beginning with `10.`.
 - Article, author, identifier, and eligibility writes are grouped in a
-  transaction. Job creation and its River row are also atomic.
+  transaction; job creation and its River row are atomic.
 
-The canonical connector registry contains:
+The canonical connector registry contains: `Europe PMC`, `OpenAlex`,
+`Crossref`, `PubMed`, `arXiv`, `DOAJ`, `PMC`, `CORE`, `DBLP`, `HAL`, `Zenodo`,
+`IACR ePrint`, `Exa`, `CiNii`, `SciEngine`, `CyberLeninka`, `MathNet.Ru`,
+`SciELO`, `Persée`, `OpenEdition`, `Medknow`, `DergiPark`, `Hrčak`, and `AJOL`.
 
-`Europe PMC`, `OpenAlex`, `Crossref`, `PubMed`, `arXiv`, `DOAJ`, `PMC`, `CORE`,
-`DBLP`, `HAL`, `Zenodo`, `IACR ePrint`, `Exa`, `CiNii`, `SciEngine`,
-`CyberLeninka`, `MathNet.Ru`, `SciELO`, `Persée`, `OpenEdition`, `Medknow`,
-`DergiPark`, `Hrčak`, and `AJOL`.
+Each source has retry and circuit-breaker state; connector failures are
+isolated, so a job can complete as `partial` while preserving successful
+results. The lawful full-text resolver uses Unpaywall when `UNPAYWALL_EMAIL`
+is set, then Europe PMC. PDFs are sent to the sidecar for native extraction
+with bounded OCR fallback.
 
-Each source has retry and circuit-breaker state. Connector failures are
-isolated: a job can complete as `partial` while preserving successful results.
-The lawful full-text resolver uses Unpaywall when `UNPAYWALL_EMAIL` is set and
-then Europe PMC. PDFs are sent to the sidecar for native extraction with
-bounded OCR fallback.
+---
 
-The sidecar exposes these internal endpoints:
+## 🎯 Eligibility & Trust
 
-| Method | Path | Purpose |
-| --- | --- | --- |
-| `POST` | `/fetch` | Fetch data in a persistent stealth context |
-| `POST` | `/screenshot` | Available sidecar page capture endpoint |
-| `POST` | `/pdf-text` | Extract PDF text with bounded OCR fallback |
-| `GET` | `/healthz` | Sidecar readiness |
+Every article carries four evidence-backed criteria, each with a persisted
+confidence score:
 
-The sidecar is reachable at `http://browser:8081` inside Compose and is not
-published to the host.
+| Criterion | Meaning |
+| :-- | :-- |
+| `peer_reviewed` | Published in a peer-reviewed venue |
+| `indexed` | Present in a scholarly index |
+| `doi_and_journal_card` | DOI and journal metadata verified |
+| `not_preprint` | Not a preprint version |
 
-## Eligibility
+Peer-review confidence drives the trust tier (`A`, `B`, `source-default`,
+`keyword`, or `none`); `eligibility_confidence.overall` summarizes the four
+signals. Retraction state is irreversible once observed. The frontend renders
+the evidence, confidence, tier, citation count, and twelve client-side
+citation formats.
 
-Every article carries four evidence-backed criteria:
+---
 
-- `peer_reviewed`
-- `indexed`
-- `doi_and_journal_card`
-- `not_preprint`
-
-Each criterion has a persisted confidence score. Peer-review confidence also
-drives the trust tier (`A`, `B`, `source-default`, `keyword`, or `none`), while
-`eligibility_confidence.overall` summarizes the four signals. Retraction state
-is irreversible once observed. The frontend renders the evidence, confidence,
-tier, citation count, and twelve client-side citation formats.
-
-## PERELMAN extraction
+## 🧠 PERELMAN Extraction
 
 The Go PERELMAN implementation is text-first. It receives normalized title,
 abstract, and available full text and requests strict JSON containing:
 
 - a Russian TLDR;
 - verbatim quotes with location, relevance, and rationale;
-- formulas represented as LaTeX when they are present in the source text;
+- formulas represented as LaTeX when present in the source text;
 - table and figure descriptions already recoverable from text.
 
 It does not send screenshots or image payloads and does not expose a
 zoom/crop/rotate tool loop.
 
 Extraction runs only in asynchronous River jobs. Immediate
-`POST /api/v1/search` requests read the cache and never invoke the LLM. Published
-articles use a single-winner claim, cache the result, and freeze normalized
-content under `CINDEX_ARTICLES_DIR`; local Markdown is preferred on later
-refreshes. Preprints are not frozen.
+`POST /api/v1/search` requests read the cache and never invoke the LLM.
+Published articles use a single-winner claim, cache the result, and freeze
+normalized content under `CINDEX_ARTICLES_DIR`; local Markdown is preferred on
+later refreshes. Preprints are not frozen.
 
-The LLM client supports OpenAI-compatible `chat/completions`, bounded input and
-output, provider-specific extra request fields, request pacing, context
+The LLM client supports OpenAI-compatible `chat/completions`, bounded input
+and output, provider-specific extra request fields, request pacing, context
 cancellation, transient overload retries, and `response_format=json_object`
 with a compatibility retry for providers that reject it.
 
@@ -204,11 +228,13 @@ CINDEX_LLM_MIN_REQUEST_INTERVAL=1
 CINDEX_LLM_TIMEOUT=120s
 ```
 
-## API
+---
+
+## 🔌 API Surface
 
 | Method | Path | Purpose |
-| --- | --- | --- |
-| `GET` | `/healthz` | Internal PostgreSQL and Redis readiness check |
+| :-- | :-- | :-- |
+| `GET` | `/healthz` | Internal PostgreSQL and Redis readiness |
 | `GET` | `/api/health/` | Health route exposed through nginx |
 | `POST` | `/api/v1/search` | Immediate corpus search |
 | `POST` | `/api/v1/search/jobs` | Create or attach to a River job |
@@ -216,9 +242,9 @@ CINDEX_LLM_TIMEOUT=120s
 | `GET` | `/api/v1/source-stats` | Cached source health |
 | `POST` | `/api/v1/admin/reindex` | Protected ingestion trigger |
 
-The two search POST routes default to 10 requests per 60 seconds per client IP.
-Job polling and source statistics are not throttled. Pagination defaults to
-page 1 with 5 results per page and permits at most 50 results per page.
+The two search POST routes default to 10 requests per 60 seconds per client
+IP. Job polling and source statistics are not throttled. Pagination defaults
+to page 1 with 5 results per page and permits at most 50 results per page.
 `force_refresh=true` on immediate search performs live ingestion synchronously
 before querying the corpus.
 
@@ -229,74 +255,90 @@ pollable background job.
 `backend/api/openapi.yaml` is the source for generated search handlers and
 types. The compatibility health routes are wired separately in the Go router.
 
-## Configuration
+---
+
+## ⚙️ Configuration
 
 Copy `.env.example` to `.env`. `DATABASE_URL` and `REDIS_URL` are required.
 The Go loader reads these variable groups:
 
-- Runtime: `CINDEX_ENV`, `CINDEX_HTTP_ADDR`, `CINDEX_SHUTDOWN_TIMEOUT`, and
+- **Runtime:** `CINDEX_ENV`, `CINDEX_HTTP_ADDR`, `CINDEX_SHUTDOWN_TIMEOUT`,
   `CINDEX_ARTICLES_DIR`.
-- Storage: `DATABASE_URL` and `REDIS_URL`.
-- Search: `CINDEX_SEARCH_DEFAULT_FRESHNESS_DAYS`,
-  `CINDEX_SEARCH_FINAL_TOP_K`, `CINDEX_SEARCH_RATE_LIMIT_PER_IP`, and
+- **Storage:** `DATABASE_URL`, `REDIS_URL`.
+- **Search:** `CINDEX_SEARCH_DEFAULT_FRESHNESS_DAYS`,
+  `CINDEX_SEARCH_FINAL_TOP_K`, `CINDEX_SEARCH_RATE_LIMIT_PER_IP`,
   `CINDEX_SEARCH_RATE_LIMIT_WINDOW`.
-- LLM connection: `CINDEX_LLM_BASE_URL`, `CINDEX_LLM_API_KEY`,
-  `CINDEX_LLM_MODEL`, and `CINDEX_LLM_EXTRA_BODY`.
-- LLM tuning: `CINDEX_LLM_TIMEOUT`, `CINDEX_LLM_TEMPERATURE`,
+- **LLM connection:** `CINDEX_LLM_BASE_URL`, `CINDEX_LLM_API_KEY`,
+  `CINDEX_LLM_MODEL`, `CINDEX_LLM_EXTRA_BODY`.
+- **LLM tuning:** `CINDEX_LLM_TIMEOUT`, `CINDEX_LLM_TEMPERATURE`,
   `CINDEX_LLM_MAX_QUOTES`, `CINDEX_LLM_CONCURRENCY`,
-  `CINDEX_LLM_MIN_REQUEST_INTERVAL`, and `CINDEX_LLM_MAX_INPUT_CHARS`.
-- Sources: `CORE_API_KEY`, `EXA_API_KEY`, `CROSSREF_MAILTO`,
-  `OPENALEX_API_KEY`, `UNPAYWALL_EMAIL`, and `CINDEX_BROWSER_URL`.
-- Administration: `CINDEX_ADMIN_API_KEY`.
+  `CINDEX_LLM_MIN_REQUEST_INTERVAL`, `CINDEX_LLM_MAX_INPUT_CHARS`.
+- **Sources:** `CORE_API_KEY`, `EXA_API_KEY`, `CROSSREF_MAILTO`,
+  `OPENALEX_API_KEY`, `UNPAYWALL_EMAIL`, `CINDEX_BROWSER_URL`.
+- **Administration:** `CINDEX_ADMIN_API_KEY`.
 
 Never commit real credentials. Example values use `YOUR_API_KEY` placeholders.
 
-## Docker deployment
+---
 
-Prepare `.env` and a database password file. The password in `DATABASE_URL`
-must match `secrets/postgres_password.txt`.
-Set `CINDEX_HOST_UID` and `CINDEX_HOST_GID` to the host account that should own
-the bind-mounted frontend build output; both default to `1000`.
+## 🔒 Security
+
+- **Distroless runtime** — Go containers ship no shell or package manager and
+  run as `nonroot:nonroot`.
+- **Proxy trust** — nginx overwrites client-supplied `X-Forwarded-For` with
+  `$remote_addr` on both HTTP and TLS entrypoints.
+- **SSRF guards** — connectors and the full-text resolver validate hosts,
+  disallow private ranges, and reject untrusted redirects.
+- **Rate limiting** — per-client-IP limits on search endpoints; polling is
+  intentionally unthrottled.
+- **Admin protection** — ingestion triggers require `CINDEX_ADMIN_API_KEY`.
+- **No secrets in the repository** — `.env`, `secrets/`, and `certs/` are
+  gitignored; GitHub secret scanning and push protection are enabled.
+- **Extraction hygiene** — LLM output is cached per article, single-winner
+  claims prevent conflicting quotes, and preprints are never frozen.
+
+---
+
+## 🚀 Quick Start
+
+### 1. Environment
 
 ```bash
 cp .env.example .env
 mkdir -p secrets
 printf '%s' 'YOUR_DB_PASSWORD' > secrets/postgres_password.txt
+```
+
+The password in `DATABASE_URL` must match `secrets/postgres_password.txt`.
+Set `CINDEX_HOST_UID` and `CINDEX_HOST_GID` to the host account that should
+own the bind-mounted frontend build output (both default to `1000`).
+
+### 2. Build & Run
+
+```bash
 ./scripts/compose_up.sh
 ```
 
-`compose_up.sh` pulls runtime images, rebuilds the Go app/migration/worker image
-and browser sidecar, force-recreates the stack, removes legacy orphan
+`compose_up.sh` pulls runtime images, rebuilds the Go app/migration/worker
+image and browser sidecar, force-recreates the stack, removes legacy orphan
 containers, waits for readiness, and preserves PostgreSQL and browser-profile
-volumes.
+volumes. The one-shot `migrate` service runs `cindex-cli migrate`, including
+River migrations; both `app` and `worker` wait for it.
 
-The one-shot `migrate` service runs `cindex-cli migrate`, including River
-migrations. Both `app` and `worker` wait for it. The Go containers are
-distroless and run as `nonroot:nonroot`.
-
-Only nginx is published to the host:
-
-```text
-http://127.0.0.1:80     frontend and /api proxy
-app:8000                internal Go API
-browser:8081            internal browser/PDF sidecar
-db:5432                 internal PostgreSQL
-redis:6379              internal Redis
-```
-
-Check the running stack:
+### 3. Health Check
 
 ```bash
+curl -s http://127.0.0.1/api/health/
 docker compose ps -a
-curl --fail http://127.0.0.1/api/health/
-docker compose logs --since=5m app worker browser
 ```
 
-## Local development
+---
 
-Go does not load `.env` automatically. For host-native development, export
-externally reachable PostgreSQL and Redis URLs first; Compose service names
-such as `db` and `redis` resolve only inside the Compose network.
+## 💻 Local Development
+
+Go does not load `.env` automatically. Export externally reachable PostgreSQL
+and Redis URLs first (Compose service names resolve only inside the Compose
+network):
 
 ```bash
 cd backend
@@ -309,12 +351,10 @@ Run the API and worker in separate terminals with the same environment:
 
 ```bash
 # terminal 1
-cd backend
-make run-server
+cd backend && make run-server
 
 # terminal 2
-cd backend
-make run-worker
+cd backend && make run-worker
 ```
 
 The non-Compose API default is `127.0.0.1:8001`.
@@ -337,12 +377,12 @@ uv sync
 uv run uvicorn cindex_browser_sidecar.main:app --port 8081
 ```
 
-## Quality gate
+---
 
-Go backend:
+## ✅ Testing
 
-The race suite includes Testcontainers integration tests and requires access
-to Docker for complete coverage.
+Backend (the race suite includes Testcontainers integration tests and needs
+Docker access for complete coverage):
 
 ```bash
 cd backend
@@ -370,10 +410,8 @@ uv run ruff check .
 uv run pytest
 ```
 
-Container configuration:
-
-`hadolint` and `shellcheck` are optional local prerequisites for the final two
-commands.
+Container configuration (`hadolint` and `shellcheck` are optional local
+prerequisites):
 
 ```bash
 docker compose config --quiet
@@ -384,9 +422,15 @@ shellcheck -x -S style scripts/compose_up.sh nginx/entrypoint.sh
 `.github/workflows/backend.yml` runs Go lint, unit tests, migration tests, and
 repository Testcontainers tests on backend changes.
 
-## Documentation
+---
 
-- `README.md` describes the current Go runtime.
-- `backend/api/openapi.yaml` defines the HTTP contract.
-- `browser_service/README.md` defines the sidecar payloads and limits.
-- `docs/archive/` contains historical implementation and planning records.
+## 🌍 Access Points
+
+| URL | Description |
+| :-- | :-- |
+| `http://127.0.0.1/` | Frontend SPA (nginx) |
+| `http://127.0.0.1/api/health/` | Health check |
+| `app:8000` | Go API (internal) |
+| `browser:8081` | Browser/PDF/OCR sidecar (internal) |
+| `db:5432` | PostgreSQL (internal) |
+| `redis:6379` | Redis (internal) |
