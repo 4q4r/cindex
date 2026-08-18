@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/4q4r/cindex/backend/internal/connector"
 	"github.com/4q4r/cindex/backend/internal/domain"
@@ -32,6 +33,8 @@ Return a single JSON object with exactly this shape:
 }
 
 If a region is unreadable even after zooming, transcribe what you can and note the uncertainty in the caption. If the article has no extractable content, return all three lists empty and an empty string for tldr.`
+
+const perelmanMaxTurnRetries = 3
 
 // PerelmanConfig controls query-agnostic extraction prompt size.
 type PerelmanConfig struct {
@@ -169,6 +172,7 @@ func (p *Perelman) userPrompt(article domain.Article, content perelmanContent) s
 }
 
 func (p *Perelman) agentLoop(ctx context.Context, messages []ChatMessage, registry *imageRegistry, multimodal bool) (AssistantMessage, error) {
+	turnRetries := 0
 	for turn := 0; turn <= p.cfg.MaxToolTurns; turn++ {
 		extra := map[string]any{
 			"tools":       perelmanToolSchemas,
@@ -179,12 +183,28 @@ func (p *Perelman) agentLoop(ctx context.Context, messages []ChatMessage, regist
 		}
 		message, err := p.client.ChatWithExtra(ctx, messages, extra)
 		if err != nil {
+			var rateErr *LLMRateLimitError
+			if errors.As(err, &rateErr) && !rateErr.Terminal && turnRetries < perelmanMaxTurnRetries {
+				turnRetries++
+				delay := time.Duration(1<<uint(turnRetries)) * time.Second
+				if rateErr.Code == "1305" {
+					delay *= 2
+				}
+				if delay > 30*time.Second {
+					delay = 30 * time.Second
+				}
+				if sleepErr := sleepContext(ctx, delay); sleepErr != nil {
+					return nil, sleepErr
+				}
+				continue
+			}
 			var httpErr *LLMHTTPError
 			if errors.As(err, &httpErr) && httpErr.StatusCode == http.StatusBadRequest {
 				return p.finalize(ctx, messages)
 			}
 			return nil, err
 		}
+		turnRetries = 0
 		calls, ok := message["tool_calls"].([]any)
 		if !ok || len(calls) == 0 {
 			if content, ok := message["content"].(string); ok && strings.TrimSpace(content) != "" {
@@ -217,9 +237,13 @@ func (p *Perelman) agentLoop(ctx context.Context, messages []ChatMessage, regist
 }
 
 func (p *Perelman) finalize(ctx context.Context, messages []ChatMessage) (AssistantMessage, error) {
-	return p.client.ChatWithExtra(ctx, messages, map[string]any{
+	finalMessages := append([]ChatMessage(nil), messages...)
+	finalMessages = append(finalMessages, ChatMessage{
+		Role:    "user",
+		Content: "Stop inspecting images now. Output only the final JSON object with tldr, quotes, formulas, and figures. Do not call tools.",
+	})
+	return p.client.ChatWithExtra(ctx, finalMessages, map[string]any{
 		"response_format": map[string]string{"type": "json_object"},
-		"tool_choice":     "none",
 	})
 }
 

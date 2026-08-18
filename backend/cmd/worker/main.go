@@ -8,6 +8,7 @@ import (
 	"os"
 	"os/signal"
 	"syscall"
+	"time"
 
 	"github.com/4q4r/cindex/backend/internal/config"
 	"github.com/4q4r/cindex/backend/internal/httpapi"
@@ -58,6 +59,7 @@ func run(logger *slog.Logger) error {
 	river.AddWorker(workers, api.SearchJobWorker())
 
 	client, err := river.NewClient(riverpgxv5.New(pool), &river.Config{
+		JobTimeout: 15 * time.Minute,
 		Queues: map[string]river.QueueConfig{
 			river.QueueDefault: {MaxWorkers: 8},
 		},

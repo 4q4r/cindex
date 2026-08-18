@@ -173,7 +173,8 @@ func (r *Sources) EnsureExists(ctx context.Context, key, name, baseURL string) (
 func (r *Sources) UpsertJournal(ctx context.Context, name string) (int64, error) {
 	var id int64
 	err := r.pool.QueryRow(ctx, `
-		INSERT INTO articles_journal (name) VALUES ($1)
+		INSERT INTO articles_journal (name, issn, eissn, publisher)
+		VALUES ($1, '', '', '')
 		ON CONFLICT DO NOTHING
 		RETURNING id`, name).Scan(&id)
 	if err != nil {

@@ -34,7 +34,7 @@ func TestLoadDefaults(t *testing.T) {
 	if c.LLM.BaseURL != "" || c.LLM.Model != "" || c.LLM.Timeout.Seconds() != 120 {
 		t.Errorf("LLM defaults = %+v", c.LLM)
 	}
-	if c.LLM.Temperature != 0.2 || c.LLM.MaxQuotes != 3 || c.LLM.Concurrency != 4 || c.LLM.MaxInputChars != 12000 {
+	if c.LLM.Temperature != 0.2 || c.LLM.MaxQuotes != 3 || c.LLM.Concurrency != 1 || c.LLM.MaxInputChars != 12000 {
 		t.Errorf("LLM tuning defaults = %+v", c.LLM)
 	}
 }
