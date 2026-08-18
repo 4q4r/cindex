@@ -13,6 +13,8 @@ import (
 	"github.com/4q4r/cindex/backend/internal/repository"
 )
 
+const liveSourceTimeout = 45 * time.Second
+
 // LiveIngestor runs corpus live scans through the real connector registry,
 // with full parity to IngestorService in apps.ingestion.services:
 // per-source translate → fetch → enrich (local-md first) → save → DOI
@@ -191,6 +193,8 @@ func (l *LiveIngestor) processSource(
 	done, total int,
 	failedSources []string,
 ) ([]EnrichCandidate, int, []string, error) {
+	sourceCtx, cancel := context.WithTimeout(ctx, liveSourceTimeout)
+	defer cancel()
 	logger := l.logger()
 	sourceStarted := time.Now()
 
@@ -207,9 +211,9 @@ func (l *LiveIngestor) processSource(
 	emitProgress("fetching", "Собираем статьи")
 	sourceQuery := query
 	if l.Translate != nil {
-		sourceQuery = l.Translate.TranslateQueryForSource(ctx, query, sourceKey)
+		sourceQuery = l.Translate.TranslateQueryForSource(sourceCtx, query, sourceKey)
 	}
-	raws, err := conn.Fetch(ctx, sourceQuery, opts.PerSourceLimit)
+	raws, err := conn.Fetch(sourceCtx, sourceQuery, opts.PerSourceLimit)
 	if err != nil {
 		if recordErr := l.markFailure(ctx, src, err); recordErr != nil {
 			return nil, done, failedSources, recordErr
@@ -228,7 +232,7 @@ func (l *LiveIngestor) processSource(
 	emitProgress("enriching", "Обогащаем карточки")
 	var enriched []connector.RawArticle
 	for _, raw := range raws {
-		enrichedRaw, drop := l.enrichOne(ctx, conn, raw)
+		enrichedRaw, drop := l.enrichOne(sourceCtx, conn, raw)
 		if drop {
 			continue
 		}
@@ -246,7 +250,7 @@ func (l *LiveIngestor) processSource(
 				"source_key", sourceKey, "url", raw.URL, "title", truncateTitle(raw.Title))
 			continue
 		}
-		article, authors, err := l.saveArticle(ctx, raw)
+		article, authors, err := l.saveArticle(sourceCtx, raw)
 		if err != nil {
 			return nil, done, failedSources, err
 		}
